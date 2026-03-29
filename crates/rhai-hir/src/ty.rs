@@ -277,7 +277,7 @@ impl<'a> Parser<'a> {
 
 #[cfg(test)]
 mod tests {
-    use super::{FunctionTypeRef, TypeRef, parse_type_ref};
+    use crate::ty::{FunctionTypeRef, TypeRef, parse_type_ref};
 
     #[test]
     fn parses_basic_type_refs() {

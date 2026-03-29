@@ -150,7 +150,7 @@ mod tests {
 
     use crate::ty::TypeRef;
 
-    use super::{DocTag, collect_doc_block};
+    use crate::docs::{DocTag, collect_doc_block};
 
     fn assert_valid_rhai_syntax(source: &str) {
         let parse = parse_text(source);
