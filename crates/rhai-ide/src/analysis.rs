@@ -1,24 +1,27 @@
 use std::path::Path;
 
 use rhai_db::{AnalyzerDatabase, ChangeImpact, ChangeSet, DatabaseSnapshot};
-use rhai_hir::{CompletionSymbol, Symbol, TypeRef};
+use rhai_hir::Symbol;
 use rhai_syntax::TextRange;
 use rhai_vfs::FileId;
 
 use crate::TextEdit;
 use crate::assists::{Assist, DiagnosticWithFixes, assists_for_range, diagnostics_with_fixes};
+use crate::completion::completions;
 use crate::convert::{
-    document_symbol_from_db, format_symbol_signature, format_type_ref, navigation_target_from_db,
-    navigation_target_from_identity, reference_location_from_db, text_size,
-    workspace_symbol_from_db,
+    navigation_target_from_db, navigation_target_from_identity, reference_location_from_db,
+    text_size,
 };
+use crate::diagnostics::{
+    diagnostics, document_symbols, workspace_symbols, workspace_symbols_matching,
+};
+use crate::hover::hover;
 use crate::imports::{organize_imports, remove_unused_imports};
 use crate::rename::{PreparedRename, prepare_rename, rename_plan_from_db};
 use crate::signature_help::signature_help;
 use crate::{
-    AutoImportAction, CompletionItem, CompletionItemKind, CompletionItemSource, Diagnostic,
-    DocumentSymbol, FilePosition, HoverResult, NavigationTarget, ReferencesResult, RenamePlan,
-    SignatureHelp, SourceChange, WorkspaceSymbol,
+    AutoImportAction, CompletionItem, Diagnostic, DocumentSymbol, FilePosition, HoverResult,
+    NavigationTarget, ReferencesResult, RenamePlan, SignatureHelp, SourceChange, WorkspaceSymbol,
 };
 
 #[derive(Debug, Default)]
@@ -69,18 +72,7 @@ impl Analysis {
     }
 
     pub fn diagnostics(&self, file_id: FileId) -> Vec<Diagnostic> {
-        if self.db.file_text(file_id).is_none() {
-            return Vec::new();
-        }
-
-        self.db
-            .project_diagnostics(file_id)
-            .into_iter()
-            .map(|diagnostic| Diagnostic {
-                message: diagnostic.message,
-                range: diagnostic.range,
-            })
-            .collect()
+        diagnostics(&self.db, file_id)
     }
 
     pub fn diagnostics_with_fixes(&self, file_id: FileId) -> Vec<DiagnosticWithFixes> {
@@ -88,29 +80,7 @@ impl Analysis {
     }
 
     pub fn hover(&self, position: FilePosition) -> Option<HoverResult> {
-        let (file_id, symbol_id) =
-            if let Some(target) = self.goto_definition(position).into_iter().next() {
-                let hir = self.db.hir(target.file_id)?;
-                (target.file_id, hir.symbol_at(target.full_range)?)
-            } else {
-                let hir = self.db.hir(position.file_id)?;
-                (
-                    position.file_id,
-                    hir.definition_at_offset(text_size(position.offset))?,
-                )
-            };
-        let hir = self.db.hir(file_id)?;
-        let symbol = hir.symbol(symbol_id);
-        let docs = symbol.docs.map(|docs| hir.doc_block(docs).text.clone());
-        let annotation = self
-            .db
-            .inferred_symbol_type(file_id, symbol_id)
-            .or(symbol.annotation.as_ref());
-
-        Some(HoverResult {
-            signature: format_symbol_signature(symbol.name.as_str(), symbol.kind, annotation),
-            docs,
-        })
+        hover(&self.db, position)
     }
 
     pub fn signature_help(&self, position: FilePosition) -> Option<SignatureHelp> {
@@ -124,27 +94,15 @@ impl Analysis {
     }
 
     pub fn document_symbols(&self, file_id: FileId) -> Vec<DocumentSymbol> {
-        self.db
-            .document_symbols(file_id)
-            .iter()
-            .map(document_symbol_from_db)
-            .collect()
+        document_symbols(&self.db, file_id)
     }
 
     pub fn workspace_symbols(&self) -> Vec<WorkspaceSymbol> {
-        self.db
-            .workspace_symbols()
-            .iter()
-            .map(workspace_symbol_from_db)
-            .collect()
+        workspace_symbols(&self.db)
     }
 
     pub fn workspace_symbols_matching(&self, query: &str) -> Vec<WorkspaceSymbol> {
-        self.db
-            .workspace_symbols_matching(query)
-            .iter()
-            .map(workspace_symbol_from_db)
-            .collect()
+        workspace_symbols_matching(&self.db, query)
     }
 
     pub fn goto_definition(&self, position: FilePosition) -> Vec<NavigationTarget> {
@@ -195,54 +153,7 @@ impl Analysis {
     }
 
     pub fn completions(&self, position: FilePosition) -> Vec<CompletionItem> {
-        let Some(inputs) = self
-            .db
-            .completion_inputs(position.file_id, text_size(position.offset))
-        else {
-            return Vec::new();
-        };
-
-        let mut items = Vec::new();
-        let hir = self.db.hir(position.file_id);
-
-        items.extend(inputs.visible_symbols.iter().map(|symbol| {
-            let docs = match (&hir, symbol.docs) {
-                (Some(hir), Some(docs)) => Some(hir.doc_block(docs).text.clone()),
-                _ => None,
-            };
-
-            CompletionItem {
-                label: symbol.name.clone(),
-                kind: CompletionItemKind::Symbol(symbol.kind),
-                source: CompletionItemSource::Visible,
-                detail: completion_detail(&self.db, position.file_id, symbol),
-                docs,
-                file_id: Some(position.file_id),
-                exported: false,
-            }
-        }));
-
-        items.extend(inputs.project_symbols.iter().map(|symbol| CompletionItem {
-            label: symbol.symbol.name.clone(),
-            kind: CompletionItemKind::Symbol(symbol.symbol.kind),
-            source: CompletionItemSource::Project,
-            detail: None,
-            docs: None,
-            file_id: Some(symbol.file_id),
-            exported: symbol.symbol.exported,
-        }));
-
-        items.extend(inputs.member_symbols.iter().map(|member| CompletionItem {
-            label: member.name.clone(),
-            kind: CompletionItemKind::Member,
-            source: CompletionItemSource::Member,
-            detail: member.annotation.as_ref().map(format_type_ref),
-            docs: None,
-            file_id: None,
-            exported: false,
-        }));
-
-        items
+        completions(&self.db, position)
     }
 
     pub fn auto_import_actions(&self, position: FilePosition) -> Vec<AutoImportAction> {
@@ -276,26 +187,4 @@ impl Analysis {
     pub fn organize_imports(&self, file_id: FileId) -> Option<SourceChange> {
         organize_imports(&self.db, file_id)
     }
-}
-
-fn completion_detail(
-    db: &DatabaseSnapshot,
-    file_id: FileId,
-    symbol: &CompletionSymbol,
-) -> Option<String> {
-    symbol
-        .annotation
-        .as_ref()
-        .or_else(|| inferred_completion_type(db, file_id, symbol.symbol))
-        .filter(|ty| !matches!(ty, TypeRef::Unknown))
-        .map(format_type_ref)
-}
-
-fn inferred_completion_type(
-    db: &DatabaseSnapshot,
-    file_id: FileId,
-    symbol: rhai_hir::SymbolId,
-) -> Option<&TypeRef> {
-    db.inferred_symbol_type(file_id, symbol)
-        .filter(|ty| !matches!(ty, TypeRef::Unknown))
 }

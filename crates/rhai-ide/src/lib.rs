@@ -1,7 +1,10 @@
 mod analysis;
 mod assists;
 mod change;
+mod completion;
 mod convert;
+mod diagnostics;
+mod hover;
 mod imports;
 mod rename;
 mod signature_help;
