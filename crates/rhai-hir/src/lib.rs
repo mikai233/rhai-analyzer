@@ -12,18 +12,20 @@ mod ty;
 pub use docs::{DocBlock, DocBlockId, DocTag, collect_doc_block};
 pub use lowering::lower_file;
 pub use model::{
-    Body, BodyId, BodyKind, CallSite, CallSiteId, CompletionSymbol, ControlFlowEvent,
-    ControlFlowKind, ControlFlowMergePoint, DocumentSymbol, DocumentedField, ExportDirective,
-    ExprId, ExprKind, ExprNode, ExternalSignatureIndex, FileBackedSymbolIdentity, FileHir,
-    FileSymbolId, FileSymbolIndex, FileSymbolIndexEntry, FindReferencesResult, ImportDirective,
-    IndexableSymbol, IndexingHandoff, LinkedAlias, LinkedAliasKind, MemberAccess, MemberCompletion,
-    MemberCompletionSource, MergePointKind, ModuleExportEdge, ModuleGraphIndex, ModuleImportEdge,
-    ModuleSpecifier, NavigationTarget, ObjectFieldInfo, ParameterHint, ParameterHintParameter,
-    Reference, ReferenceId, ReferenceKind, ReferenceLocation, RenameOccurrence,
-    RenameOccurrenceKind, RenamePlan, RenamePreflightIssue, RenamePreflightIssueKind, Scope,
-    ScopeId, ScopeKind, SemanticDiagnostic, SemanticDiagnosticKind, StableSymbolKey, Symbol,
-    SymbolId, SymbolKind, SymbolValueFlow, TypeSlot, TypeSlotAssignments, TypeSlotId,
-    ValueFlowKind, WorkspaceSymbol,
+    ArrayExprInfo, BinaryExprInfo, BinaryOperator, BlockExprInfo, Body, BodyId, BodyKind, CallSite,
+    CallSiteId, ClosureExprInfo, CompletionSymbol, ControlFlowEvent, ControlFlowKind,
+    ControlFlowMergePoint, DocumentSymbol, DocumentedField, ExportDirective, ExprId, ExprKind,
+    ExprNode, ExternalSignatureIndex, FileBackedSymbolIdentity, FileHir, FileSymbolId,
+    FileSymbolIndex, FileSymbolIndexEntry, FindReferencesResult, IfExprInfo, ImportDirective,
+    IndexExprInfo, IndexableSymbol, IndexingHandoff, LinkedAlias, LinkedAliasKind, LiteralInfo,
+    LiteralKind, MemberAccess, MemberCompletion, MemberCompletionSource, MergePointKind,
+    ModuleExportEdge, ModuleGraphIndex, ModuleImportEdge, ModuleSpecifier, NavigationTarget,
+    ObjectFieldInfo, ParameterHint, ParameterHintParameter, Reference, ReferenceId, ReferenceKind,
+    ReferenceLocation, RenameOccurrence, RenameOccurrenceKind, RenamePlan, RenamePreflightIssue,
+    RenamePreflightIssueKind, Scope, ScopeId, ScopeKind, SemanticDiagnostic,
+    SemanticDiagnosticKind, StableSymbolKey, SwitchExprInfo, Symbol, SymbolId, SymbolKind,
+    SymbolMutation, SymbolMutationKind, SymbolValueFlow, TypeSlot, TypeSlotAssignments, TypeSlotId,
+    UnaryExprInfo, UnaryOperator, ValueFlowKind, WorkspaceSymbol,
 };
 pub use ty::{FunctionTypeRef, TypeRef, parse_type_ref};
 
@@ -122,6 +124,15 @@ impl FileHir {
             .filter(move |flow| flow.symbol == symbol)
     }
 
+    pub fn symbol_mutations_into(
+        &self,
+        symbol: SymbolId,
+    ) -> impl Iterator<Item = &SymbolMutation> + '_ {
+        self.symbol_mutations
+            .iter()
+            .filter(move |mutation| mutation.symbol == symbol)
+    }
+
     pub fn call(&self, id: CallSiteId) -> &CallSite {
         &self.calls[id.0 as usize]
     }
@@ -151,14 +162,30 @@ impl FileHir {
             .flatten()
     }
 
+    pub fn call_argument_expr(&self, call: CallSiteId, argument_index: usize) -> Option<ExprId> {
+        self.call(call).arg_exprs.get(argument_index).copied()
+    }
+
     pub fn call_signature(
         &self,
         call: CallSiteId,
         external: Option<&ExternalSignatureIndex>,
     ) -> Option<FunctionTypeRef> {
-        let callee = self.call(call).resolved_callee?;
-        match self.effective_symbol_type(callee, external)? {
-            TypeRef::Function(signature) => Some(signature),
+        let call = self.call(call);
+
+        if let Some(callee) = call.resolved_callee {
+            return match self.effective_symbol_type(callee, external)? {
+                TypeRef::Function(signature) => Some(signature),
+                _ => None,
+            };
+        }
+
+        let external = external?;
+        let callee_name = call
+            .callee_reference
+            .map(|reference_id| self.reference(reference_id).name.as_str())?;
+        match external.get(callee_name)? {
+            TypeRef::Function(signature) => Some(signature.clone()),
             _ => None,
         }
     }

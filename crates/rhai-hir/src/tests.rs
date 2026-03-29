@@ -1,7 +1,8 @@
 use crate::{
-    BodyKind, ControlFlowKind, ExprKind, ExternalSignatureIndex, FunctionTypeRef,
-    MemberCompletionSource, MergePointKind, ReferenceKind, ScopeKind, SemanticDiagnosticKind,
-    SymbolKind, TypeRef, ValueFlowKind, lower_file,
+    BinaryOperator, BodyKind, ControlFlowKind, ExprKind, ExternalSignatureIndex, FunctionTypeRef,
+    LiteralKind, MemberCompletionSource, MergePointKind, ReferenceKind, ScopeKind,
+    SemanticDiagnosticKind, SymbolKind, SymbolMutationKind, TypeRef, UnaryOperator, ValueFlowKind,
+    lower_file,
 };
 use rhai_syntax::{TextRange, TextSize, parse_text};
 
@@ -11,9 +12,19 @@ fn slice_range(source: &str, range: TextRange) -> &str {
     &source[start as usize..end as usize]
 }
 
+fn parse_valid(source: &str) -> rhai_syntax::Parse {
+    let parse = parse_text(source);
+    assert!(
+        parse.errors().is_empty(),
+        "expected valid Rhai syntax, got errors: {:?}",
+        parse.errors()
+    );
+    parse
+}
+
 #[test]
 fn lowers_symbols_scopes_and_references() {
-    let parse = parse_text(
+    let parse = parse_valid(
         r#"
             /// @param value int
             /// @return int
@@ -74,7 +85,7 @@ fn lowers_symbols_scopes_and_references() {
 
 #[test]
 fn attaches_doc_blocks_and_type_annotations() {
-    let parse = parse_text(
+    let parse = parse_valid(
         r#"
             /// counter docs
             /// @type int
@@ -96,7 +107,7 @@ fn attaches_doc_blocks_and_type_annotations() {
 
 #[test]
 fn attaches_docs_to_more_declaration_kinds_and_nested_cases() {
-    let parse = parse_text(
+    let parse = parse_valid(
         r#"
             /** outer docs */
             fn outer() {
@@ -136,7 +147,7 @@ fn attaches_docs_to_more_declaration_kinds_and_nested_cases() {
 
 #[test]
 fn synthesizes_function_and_parameter_annotations_from_docs() {
-    let parse = parse_text(
+    let parse = parse_valid(
         r#"
             /// @param left int
             /// @param right string
@@ -177,9 +188,9 @@ fn synthesizes_function_and_parameter_annotations_from_docs() {
 
 #[test]
 fn resolves_forward_functions_without_resolving_future_variables() {
-    let parse = parse_text(
+    let parse = parse_valid(
         r#"
-            let call = later();
+            let result = later();
             let early = value;
             let value = 1;
 
@@ -232,7 +243,7 @@ fn file_lookup_helpers_find_deepest_scope_and_exact_ranges() {
                 { let nested = value; nested }
             }
         "#;
-    let parse = parse_text(source);
+    let parse = parse_valid(source);
     let hir = lower_file(&parse);
     let nested_offset = TextSize::from(u32::try_from(source.find("nested").unwrap()).unwrap());
     let scope_id = hir
@@ -267,7 +278,7 @@ fn query_helpers_support_definition_body_and_visible_symbol_lookups() {
             let value = 3;
             let result = helper(OUTER);
         "#;
-    let parse = parse_text(source);
+    let parse = parse_valid(source);
     let hir = lower_file(&parse);
 
     let helper_symbol = hir
@@ -322,7 +333,7 @@ fn expression_table_assigns_stable_ids_and_supports_offset_queries() {
     let source = r#"
             let value = helper(1 + 2, data[index]);
         "#;
-    let parse = parse_text(source);
+    let parse = parse_valid(source);
     let hir = lower_file(&parse);
 
     assert!(!hir.exprs.is_empty());
@@ -359,11 +370,164 @@ fn expression_table_assigns_stable_ids_and_supports_offset_queries() {
         .expr_at_offset(literal_offset)
         .expect("expected literal expression at numeric token");
     assert_eq!(hir.expr(literal_expr).kind, ExprKind::Literal);
+    assert_eq!(
+        hir.literal(literal_expr).map(|literal| literal.kind),
+        Some(LiteralKind::Int)
+    );
+}
+
+#[test]
+fn expression_metadata_tracks_literals_operators_and_call_argument_exprs() {
+    let source = r#"
+            let value = helper(-1, "x" + "y", true ?? false);
+        "#;
+    let parse = parse_valid(source);
+    let hir = lower_file(&parse);
+
+    let unary_expr = hir
+        .expr_at_offset(TextSize::from(
+            u32::try_from(source.find("-1").unwrap()).unwrap(),
+        ))
+        .expect("expected unary expression");
+    let first_literal = hir
+        .expr_at_offset(TextSize::from(
+            u32::try_from(source.find("1,").unwrap()).unwrap(),
+        ))
+        .expect("expected int literal");
+    let add_expr = hir
+        .expr_at_offset(TextSize::from(
+            u32::try_from(source.find(" + ").unwrap() + 1).unwrap(),
+        ))
+        .expect("expected additive expression");
+    let coalesce_expr = hir
+        .expr_at_offset(TextSize::from(
+            u32::try_from(source.find(" ?? ").unwrap() + 1).unwrap(),
+        ))
+        .expect("expected null-coalescing expression");
+    let call_offset = TextSize::from(u32::try_from(source.find(", true").unwrap()).unwrap());
+    let call_id = hir.call_at_offset(call_offset).expect("expected call site");
+
+    assert_eq!(
+        hir.unary_expr(unary_expr).map(|unary| unary.operator),
+        Some(UnaryOperator::Minus)
+    );
+    assert_eq!(
+        hir.unary_expr(unary_expr).and_then(|unary| unary.operand),
+        Some(first_literal)
+    );
+    assert_eq!(
+        hir.literal(first_literal).map(|literal| literal.kind),
+        Some(LiteralKind::Int)
+    );
+    assert_eq!(
+        hir.binary_expr(add_expr).map(|binary| binary.operator),
+        Some(BinaryOperator::Add)
+    );
+    assert_eq!(
+        hir.binary_expr(coalesce_expr).map(|binary| binary.operator),
+        Some(BinaryOperator::NullCoalesce)
+    );
+    assert_eq!(hir.call_argument_expr(call_id, 0), Some(unary_expr));
+    assert_eq!(hir.call_argument_expr(call_id, 1), Some(add_expr));
+    assert_eq!(hir.call_argument_expr(call_id, 2), Some(coalesce_expr));
+}
+
+#[test]
+fn expression_metadata_tracks_blocks_branches_indexes_and_members() {
+    let source = r#"
+            let block = { let value = 1; value };
+            let choice = if flag { block } else { 2 };
+            let picked = switch mode { 0 => [1, 2][0], _ => #{ value: 3 }.value };
+        "#;
+    let parse = parse_valid(source);
+    let hir = lower_file(&parse);
+
+    let block_expr = hir
+        .expr_at_offset(TextSize::from(
+            u32::try_from(source.find("{ let value = 1; value }").unwrap()).unwrap(),
+        ))
+        .expect("expected block expression");
+    let if_expr = hir
+        .expr_at_offset(TextSize::from(
+            u32::try_from(source.find("if flag").unwrap()).unwrap(),
+        ))
+        .expect("expected if expression");
+    let switch_expr = hir
+        .expr_at_offset(TextSize::from(
+            u32::try_from(source.find("switch mode").unwrap()).unwrap(),
+        ))
+        .expect("expected switch expression");
+    let index_expr = hir
+        .exprs
+        .iter()
+        .enumerate()
+        .find_map(|(index, expr)| {
+            (expr.kind == ExprKind::Index && slice_range(source, expr.range) == "[1, 2][0]")
+                .then_some(crate::ExprId(index as u32))
+        })
+        .expect("expected index expression");
+    let field_expr = hir
+        .exprs
+        .iter()
+        .enumerate()
+        .find_map(|(index, expr)| {
+            (expr.kind == ExprKind::Field
+                && slice_range(source, expr.range) == "#{ value: 3 }.value")
+                .then_some(crate::ExprId(index as u32))
+        })
+        .expect("expected field expression");
+
+    let block_info = hir.block_expr(block_expr).expect("expected block info");
+    let tail_expr = hir
+        .body_tail_value(block_info.body)
+        .expect("expected block tail value");
+    assert_eq!(hir.expr(tail_expr).kind, ExprKind::Name);
+
+    let if_info = hir.if_expr(if_expr).expect("expected if info");
+    assert_eq!(
+        if_info.condition.map(|expr| hir.expr(expr).kind),
+        Some(ExprKind::Name)
+    );
+    assert_eq!(
+        if_info.then_branch.map(|expr| hir.expr(expr).kind),
+        Some(ExprKind::Block)
+    );
+    assert_eq!(
+        if_info.else_branch.map(|expr| hir.expr(expr).kind),
+        Some(ExprKind::Block)
+    );
+
+    let switch_info = hir.switch_expr(switch_expr).expect("expected switch info");
+    assert_eq!(switch_info.arms.len(), 2);
+    assert_eq!(
+        switch_info.arms[0].map(|expr| hir.expr(expr).kind),
+        Some(ExprKind::Index)
+    );
+    assert_eq!(
+        switch_info.arms[1].map(|expr| hir.expr(expr).kind),
+        Some(ExprKind::Field)
+    );
+
+    let index_info = hir.index_expr(index_expr).expect("expected index info");
+    assert_eq!(
+        index_info.receiver.map(|expr| hir.expr(expr).kind),
+        Some(ExprKind::Array)
+    );
+    assert_eq!(
+        index_info.index.map(|expr| hir.expr(expr).kind),
+        Some(ExprKind::Literal)
+    );
+
+    let access = hir
+        .member_access(field_expr)
+        .expect("expected member access");
+    assert_eq!(hir.expr(access.receiver).kind, ExprKind::Object);
+    assert_eq!(hir.reference(access.field_reference).name, "value");
 }
 
 #[test]
 fn value_flows_capture_initializers_and_assignments() {
-    let parse = parse_text(
+    let parse = parse_valid(
         r#"
             fn bump(input) { input + 1 }
 
@@ -408,11 +572,79 @@ fn value_flows_capture_initializers_and_assignments() {
 }
 
 #[test]
+fn lowering_records_symbol_mutations_for_simple_field_and_index_assignments() {
+    let parse = parse_valid(
+        r#"
+            let user = #{};
+            user.name = "Ada";
+
+            let items = [];
+            items[0] = 1;
+
+            let nested = #{};
+            nested.profile.name = "ignored";
+        "#,
+    );
+    let hir = lower_file(&parse);
+
+    let user_symbol = hir
+        .symbols
+        .iter()
+        .enumerate()
+        .find_map(|(index, symbol)| {
+            (symbol.name == "user" && symbol.kind == SymbolKind::Variable)
+                .then_some(crate::SymbolId(index as u32))
+        })
+        .expect("expected `user` symbol");
+    let items_symbol = hir
+        .symbols
+        .iter()
+        .enumerate()
+        .find_map(|(index, symbol)| {
+            (symbol.name == "items" && symbol.kind == SymbolKind::Variable)
+                .then_some(crate::SymbolId(index as u32))
+        })
+        .expect("expected `items` symbol");
+    let nested_symbol = hir
+        .symbols
+        .iter()
+        .enumerate()
+        .find_map(|(index, symbol)| {
+            (symbol.name == "nested" && symbol.kind == SymbolKind::Variable)
+                .then_some(crate::SymbolId(index as u32))
+        })
+        .expect("expected `nested` symbol");
+
+    let user_mutations = hir.symbol_mutations_into(user_symbol).collect::<Vec<_>>();
+    assert_eq!(user_mutations.len(), 1);
+    assert_eq!(
+        user_mutations[0].kind,
+        SymbolMutationKind::Field {
+            name: "name".to_owned()
+        }
+    );
+    assert_eq!(hir.expr(user_mutations[0].value).kind, ExprKind::Literal);
+
+    let item_mutations = hir.symbol_mutations_into(items_symbol).collect::<Vec<_>>();
+    assert_eq!(item_mutations.len(), 1);
+    assert!(matches!(
+        item_mutations[0].kind,
+        SymbolMutationKind::Index { .. }
+    ));
+    assert_eq!(hir.expr(item_mutations[0].value).kind, ExprKind::Literal);
+
+    assert!(
+        hir.symbol_mutations_into(nested_symbol).next().is_none(),
+        "nested field chains are not modeled as simple symbol mutations yet"
+    );
+}
+
+#[test]
 fn expression_result_slots_are_stable_and_queryable() {
     let source = r#"
             let value = helper(1 + 2);
         "#;
-    let parse = parse_text(source);
+    let parse = parse_valid(source);
     let hir = lower_file(&parse);
 
     let call_offset = TextSize::from(u32::try_from(source.rfind('1').unwrap()).unwrap());
@@ -443,7 +675,7 @@ fn expression_result_slots_are_stable_and_queryable() {
 
 #[test]
 fn body_summaries_collect_return_throw_values_and_merge_points() {
-    let parse = parse_text(
+    let parse = parse_valid(
         r#"
             fn sample(flag, mode, err) {
                 if flag { return 1; } else { throw err; }
@@ -484,12 +716,69 @@ fn body_summaries_collect_return_throw_values_and_merge_points() {
 }
 
 #[test]
+fn body_summaries_track_tail_values_for_functions_blocks_and_closures() {
+    let source = r#"
+            fn sample() {
+                let inner = { let value = 1; value };
+                inner
+            }
+
+            let closure = |value| value + 1;
+        "#;
+    let parse = parse_valid(source);
+    let hir = lower_file(&parse);
+
+    let function_symbol = hir
+        .symbols
+        .iter()
+        .enumerate()
+        .find_map(|(index, symbol)| {
+            (symbol.name == "sample" && symbol.kind == SymbolKind::Function)
+                .then_some(crate::SymbolId(index as u32))
+        })
+        .expect("expected `sample` symbol");
+    let function_body = hir
+        .body_of(function_symbol)
+        .expect("expected function body");
+    let function_tail = hir
+        .body_tail_value(function_body)
+        .expect("expected function tail value");
+    assert_eq!(hir.expr(function_tail).kind, ExprKind::Name);
+
+    let block_expr = hir
+        .expr_at_offset(TextSize::from(
+            u32::try_from(source.find("{ let value = 1; value }").unwrap()).unwrap(),
+        ))
+        .expect("expected block expression");
+    let block_body = hir
+        .block_expr(block_expr)
+        .expect("expected block info")
+        .body;
+    assert!(hir.body_tail_value(block_body).is_some());
+
+    let closure_expr = hir
+        .expr_at_offset(TextSize::from(
+            u32::try_from(source.find("|value|").unwrap()).unwrap(),
+        ))
+        .expect("expected closure expression");
+    let closure_body = hir
+        .closure_expr(closure_expr)
+        .expect("expected closure info")
+        .body;
+    assert_eq!(
+        hir.body_tail_value(closure_body)
+            .map(|expr| hir.expr(expr).kind),
+        Some(ExprKind::Binary)
+    );
+}
+
+#[test]
 fn type_query_helpers_support_external_signatures_and_slot_assignments() {
     let source = r#"
             fn helper(value) { value }
             let result = helper(1);
         "#;
-    let parse = parse_text(source);
+    let parse = parse_valid(source);
     let hir = lower_file(&parse);
 
     let helper_symbol = hir
@@ -541,8 +830,33 @@ fn type_query_helpers_support_external_signatures_and_slot_assignments() {
 }
 
 #[test]
+fn call_signature_falls_back_to_external_names_for_unresolved_builtin_calls() {
+    let source = r#"
+            let bytes = blob(10);
+        "#;
+    let parse = parse_valid(source);
+    let hir = lower_file(&parse);
+    let call_id = crate::CallSiteId(0);
+
+    let mut external = ExternalSignatureIndex::default();
+    external.insert(
+        "blob",
+        TypeRef::Function(FunctionTypeRef {
+            params: vec![TypeRef::Int],
+            ret: Box::new(TypeRef::Blob),
+        }),
+    );
+
+    let signature = hir
+        .call_signature(call_id, Some(&external))
+        .expect("expected call signature for builtin function");
+    assert_eq!(signature.params, vec![TypeRef::Int]);
+    assert_eq!(*signature.ret, TypeRef::Blob);
+}
+
+#[test]
 fn file_symbol_index_exposes_indexable_symbols_with_container_and_export_metadata() {
-    let parse = parse_text(
+    let parse = parse_valid(
         r#"
             const LIMIT = 1;
 
@@ -596,7 +910,7 @@ fn file_symbol_index_exposes_indexable_symbols_with_container_and_export_metadat
 
 #[test]
 fn file_backed_symbol_identity_captures_container_path_and_export_status() {
-    let parse = parse_text(
+    let parse = parse_valid(
         r#"
             fn outer() {
                 fn inner() {}
@@ -639,7 +953,7 @@ fn file_backed_symbol_identity_captures_container_path_and_export_status() {
 
 #[test]
 fn stable_symbol_keys_distinguish_duplicate_indexable_symbols() {
-    let parse = parse_text(
+    let parse = parse_valid(
         r#"
             fn outer() {
                 fn inner() {}
@@ -661,7 +975,7 @@ fn stable_symbol_keys_distinguish_duplicate_indexable_symbols() {
 
 #[test]
 fn module_graph_index_preserves_import_and_export_linkage_shapes() {
-    let parse = parse_text(
+    let parse = parse_valid(
         r#"
             fn local_module() {}
             import "crypto" as secure;
@@ -717,7 +1031,7 @@ fn editable_rename_occurrence_classifies_definitions_and_references_only() {
             let value = helper();
             let text = "helper";
         "#;
-    let parse = parse_text(source);
+    let parse = parse_valid(source);
     let hir = lower_file(&parse);
 
     let def_offset = TextSize::from(u32::try_from(source.find("helper").unwrap()).unwrap());
@@ -739,7 +1053,7 @@ fn editable_rename_occurrence_classifies_definitions_and_references_only() {
 
 #[test]
 fn rename_plan_tracks_occurrences_aliases_and_preflight_issues() {
-    let parse = parse_text(
+    let parse = parse_valid(
         r#"
             let taken = 0;
             fn helper() {}
@@ -807,7 +1121,7 @@ fn rename_plan_tracks_occurrences_aliases_and_preflight_issues() {
 
 #[test]
 fn rename_preflight_reports_duplicate_definitions_in_same_scope() {
-    let parse = parse_text(
+    let parse = parse_valid(
         r#"
             let taken = 1;
             let value = 2;
@@ -845,7 +1159,7 @@ fn offset_based_query_helpers_support_navigation_workflows() {
 
             let result = helper(1);
         "#;
-    let parse = parse_text(source);
+    let parse = parse_valid(source);
     let hir = lower_file(&parse);
 
     let helper_decl_offset = TextSize::from(u32::try_from(source.find("helper").unwrap()).unwrap());
@@ -895,7 +1209,7 @@ fn navigation_helpers_return_single_file_definition_and_reference_results() {
 
             let result = helper(1);
         "#;
-    let parse = parse_text(source);
+    let parse = parse_valid(source);
     let hir = lower_file(&parse);
 
     let helper_decl_offset = TextSize::from(u32::try_from(source.find("helper").unwrap()).unwrap());
@@ -956,7 +1270,7 @@ fn completion_symbols_follow_visible_scope_and_preserve_metadata() {
                 }
             }
         "#;
-    let parse = parse_text(source);
+    let parse = parse_valid(source);
     let hir = lower_file(&parse);
     let value_use_offset =
         TextSize::from(u32::try_from(source.rfind("value + arg").unwrap()).unwrap());
@@ -1001,7 +1315,7 @@ fn member_completion_uses_doc_fields_and_object_literal_shapes() {
             user.name;
             temp.enabled;
         "#;
-    let parse = parse_text(source);
+    let parse = parse_valid(source);
     let hir = lower_file(&parse);
 
     let user_symbol = hir
@@ -1060,7 +1374,7 @@ fn parameter_hints_follow_resolved_function_calls() {
 
             let result = check(1, value);
         "#;
-    let parse = parse_text(source);
+    let parse = parse_valid(source);
     let hir = lower_file(&parse);
 
     let first_arg_offset = TextSize::from(u32::try_from(source.find("1, value").unwrap()).unwrap());
@@ -1099,8 +1413,31 @@ fn parameter_hints_follow_resolved_function_calls() {
 }
 
 #[test]
+fn import_alias_calls_retain_resolved_callee_without_local_parameter_bindings() {
+    let parse = parse_valid(
+        r#"
+            import shared_tools as tools;
+
+            tools(1);
+        "#,
+    );
+    let hir = lower_file(&parse);
+
+    let call = hir.calls.first().expect("expected call");
+    let alias = hir
+        .imports
+        .first()
+        .and_then(|import| import.alias)
+        .expect("expected import alias");
+
+    assert_eq!(call.resolved_callee, Some(alias));
+    assert_eq!(hir.symbol(alias).kind, SymbolKind::ImportAlias);
+    assert_eq!(call.parameter_bindings, vec![None]);
+}
+
+#[test]
 fn symbol_reverse_references_follow_scope_resolution() {
-    let parse = parse_text(
+    let parse = parse_valid(
         r#"
             let value = 1;
             {
@@ -1135,9 +1472,9 @@ fn symbol_reverse_references_follow_scope_resolution() {
 
 #[test]
 fn global_path_root_does_not_create_name_reference() {
-    let parse = parse_text(
+    let parse = parse_valid(
         r#"
-            fn call() {
+            fn run() {
                 global::crypto::sha256
             }
         "#,
@@ -1161,7 +1498,7 @@ fn global_path_root_does_not_create_name_reference() {
 
 #[test]
 fn lowering_models_this_as_dedicated_reference_kind() {
-    let parse = parse_text(
+    let parse = parse_valid(
         r#"
             fn sample() {
                 this.value;
@@ -1182,7 +1519,7 @@ fn lowering_models_this_as_dedicated_reference_kind() {
 
 #[test]
 fn body_control_flow_accumulates_nested_blocks_without_crossing_closures() {
-    let parse = parse_text(
+    let parse = parse_valid(
         r#"
             fn outer(flag) {
                 while flag {
@@ -1265,7 +1602,7 @@ fn control_flow_events_capture_optional_value_ranges() {
                 throw err;
             }
         "#;
-    let parse = parse_text(source);
+    let parse = parse_valid(source);
     let hir = lower_file(&parse);
     let function_body = hir
         .bodies
@@ -1327,7 +1664,7 @@ fn body_summaries_track_loop_targets_fallthrough_and_unreachable_ranges() {
                 let function_unreachable = 2;
             }
         "#;
-    let parse = parse_text(source);
+    let parse = parse_valid(source);
     let hir = lower_file(&parse);
 
     let function_body = hir
@@ -1373,7 +1710,7 @@ fn body_summaries_track_loop_targets_fallthrough_and_unreachable_ranges() {
 
 #[test]
 fn document_and_workspace_symbol_apis_expose_indexing_handoff() {
-    let parse = parse_text(
+    let parse = parse_valid(
         r#"
             fn outer() {
                 fn inner() {}
@@ -1411,7 +1748,7 @@ fn document_and_workspace_symbol_apis_expose_indexing_handoff() {
 
 #[test]
 fn project_completion_symbols_filter_out_visible_locals() {
-    let parse = parse_text(
+    let parse = parse_valid(
         r#"
             fn helper() {}
             fn use_it() {
@@ -1434,7 +1771,7 @@ fn project_completion_symbols_filter_out_visible_locals() {
         .unwrap(),
     );
 
-    let project_parse = parse_text(
+    let project_parse = parse_valid(
         r#"
             fn helper() {}
             fn external_api() {}
@@ -1454,7 +1791,7 @@ fn project_completion_symbols_filter_out_visible_locals() {
 
 #[test]
 fn semantic_diagnostics_report_unresolved_names() {
-    let parse = parse_text(
+    let parse = parse_valid(
         r#"
             fn sample() {
                 missing_name;
@@ -1473,7 +1810,7 @@ fn semantic_diagnostics_report_unresolved_names() {
 
 #[test]
 fn semantic_diagnostics_report_duplicate_definitions_in_same_scope() {
-    let parse = parse_text(
+    let parse = parse_valid(
         r#"
             let value = 1;
             let value = 2;
@@ -1516,7 +1853,7 @@ fn semantic_diagnostics_report_duplicate_definitions_in_same_scope() {
 
 #[test]
 fn semantic_diagnostics_report_unresolved_imports_and_exports() {
-    let parse = parse_text(
+    let parse = parse_valid(
         r#"
             import missing_module as secure;
             export missing_value as exposed;
@@ -1559,7 +1896,7 @@ fn semantic_diagnostics_report_unresolved_imports_and_exports() {
 
 #[test]
 fn semantic_diagnostics_report_unused_symbols() {
-    let parse = parse_text(
+    let parse = parse_valid(
         r#"
             import "crypto" as secure;
             const KEPT = 1;
@@ -1610,7 +1947,7 @@ fn semantic_diagnostics_report_unused_symbols() {
 
 #[test]
 fn semantic_diagnostics_report_inconsistent_function_doc_types() {
-    let parse = parse_text(
+    let parse = parse_valid(
         r#"
             /// @type int
             /// @param first int
@@ -1656,7 +1993,7 @@ fn semantic_diagnostics_report_inconsistent_function_doc_types() {
 
 #[test]
 fn semantic_diagnostics_report_function_doc_tags_on_non_functions() {
-    let parse = parse_text(
+    let parse = parse_valid(
         r#"
             /// @param value int
             /// @return int
@@ -1680,7 +2017,7 @@ fn semantic_diagnostics_report_function_doc_tags_on_non_functions() {
 
 #[test]
 fn lowering_uses_dedicated_catch_and_switch_arm_scopes() {
-    let parse = parse_text(
+    let parse = parse_valid(
         r#"
             try { throw err; } catch (error) { error; }
 
@@ -1707,7 +2044,7 @@ fn lowering_uses_dedicated_catch_and_switch_arm_scopes() {
 
 #[test]
 fn lowering_records_shadowing_and_duplicate_metadata() {
-    let parse = parse_text(
+    let parse = parse_valid(
         r#"
             let value = 1;
             {

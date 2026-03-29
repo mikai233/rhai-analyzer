@@ -73,6 +73,39 @@ This checklist tracks what `rhai-db` already provides and what still needs to la
 - [x] custom syntax / reserved-symbol policy inputs from project configuration
 - [x] workspace-scoped view of engine options and enabled capabilities
 - [x] clean boundary between file-local HIR facts and project/engine-provided facts
+- [x] builtin/global Rhai function inventory for analyzer-known functions like `blob`, `timestamp`, and `Fn`
+
+### Type Inference
+
+- [x] builtin/host signature knowledge available as inference seeds
+- [x] per-file inferred type cache for expressions and symbols
+- [x] snapshot query APIs for `expr -> inferred type` and `symbol -> inferred type`
+- [x] builtin result typing for `blob`, `timestamp`, and `Fn`
+- [x] local function return inference from explicit `return` value flows
+- [x] local variable / alias propagation through initializer and assignment flows
+- [x] intra-file parameter type propagation from resolved call arguments into local function parameters
+- [x] literal-driven inference for core Rhai literals (`int`, `float`, `string`, `char`, `bool`)
+- [x] operator-driven inference for core unary/binary expressions
+- [x] implicit tail-expression return inference for functions / closures
+- [x] fallthrough-aware result joins for `if`, `switch`, block, function, and closure bodies
+- [x] field / index / member-aware inference for object literals, maps, arrays, and host-method access patterns
+- [x] import/export seed propagation and direct imported-call parameter seeding across files
+- [x] host-overload resolution beyond simple name/arity matching
+- [x] explicit inference coverage for every lowered Rhai expression kind, including `assign`, `paren`, `path`, `interpolated string`, `while`, `loop`, `for`, and `do`
+- [x] mutation-aware value-flow tracking for simple symbol-receiver member/index writes such as `obj.field = expr` and `arr[i] = expr`
+- [ ] nested/compound mutation tracking for non-trivial lvalues such as `root.child.field = expr`, `obj.field += 1`, and `arr[i] ??= value`
+- [ ] flow-sensitive symbol-state inference across branches and loops instead of only joining final expression results
+- [ ] narrowing / refinement rules for truthiness, nullability, `is`-style checks, and other Rhai-specific control-flow guards
+- [ ] shape-preserving object typing beyond `map<string, union<...>>` so field lookups stay precise after aliasing and partial updates
+- [ ] expected-type propagation from declarations, parameter annotations, return positions, and overload candidates into child expressions
+- [ ] closure inference that can derive parameter and return types from expected function signatures and higher-order call sites
+- [ ] first-class `Fn` / function-pointer inference that tracks referenced callee signatures instead of only the opaque `Fn` type
+- [ ] generic/applied-type substitution and type-argument inference for host APIs and future analyzer-known abstractions
+- [ ] builtin container/iterator semantics for common Rhai patterns such as loop element binding, range iteration, and collection transforms
+- [ ] path-qualified and module-qualified call inference through `foo::bar`, imports, re-exports, and alias chains
+- [ ] full workspace call-graph propagation across local calls, imported exports, re-exports, and recursive strongly-connected components
+- [ ] ambiguity tracking so incompatible candidate types can be surfaced distinctly from plain `unknown`
+- [ ] regression coverage that exercises each inference rule with single-file, cross-file, and incremental-update scenarios
 
 ### Query Surface for Downstream Crates
 

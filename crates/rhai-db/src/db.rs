@@ -14,16 +14,17 @@ use rhai_syntax::{Parse, SyntaxError, TextSize, parse_text};
 use rhai_vfs::{FileId, VirtualFileSystem, normalize_path};
 
 use crate::change::{ChangeSet, FileChange};
+use crate::infer::{infer_file_types, join_types};
 use crate::project::build_project_semantics;
 use crate::types::{
     AutoImportCandidate, CachedFileAnalysis, CachedMemberCompletionSet, CachedNavigationTarget,
     ChangeImpact, CompletionInputs, DatabaseDebugView, DebugFileAnalysis, FileAnalysisDependencies,
-    FilePerformanceStats, HirInputSlot, HostModule, HostType, IndexInputSlot, InvalidationReason,
-    LinkedModuleImport, LocatedModuleExport, LocatedModuleGraph, LocatedNavigationTarget,
-    LocatedProjectReference, LocatedRenamePreflightIssue, LocatedSymbolIdentity,
-    LocatedWorkspaceSymbol, ParseInputSlot, PerFileQuerySupport, PerformanceStats,
-    ProjectDiagnostic, ProjectDiagnosticKind, ProjectReferenceKind, ProjectReferences,
-    ProjectRenamePlan, ProjectSemantics, RemovedFileImpact, SymbolIdentityKey,
+    FilePerformanceStats, FileTypeInference, HirInputSlot, HostModule, HostType, IndexInputSlot,
+    InvalidationReason, LinkedModuleImport, LocatedModuleExport, LocatedModuleGraph,
+    LocatedNavigationTarget, LocatedProjectReference, LocatedRenamePreflightIssue,
+    LocatedSymbolIdentity, LocatedWorkspaceSymbol, ParseInputSlot, PerFileQuerySupport,
+    PerformanceStats, ProjectDiagnostic, ProjectDiagnosticKind, ProjectReferenceKind,
+    ProjectReferences, ProjectRenamePlan, ProjectSemantics, RemovedFileImpact, SymbolIdentityKey,
     WorkspaceDependencyGraph, WorkspaceFileInfo, WorkspaceIndexes,
 };
 
@@ -107,6 +108,17 @@ impl DatabaseSnapshot {
 
     pub fn external_signatures(&self) -> &ExternalSignatureIndex {
         &self.project_semantics.external_signatures
+    }
+
+    pub fn global_functions(&self) -> &[crate::HostFunction] {
+        &self.project_semantics.global_functions
+    }
+
+    pub fn global_function(&self, name: &str) -> Option<&crate::HostFunction> {
+        self.project_semantics
+            .global_functions
+            .iter()
+            .find(|function| function.name == name)
     }
 
     pub fn host_modules(&self) -> &[HostModule] {
@@ -223,6 +235,34 @@ impl DatabaseSnapshot {
         self.analysis
             .get(&file_id)
             .map(|analysis| Arc::clone(&analysis.module_graph))
+    }
+
+    pub fn type_inference(&self, file_id: FileId) -> Option<&FileTypeInference> {
+        self.analysis
+            .get(&file_id)
+            .map(|analysis| analysis.type_inference.as_ref())
+    }
+
+    pub fn inferred_expr_type_at(&self, file_id: FileId, offset: TextSize) -> Option<&TypeRef> {
+        let analysis = self.analysis.get(&file_id)?;
+        analysis
+            .hir
+            .expr_type_at_offset(offset, &analysis.type_inference.expr_types)
+    }
+
+    pub fn inferred_symbol_type(&self, file_id: FileId, symbol: SymbolId) -> Option<&TypeRef> {
+        let analysis = self.analysis.get(&file_id)?;
+        analysis
+            .type_inference
+            .symbol_types
+            .get(&symbol)
+            .or_else(|| analysis.hir.declared_symbol_type(symbol))
+    }
+
+    pub fn inferred_symbol_type_at(&self, file_id: FileId, offset: TextSize) -> Option<&TypeRef> {
+        let analysis = self.analysis.get(&file_id)?;
+        let symbol = analysis.hir.definition_at_offset(offset)?;
+        self.inferred_symbol_type(file_id, symbol)
     }
 
     pub fn query_support(&self, file_id: FileId) -> Option<&PerFileQuerySupport> {
@@ -770,7 +810,7 @@ impl DatabaseSnapshot {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct AnalyzerDatabase {
     vfs: VirtualFileSystem,
     project: ProjectConfig,
@@ -785,6 +825,29 @@ pub struct AnalyzerDatabase {
     query_support_tickets: HashMap<FileId, u64>,
     stats: PerformanceStats,
     pub(crate) workspace_indexes: WorkspaceIndexes,
+}
+
+impl Default for AnalyzerDatabase {
+    fn default() -> Self {
+        let project = ProjectConfig::default();
+        let project_semantics = Arc::new(build_project_semantics(&project));
+
+        Self {
+            vfs: VirtualFileSystem::default(),
+            project,
+            revision: 0,
+            project_revision: 0,
+            next_analysis_revision: 0,
+            next_query_support_ticket: 0,
+            project_semantics,
+            analysis: HashMap::new(),
+            file_stats: HashMap::new(),
+            query_support_budget: None,
+            query_support_tickets: HashMap::new(),
+            stats: PerformanceStats::default(),
+            workspace_indexes: WorkspaceIndexes::default(),
+        }
+    }
 }
 
 impl AnalyzerDatabase {
@@ -837,6 +900,7 @@ impl AnalyzerDatabase {
             self.query_support_tickets.clear();
             self.rebuild_all_file_analysis(InvalidationReason::ProjectChanged);
             self.workspace_indexes.rebuild_from_analysis(&self.analysis);
+            self.rebuild_workspace_type_inference();
 
             let rebuilt_files = sorted_file_ids(self.analysis.keys().copied().collect());
             let evicted_query_support_files = self.enforce_query_support_budget();
@@ -873,6 +937,10 @@ impl AnalyzerDatabase {
                 &self.analysis,
             );
             rebuilt_files.push(file_id);
+        }
+
+        if !rebuilt_files.is_empty() || !removed_files.is_empty() {
+            self.rebuild_workspace_type_inference();
         }
 
         let evicted_query_support_files = self.enforce_query_support_budget();
@@ -995,6 +1063,13 @@ impl AnalyzerDatabase {
         let document_symbols = Arc::<[DocumentSymbol]>::from(hir.document_symbols());
         let workspace_symbols = Arc::<[WorkspaceSymbol]>::from(hir.workspace_symbols());
         let module_graph = Arc::new(hir.module_graph_index());
+        let type_inference = Arc::new(infer_file_types(
+            &hir,
+            &self.project_semantics.external_signatures,
+            &self.project_semantics.global_functions,
+            &self.project_semantics.types,
+            &HashMap::new(),
+        ));
         self.stats.index_rebuilds += 1;
         self.stats.total_index_time += index_started.elapsed();
 
@@ -1034,6 +1109,7 @@ impl AnalyzerDatabase {
                 document_symbols,
                 workspace_symbols,
                 module_graph,
+                type_inference,
                 dependencies,
                 query_support: None,
             }),
@@ -1049,6 +1125,149 @@ impl AnalyzerDatabase {
         entry.lower_rebuilds += 1;
         entry.index_rebuilds += 1;
         entry.query_support_cached = false;
+    }
+
+    fn rebuild_workspace_type_inference(&mut self) {
+        if self.analysis.is_empty() {
+            return;
+        }
+
+        let max_iterations = self.analysis.len()
+            + self
+                .workspace_indexes
+                .linked_imports
+                .values()
+                .map(|imports| imports.len())
+                .sum::<usize>()
+            + 1;
+        let mut applied_seeds = HashMap::<FileId, HashMap<SymbolId, TypeRef>>::new();
+
+        for _ in 0..max_iterations.max(1) {
+            let next_seeds = self.derive_workspace_type_seeds();
+            let mut changed_files = BTreeMap::<FileId, Option<HashMap<SymbolId, TypeRef>>>::new();
+
+            for &file_id in applied_seeds.keys() {
+                changed_files.entry(file_id).or_insert(None);
+            }
+            for (&file_id, seeds) in &next_seeds {
+                changed_files.insert(file_id, Some(seeds.clone()));
+            }
+
+            let mut changed = false;
+            for (file_id, maybe_seeds) in changed_files {
+                let next = maybe_seeds.unwrap_or_default();
+                if applied_seeds.get(&file_id) == Some(&next) {
+                    continue;
+                }
+
+                let Some(existing) = self.analysis.get(&file_id).cloned() else {
+                    continue;
+                };
+                let type_inference = Arc::new(infer_file_types(
+                    &existing.hir,
+                    &self.project_semantics.external_signatures,
+                    &self.project_semantics.global_functions,
+                    &self.project_semantics.types,
+                    &next,
+                ));
+
+                self.analysis.insert(
+                    file_id,
+                    Arc::new(CachedFileAnalysis {
+                        type_inference,
+                        ..(*existing).clone()
+                    }),
+                );
+                if next.is_empty() {
+                    applied_seeds.remove(&file_id);
+                } else {
+                    applied_seeds.insert(file_id, next);
+                }
+                changed = true;
+            }
+
+            if !changed {
+                break;
+            }
+        }
+    }
+
+    fn derive_workspace_type_seeds(&self) -> HashMap<FileId, HashMap<SymbolId, TypeRef>> {
+        let mut seeds = HashMap::<FileId, HashMap<SymbolId, TypeRef>>::new();
+
+        for (&importer_file_id, linked_imports) in self.workspace_indexes.linked_imports.iter() {
+            let Some(importer_analysis) = self.analysis.get(&importer_file_id) else {
+                continue;
+            };
+
+            for linked_import in linked_imports.iter() {
+                if linked_import.exports.len() != 1 {
+                    continue;
+                }
+
+                let Some(import_alias) = importer_analysis.hir.import(linked_import.import).alias
+                else {
+                    continue;
+                };
+                let export = &linked_import.exports[0];
+                let Some((provider_symbol, exported_ty)) = self.exported_symbol_type(export) else {
+                    continue;
+                };
+
+                merge_seed_type(
+                    &mut seeds,
+                    importer_file_id,
+                    import_alias,
+                    exported_ty.clone(),
+                );
+
+                let Some(provider_analysis) = self.analysis.get(&export.file_id) else {
+                    continue;
+                };
+                if provider_analysis.hir.symbol(provider_symbol).kind
+                    != rhai_hir::SymbolKind::Function
+                {
+                    continue;
+                }
+
+                let parameters = provider_analysis.hir.function_parameters(provider_symbol);
+                for call in importer_analysis
+                    .hir
+                    .calls
+                    .iter()
+                    .filter(|call| call.resolved_callee == Some(import_alias))
+                {
+                    for (index, parameter) in parameters.iter().copied().enumerate() {
+                        let Some(arg_expr) = call.arg_exprs.get(index).copied() else {
+                            continue;
+                        };
+                        let Some(arg_ty) = importer_analysis
+                            .type_inference
+                            .expr_types
+                            .get(importer_analysis.hir.expr_result_slot(arg_expr))
+                            .cloned()
+                        else {
+                            continue;
+                        };
+                        merge_seed_type(&mut seeds, export.file_id, parameter, arg_ty);
+                    }
+                }
+            }
+        }
+
+        seeds
+    }
+
+    fn exported_symbol_type(&self, export: &LocatedModuleExport) -> Option<(SymbolId, TypeRef)> {
+        let target = export.export.target.as_ref()?;
+        let analysis = self.analysis.get(&export.file_id)?;
+        let ty = analysis
+            .type_inference
+            .symbol_types
+            .get(&target.symbol)
+            .cloned()
+            .or_else(|| analysis.hir.declared_symbol_type(target.symbol).cloned())?;
+        Some((target.symbol, ty))
     }
 
     fn ensure_query_support(&mut self, file_id: FileId) -> bool {
@@ -1344,6 +1563,12 @@ fn project_semantic_diagnostics(
     let mut projected = Vec::new();
 
     for diagnostic in diagnostics {
+        if diagnostic.kind == SemanticDiagnosticKind::UnresolvedName
+            && unresolved_name_is_known_external(snapshot, hir, diagnostic)
+        {
+            continue;
+        }
+
         if diagnostic.kind != SemanticDiagnosticKind::UnresolvedImport {
             projected.push(ProjectDiagnostic {
                 kind: ProjectDiagnosticKind::Semantic,
@@ -1412,6 +1637,21 @@ fn project_semantic_diagnostics(
     }
 
     projected
+}
+
+fn unresolved_name_is_known_external(
+    snapshot: &DatabaseSnapshot,
+    hir: &FileHir,
+    diagnostic: &SemanticDiagnostic,
+) -> bool {
+    let Some(reference_id) = hir
+        .reference_at(diagnostic.range)
+        .or_else(|| hir.reference_at_offset(diagnostic.range.start()))
+    else {
+        return false;
+    };
+    let name = hir.reference(reference_id).name.as_str();
+    snapshot.external_signatures().get(name).is_some() || snapshot.global_function(name).is_some()
 }
 
 fn import_index_for_diagnostic(hir: &FileHir, diagnostic: &SemanticDiagnostic) -> Option<usize> {
@@ -1758,6 +1998,20 @@ fn sorted_file_ids(mut file_ids: Vec<FileId>) -> Vec<FileId> {
     file_ids.sort_by_key(|file_id| file_id.0);
     file_ids.dedup_by_key(|file_id| file_id.0);
     file_ids
+}
+
+fn merge_seed_type(
+    seeds: &mut HashMap<FileId, HashMap<SymbolId, TypeRef>>,
+    file_id: FileId,
+    symbol: SymbolId,
+    ty: TypeRef,
+) {
+    let file_seeds = seeds.entry(file_id).or_default();
+    let merged = match file_seeds.get(&symbol) {
+        Some(current) => join_types(current, &ty),
+        None => ty,
+    };
+    file_seeds.insert(symbol, merged);
 }
 
 fn resolved_source_roots(project: &ProjectConfig) -> Vec<PathBuf> {

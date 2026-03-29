@@ -2,6 +2,7 @@ use std::path::Path;
 use std::ptr;
 use std::sync::Arc;
 
+use rhai_hir::{FunctionTypeRef, SymbolKind, TypeRef};
 use rhai_project::ProjectConfig;
 use rhai_syntax::TextSize;
 use rhai_vfs::DocumentVersion;
@@ -113,6 +114,7 @@ fn snapshot_exposes_project_semantics() {
     });
 
     let snapshot = db.snapshot();
+    assert_workspace_files_have_no_syntax_diagnostics(&snapshot);
 
     assert_eq!(snapshot.disabled_symbols(), ["eval"]);
     assert_eq!(snapshot.custom_syntaxes(), ["unless"]);
@@ -140,7 +142,960 @@ fn snapshot_exposes_project_semantics() {
             ret: Box::new(rhai_hir::TypeRef::Bool),
         }))
     );
+    assert_eq!(
+        snapshot.external_signatures().get("blob"),
+        Some(&rhai_hir::TypeRef::Function(rhai_hir::FunctionTypeRef {
+            params: vec![rhai_hir::TypeRef::Int],
+            ret: Box::new(rhai_hir::TypeRef::Blob),
+        }))
+    );
+    assert_eq!(
+        snapshot.external_signatures().get("timestamp"),
+        Some(&rhai_hir::TypeRef::Function(rhai_hir::FunctionTypeRef {
+            params: vec![],
+            ret: Box::new(rhai_hir::TypeRef::Timestamp),
+        }))
+    );
+    assert_eq!(
+        snapshot.external_signatures().get("Fn"),
+        Some(&rhai_hir::TypeRef::Function(rhai_hir::FunctionTypeRef {
+            params: vec![rhai_hir::TypeRef::String],
+            ret: Box::new(rhai_hir::TypeRef::FnPtr),
+        }))
+    );
+    assert_eq!(snapshot.global_functions().len(), 3);
+    assert_eq!(snapshot.global_functions()[0].name, "blob");
+    assert_eq!(snapshot.global_functions()[1].name, "timestamp");
+    assert_eq!(snapshot.global_functions()[2].name, "Fn");
+    assert_eq!(snapshot.global_functions()[0].overloads.len(), 3);
     assert_eq!(snapshot.external_signatures().get("math::parse"), None);
+}
+
+#[test]
+fn snapshot_infers_local_function_return_and_variable_flow_types() {
+    let mut db = AnalyzerDatabase::default();
+    db.apply_change(ChangeSet::single_file(
+        "main.rhai",
+        r#"
+            fn make_blob() {
+                return blob(10);
+            }
+
+            fn run() {
+                let value = make_blob();
+                let alias = value;
+            }
+        "#,
+        DocumentVersion(1),
+    ));
+
+    let snapshot = db.snapshot();
+    assert_workspace_files_have_no_syntax_diagnostics(&snapshot);
+    let file_id = snapshot
+        .vfs()
+        .file_id(Path::new("main.rhai"))
+        .expect("expected file id");
+    let hir = snapshot.hir(file_id).expect("expected hir");
+    let text = snapshot.file_text(file_id).expect("expected text");
+
+    let make_blob = symbol_id_by_name(&hir, "make_blob", SymbolKind::Function);
+    let value = symbol_id_by_name(&hir, "value", SymbolKind::Variable);
+    let alias = symbol_id_by_name(&hir, "alias", SymbolKind::Variable);
+
+    assert_eq!(
+        snapshot.inferred_symbol_type(file_id, make_blob),
+        Some(&TypeRef::Function(FunctionTypeRef {
+            params: Vec::new(),
+            ret: Box::new(TypeRef::Blob),
+        }))
+    );
+    assert_eq!(
+        snapshot.inferred_symbol_type(file_id, value),
+        Some(&TypeRef::Blob)
+    );
+    assert_eq!(
+        snapshot.inferred_symbol_type(file_id, alias),
+        Some(&TypeRef::Blob)
+    );
+
+    let call_offset = offset_in(&text, "make_blob();") + TextSize::from(9);
+    assert_eq!(
+        snapshot.inferred_expr_type_at(file_id, call_offset),
+        Some(&TypeRef::Blob)
+    );
+}
+
+#[test]
+fn snapshot_propagates_argument_types_into_local_function_parameters() {
+    let mut db = AnalyzerDatabase::default();
+    db.apply_change(ChangeSet::single_file(
+        "main.rhai",
+        r#"
+            fn echo(value) {
+                return value;
+            }
+
+            fn run() {
+                let result = echo(blob(10));
+            }
+        "#,
+        DocumentVersion(1),
+    ));
+
+    let snapshot = db.snapshot();
+    assert_workspace_files_have_no_syntax_diagnostics(&snapshot);
+    let file_id = snapshot
+        .vfs()
+        .file_id(Path::new("main.rhai"))
+        .expect("expected file id");
+    let hir = snapshot.hir(file_id).expect("expected hir");
+
+    let echo = symbol_id_by_name(&hir, "echo", SymbolKind::Function);
+    let value = symbol_id_by_name(&hir, "value", SymbolKind::Parameter);
+    let result = symbol_id_by_name(&hir, "result", SymbolKind::Variable);
+
+    assert_eq!(
+        snapshot.inferred_symbol_type(file_id, value),
+        Some(&TypeRef::Blob)
+    );
+    assert_eq!(
+        snapshot.inferred_symbol_type(file_id, result),
+        Some(&TypeRef::Blob)
+    );
+    assert_eq!(
+        snapshot.inferred_symbol_type(file_id, echo),
+        Some(&TypeRef::Function(FunctionTypeRef {
+            params: vec![TypeRef::Blob],
+            ret: Box::new(TypeRef::Blob),
+        }))
+    );
+}
+
+#[test]
+fn snapshot_infers_literal_and_operator_expression_types() {
+    let mut db = AnalyzerDatabase::default();
+    db.apply_change(ChangeSet::single_file(
+        "main.rhai",
+        r#"
+            let count = 1 + 2;
+            let mixed = 1 + 2.0;
+            let text = "a" + "b";
+            let flag = !false;
+            let window = 1..10;
+            let fallback = "a" ?? "b";
+        "#,
+        DocumentVersion(1),
+    ));
+
+    let snapshot = db.snapshot();
+    assert_workspace_files_have_no_syntax_diagnostics(&snapshot);
+    let file_id = snapshot
+        .vfs()
+        .file_id(Path::new("main.rhai"))
+        .expect("expected file id");
+    let hir = snapshot.hir(file_id).expect("expected hir");
+
+    let count = symbol_id_by_name(&hir, "count", SymbolKind::Variable);
+    let mixed = symbol_id_by_name(&hir, "mixed", SymbolKind::Variable);
+    let text = symbol_id_by_name(&hir, "text", SymbolKind::Variable);
+    let flag = symbol_id_by_name(&hir, "flag", SymbolKind::Variable);
+    let window = symbol_id_by_name(&hir, "window", SymbolKind::Variable);
+    let fallback = symbol_id_by_name(&hir, "fallback", SymbolKind::Variable);
+
+    assert_eq!(
+        snapshot.inferred_symbol_type(file_id, count),
+        Some(&TypeRef::Int)
+    );
+    assert_eq!(
+        snapshot.inferred_symbol_type(file_id, mixed),
+        Some(&TypeRef::Float)
+    );
+    assert_eq!(
+        snapshot.inferred_symbol_type(file_id, text),
+        Some(&TypeRef::String)
+    );
+    assert_eq!(
+        snapshot.inferred_symbol_type(file_id, flag),
+        Some(&TypeRef::Bool)
+    );
+    assert_eq!(
+        snapshot.inferred_symbol_type(file_id, window),
+        Some(&TypeRef::Range)
+    );
+    assert_eq!(
+        snapshot.inferred_symbol_type(file_id, fallback),
+        Some(&TypeRef::String)
+    );
+}
+
+#[test]
+fn snapshot_infers_assignment_paren_path_and_interpolated_string_types() {
+    let mut db = AnalyzerDatabase::default();
+    db.apply_change(ChangeSet {
+        files: vec![FileChange {
+            path: "main.rhai".into(),
+            text: r#"
+                let value = 1;
+                let assigned = (value = 2);
+                let grouped = (assigned);
+                let pi = global::math::PI;
+                let add = global::math::add;
+                let sum = add(grouped, 3);
+                let message = `sum=${sum}`;
+            "#
+            .to_owned(),
+            version: DocumentVersion(1),
+        }],
+        removed_files: Vec::new(),
+        project: Some(ProjectConfig {
+            modules: [(
+                "math".to_owned(),
+                rhai_project::ModuleSpec {
+                    docs: None,
+                    functions: [(
+                        "add".to_owned(),
+                        vec![rhai_project::FunctionSpec {
+                            signature: "fun(int, int) -> int".to_owned(),
+                            return_type: None,
+                            docs: None,
+                        }],
+                    )]
+                    .into_iter()
+                    .collect(),
+                    constants: [(
+                        "PI".to_owned(),
+                        rhai_project::ConstantSpec {
+                            type_name: "float".to_owned(),
+                            docs: None,
+                        },
+                    )]
+                    .into_iter()
+                    .collect(),
+                },
+            )]
+            .into_iter()
+            .collect(),
+            ..ProjectConfig::default()
+        }),
+    });
+
+    let snapshot = db.snapshot();
+    let file_id = snapshot
+        .vfs()
+        .file_id(Path::new("main.rhai"))
+        .expect("expected main.rhai");
+    let hir = snapshot.hir(file_id).expect("expected hir");
+
+    let assigned = symbol_id_by_name(&hir, "assigned", SymbolKind::Variable);
+    let grouped = symbol_id_by_name(&hir, "grouped", SymbolKind::Variable);
+    let pi = symbol_id_by_name(&hir, "pi", SymbolKind::Variable);
+    let add = symbol_id_by_name(&hir, "add", SymbolKind::Variable);
+    let sum = symbol_id_by_name(&hir, "sum", SymbolKind::Variable);
+    let message = symbol_id_by_name(&hir, "message", SymbolKind::Variable);
+
+    assert_eq!(
+        snapshot.inferred_symbol_type(file_id, assigned),
+        Some(&TypeRef::Int)
+    );
+    assert_eq!(
+        snapshot.inferred_symbol_type(file_id, grouped),
+        Some(&TypeRef::Int)
+    );
+    assert_eq!(
+        snapshot.inferred_symbol_type(file_id, pi),
+        Some(&TypeRef::Float)
+    );
+    assert_eq!(
+        snapshot.inferred_symbol_type(file_id, add),
+        Some(&TypeRef::Function(FunctionTypeRef {
+            params: vec![TypeRef::Int, TypeRef::Int],
+            ret: Box::new(TypeRef::Int),
+        }))
+    );
+    assert_eq!(
+        snapshot.inferred_symbol_type(file_id, sum),
+        Some(&TypeRef::Int)
+    );
+    assert_eq!(
+        snapshot.inferred_symbol_type(file_id, message),
+        Some(&TypeRef::String)
+    );
+}
+
+#[test]
+fn snapshot_infers_tail_return_types_for_functions_and_closures() {
+    let mut db = AnalyzerDatabase::default();
+    db.apply_change(ChangeSet::single_file(
+        "main.rhai",
+        r#"
+            fn choose(flag) {
+                if flag { 1 } else { 2.0 }
+            }
+
+            let mapper = || 1;
+        "#,
+        DocumentVersion(1),
+    ));
+
+    let snapshot = db.snapshot();
+    assert_workspace_files_have_no_syntax_diagnostics(&snapshot);
+    let file_id = snapshot
+        .vfs()
+        .file_id(Path::new("main.rhai"))
+        .expect("expected file id");
+    let hir = snapshot.hir(file_id).expect("expected hir");
+
+    let choose = symbol_id_by_name(&hir, "choose", SymbolKind::Function);
+    let mapper = symbol_id_by_name(&hir, "mapper", SymbolKind::Variable);
+
+    assert_eq!(
+        snapshot.inferred_symbol_type(file_id, choose),
+        Some(&TypeRef::Function(FunctionTypeRef {
+            params: vec![TypeRef::Unknown],
+            ret: Box::new(TypeRef::Union(vec![TypeRef::Int, TypeRef::Float])),
+        }))
+    );
+    assert_eq!(
+        snapshot.inferred_symbol_type(file_id, mapper),
+        Some(&TypeRef::Function(FunctionTypeRef {
+            params: Vec::new(),
+            ret: Box::new(TypeRef::Int),
+        }))
+    );
+}
+
+#[test]
+fn snapshot_infers_loop_expression_result_types() {
+    let mut db = AnalyzerDatabase::default();
+    db.apply_change(ChangeSet::single_file(
+        "main.rhai",
+        r#"
+            let spun = loop { break; };
+            let counted = loop { break 1; };
+            let checked = while false { break; };
+            let iterated = for item in [1, 2, 3] { if item > 1 { break; } };
+            let retried = do { break; } while false;
+        "#,
+        DocumentVersion(1),
+    ));
+
+    let snapshot = db.snapshot();
+    assert_workspace_files_have_no_syntax_diagnostics(&snapshot);
+    let file_id = snapshot
+        .vfs()
+        .file_id(Path::new("main.rhai"))
+        .expect("expected main.rhai");
+    let hir = snapshot.hir(file_id).expect("expected hir");
+
+    let spun = symbol_id_by_name(&hir, "spun", SymbolKind::Variable);
+    let counted = symbol_id_by_name(&hir, "counted", SymbolKind::Variable);
+    let checked = symbol_id_by_name(&hir, "checked", SymbolKind::Variable);
+    let iterated = symbol_id_by_name(&hir, "iterated", SymbolKind::Variable);
+    let retried = symbol_id_by_name(&hir, "retried", SymbolKind::Variable);
+
+    assert_eq!(
+        snapshot.inferred_symbol_type(file_id, spun),
+        Some(&TypeRef::Unit)
+    );
+    assert_eq!(
+        snapshot.inferred_symbol_type(file_id, counted),
+        Some(&TypeRef::Int)
+    );
+    assert_eq!(
+        snapshot.inferred_symbol_type(file_id, checked),
+        Some(&TypeRef::Unit)
+    );
+    assert_eq!(
+        snapshot.inferred_symbol_type(file_id, iterated),
+        Some(&TypeRef::Unit)
+    );
+    assert_eq!(
+        snapshot.inferred_symbol_type(file_id, retried),
+        Some(&TypeRef::Unit)
+    );
+}
+
+#[test]
+fn snapshot_infers_block_index_and_field_expression_types() {
+    let mut db = AnalyzerDatabase::default();
+    db.apply_change(ChangeSet::single_file(
+        "main.rhai",
+        r#"
+            let arr = [1, 2, 3];
+            let picked = arr[0];
+            let obj = #{ value: picked, label: "ok" };
+            let field = obj.value;
+            let tail = { let alias = field; alias };
+        "#,
+        DocumentVersion(1),
+    ));
+
+    let snapshot = db.snapshot();
+    assert_workspace_files_have_no_syntax_diagnostics(&snapshot);
+    let file_id = snapshot
+        .vfs()
+        .file_id(Path::new("main.rhai"))
+        .expect("expected file id");
+    let hir = snapshot.hir(file_id).expect("expected hir");
+
+    let arr = symbol_id_by_name(&hir, "arr", SymbolKind::Variable);
+    let picked = symbol_id_by_name(&hir, "picked", SymbolKind::Variable);
+    let field = symbol_id_by_name(&hir, "field", SymbolKind::Variable);
+    let tail = symbol_id_by_name(&hir, "tail", SymbolKind::Variable);
+
+    assert_eq!(
+        snapshot.inferred_symbol_type(file_id, arr),
+        Some(&TypeRef::Array(Box::new(TypeRef::Int)))
+    );
+    assert_eq!(
+        snapshot.inferred_symbol_type(file_id, picked),
+        Some(&TypeRef::Int)
+    );
+    assert_eq!(
+        snapshot.inferred_symbol_type(file_id, field),
+        Some(&TypeRef::Int)
+    );
+    assert_eq!(
+        snapshot.inferred_symbol_type(file_id, tail),
+        Some(&TypeRef::Int)
+    );
+}
+
+#[test]
+fn snapshot_infers_types_from_simple_field_and_index_mutations() {
+    let mut db = AnalyzerDatabase::default();
+    db.apply_change(ChangeSet::single_file(
+        "main.rhai",
+        r#"
+            let user = #{};
+            user.name = "Ada";
+            let picked = user.name;
+
+            let items = [];
+            items[0] = 1;
+            let first = items[0];
+
+            let scores = #{};
+            scores["best"] = 42;
+            let best = scores["best"];
+        "#,
+        DocumentVersion(1),
+    ));
+
+    let snapshot = db.snapshot();
+    assert_workspace_files_have_no_syntax_diagnostics(&snapshot);
+    let file_id = snapshot
+        .vfs()
+        .file_id(Path::new("main.rhai"))
+        .expect("expected main.rhai");
+    let hir = snapshot.hir(file_id).expect("expected hir");
+
+    let user = symbol_id_by_name(&hir, "user", SymbolKind::Variable);
+    let picked = symbol_id_by_name(&hir, "picked", SymbolKind::Variable);
+    let items = symbol_id_by_name(&hir, "items", SymbolKind::Variable);
+    let first = symbol_id_by_name(&hir, "first", SymbolKind::Variable);
+    let scores = symbol_id_by_name(&hir, "scores", SymbolKind::Variable);
+    let best = symbol_id_by_name(&hir, "best", SymbolKind::Variable);
+
+    assert_eq!(
+        snapshot.inferred_symbol_type(file_id, user),
+        Some(&TypeRef::Map(
+            Box::new(TypeRef::String),
+            Box::new(TypeRef::String),
+        ))
+    );
+    assert_eq!(
+        snapshot.inferred_symbol_type(file_id, picked),
+        Some(&TypeRef::String)
+    );
+    assert_eq!(
+        snapshot.inferred_symbol_type(file_id, items),
+        Some(&TypeRef::Array(Box::new(TypeRef::Int)))
+    );
+    assert_eq!(
+        snapshot.inferred_symbol_type(file_id, first),
+        Some(&TypeRef::Int)
+    );
+    assert_eq!(
+        snapshot.inferred_symbol_type(file_id, scores),
+        Some(&TypeRef::Map(
+            Box::new(TypeRef::String),
+            Box::new(TypeRef::Int),
+        ))
+    );
+    assert_eq!(
+        snapshot.inferred_symbol_type(file_id, best),
+        Some(&TypeRef::Int)
+    );
+}
+
+#[test]
+fn snapshot_infers_nested_field_chains_and_map_style_index_results() {
+    let mut db = AnalyzerDatabase::default();
+    db.apply_change(ChangeSet::single_file(
+        "main.rhai",
+        r#"
+            let root = #{ user: #{ age: 1, name: "rhai" } };
+            let alias = root;
+            let age = alias.user.age;
+            let user = alias.user;
+            let indexed = user["age"];
+        "#,
+        DocumentVersion(1),
+    ));
+
+    let snapshot = db.snapshot();
+    assert_workspace_files_have_no_syntax_diagnostics(&snapshot);
+    let file_id = snapshot
+        .vfs()
+        .file_id(Path::new("main.rhai"))
+        .expect("expected file id");
+    let hir = snapshot.hir(file_id).expect("expected hir");
+
+    let root = symbol_id_by_name(&hir, "root", SymbolKind::Variable);
+    let age = symbol_id_by_name(&hir, "age", SymbolKind::Variable);
+    let user = symbol_id_by_name(&hir, "user", SymbolKind::Variable);
+    let indexed = symbol_id_by_name(&hir, "indexed", SymbolKind::Variable);
+
+    assert_eq!(
+        snapshot.inferred_symbol_type(file_id, root),
+        Some(&TypeRef::Map(
+            Box::new(TypeRef::String),
+            Box::new(TypeRef::Map(
+                Box::new(TypeRef::String),
+                Box::new(TypeRef::Union(vec![TypeRef::Int, TypeRef::String])),
+            )),
+        ))
+    );
+    assert_eq!(
+        snapshot.inferred_symbol_type(file_id, age),
+        Some(&TypeRef::Int)
+    );
+    assert_eq!(
+        snapshot.inferred_symbol_type(file_id, user),
+        Some(&TypeRef::Map(
+            Box::new(TypeRef::String),
+            Box::new(TypeRef::Union(vec![TypeRef::Int, TypeRef::String])),
+        ))
+    );
+    assert_eq!(
+        snapshot.inferred_symbol_type(file_id, indexed),
+        Some(&TypeRef::Union(vec![TypeRef::Int, TypeRef::String]))
+    );
+}
+
+#[test]
+fn snapshot_uses_only_fallthrough_branch_values_for_if_and_switch_exprs() {
+    let mut db = AnalyzerDatabase::default();
+    db.apply_change(ChangeSet::single_file(
+        "main.rhai",
+        r#"
+            fn choose(flag, mode) {
+                let from_if = if flag { return 1; } else { "ok" };
+                let from_switch = switch mode {
+                    0 => { return 2; },
+                    _ => "done"
+                };
+                let tail = { return 3; };
+                from_if + from_switch
+            }
+        "#,
+        DocumentVersion(1),
+    ));
+
+    let snapshot = db.snapshot();
+    assert_workspace_files_have_no_syntax_diagnostics(&snapshot);
+    let file_id = snapshot
+        .vfs()
+        .file_id(Path::new("main.rhai"))
+        .expect("expected file id");
+    let hir = snapshot.hir(file_id).expect("expected hir");
+
+    let from_if = symbol_id_by_name(&hir, "from_if", SymbolKind::Variable);
+    let from_switch = symbol_id_by_name(&hir, "from_switch", SymbolKind::Variable);
+    let tail = symbol_id_by_name(&hir, "tail", SymbolKind::Variable);
+
+    assert_eq!(
+        snapshot.inferred_symbol_type(file_id, from_if),
+        Some(&TypeRef::String)
+    );
+    assert_eq!(
+        snapshot.inferred_symbol_type(file_id, from_switch),
+        Some(&TypeRef::String)
+    );
+    assert_eq!(snapshot.inferred_symbol_type(file_id, tail), None);
+}
+
+#[test]
+fn snapshot_infers_host_method_member_and_call_types() {
+    let mut db = AnalyzerDatabase::default();
+    db.apply_change(ChangeSet {
+        files: vec![FileChange {
+            path: "main.rhai".into(),
+            text: r#"
+                /// @type Widget
+                let widget = unknown_widget;
+                let opener = widget.open;
+                let opened = widget.open("home");
+            "#
+            .to_owned(),
+            version: DocumentVersion(1),
+        }],
+        removed_files: Vec::new(),
+        project: Some(ProjectConfig {
+            types: [(
+                "Widget".to_owned(),
+                rhai_project::TypeSpec {
+                    docs: None,
+                    methods: [(
+                        "open".to_owned(),
+                        vec![rhai_project::FunctionSpec {
+                            signature: "fun(string) -> bool".to_owned(),
+                            return_type: None,
+                            docs: Some("Open the widget".to_owned()),
+                        }],
+                    )]
+                    .into_iter()
+                    .collect(),
+                },
+            )]
+            .into_iter()
+            .collect(),
+            ..ProjectConfig::default()
+        }),
+    });
+
+    let snapshot = db.snapshot();
+    let file_id = snapshot
+        .vfs()
+        .file_id(Path::new("main.rhai"))
+        .expect("expected file id");
+    let hir = snapshot.hir(file_id).expect("expected hir");
+    let text = snapshot.file_text(file_id).expect("expected text");
+
+    let opener = symbol_id_by_name(&hir, "opener", SymbolKind::Variable);
+    let opened = symbol_id_by_name(&hir, "opened", SymbolKind::Variable);
+
+    assert_eq!(
+        snapshot.inferred_symbol_type(file_id, opener),
+        Some(&TypeRef::Function(FunctionTypeRef {
+            params: vec![TypeRef::String],
+            ret: Box::new(TypeRef::Bool),
+        }))
+    );
+    assert_eq!(
+        snapshot.inferred_symbol_type(file_id, opened),
+        Some(&TypeRef::Bool)
+    );
+
+    let field_offset = offset_in(&text, "open;") + TextSize::from(1);
+    assert_eq!(
+        snapshot.inferred_expr_type_at(file_id, field_offset),
+        Some(&TypeRef::Function(FunctionTypeRef {
+            params: vec![TypeRef::String],
+            ret: Box::new(TypeRef::Bool),
+        }))
+    );
+}
+
+#[test]
+fn snapshot_prefers_host_method_overload_matching_argument_types() {
+    let mut db = AnalyzerDatabase::default();
+    db.apply_change(ChangeSet {
+        files: vec![FileChange {
+            path: "main.rhai".into(),
+            text: r#"
+                /// @type Widget
+                let widget = unknown_widget;
+                let opened_by_name = widget.open("home");
+                let opened_by_id = widget.open(1);
+            "#
+            .to_owned(),
+            version: DocumentVersion(1),
+        }],
+        removed_files: Vec::new(),
+        project: Some(ProjectConfig {
+            types: [(
+                "Widget".to_owned(),
+                rhai_project::TypeSpec {
+                    docs: None,
+                    methods: [(
+                        "open".to_owned(),
+                        vec![
+                            rhai_project::FunctionSpec {
+                                signature: "fun(int) -> int".to_owned(),
+                                return_type: None,
+                                docs: Some("Open by id".to_owned()),
+                            },
+                            rhai_project::FunctionSpec {
+                                signature: "fun(string) -> bool".to_owned(),
+                                return_type: None,
+                                docs: Some("Open by route".to_owned()),
+                            },
+                        ],
+                    )]
+                    .into_iter()
+                    .collect(),
+                },
+            )]
+            .into_iter()
+            .collect(),
+            ..ProjectConfig::default()
+        }),
+    });
+
+    let snapshot = db.snapshot();
+    assert_workspace_files_have_no_syntax_diagnostics(&snapshot);
+    let file_id = snapshot
+        .vfs()
+        .file_id(Path::new("main.rhai"))
+        .expect("expected file id");
+    let hir = snapshot.hir(file_id).expect("expected hir");
+
+    let opened_by_name = symbol_id_by_name(&hir, "opened_by_name", SymbolKind::Variable);
+    let opened_by_id = symbol_id_by_name(&hir, "opened_by_id", SymbolKind::Variable);
+
+    assert_eq!(
+        snapshot.inferred_symbol_type(file_id, opened_by_name),
+        Some(&TypeRef::Bool)
+    );
+    assert_eq!(
+        snapshot.inferred_symbol_type(file_id, opened_by_id),
+        Some(&TypeRef::Int)
+    );
+}
+
+#[test]
+fn snapshot_propagates_exported_types_into_import_aliases() {
+    let mut db = AnalyzerDatabase::default();
+    db.apply_change(ChangeSet {
+        files: vec![
+            FileChange {
+                path: "provider.rhai".into(),
+                text: r#"
+                    let shared = blob(10);
+                    export shared as shared_value;
+                "#
+                .to_owned(),
+                version: DocumentVersion(1),
+            },
+            FileChange {
+                path: "consumer.rhai".into(),
+                text: r#"
+                    import shared_value as value;
+
+                    let copy = value;
+                "#
+                .to_owned(),
+                version: DocumentVersion(1),
+            },
+        ],
+        removed_files: Vec::new(),
+        project: None,
+    });
+
+    let snapshot = db.snapshot();
+    assert_workspace_files_have_no_syntax_diagnostics(&snapshot);
+    let provider = snapshot
+        .vfs()
+        .file_id(Path::new("provider.rhai"))
+        .expect("expected provider.rhai");
+    let consumer = snapshot
+        .vfs()
+        .file_id(Path::new("consumer.rhai"))
+        .expect("expected consumer.rhai");
+    let provider_hir = snapshot.hir(provider).expect("expected provider hir");
+    let consumer_hir = snapshot.hir(consumer).expect("expected consumer hir");
+
+    let shared = symbol_id_by_name(&provider_hir, "shared", SymbolKind::Variable);
+    let value = symbol_id_by_name(&consumer_hir, "value", SymbolKind::ImportAlias);
+    let copy = symbol_id_by_name(&consumer_hir, "copy", SymbolKind::Variable);
+
+    assert_eq!(
+        snapshot.inferred_symbol_type(provider, shared),
+        Some(&TypeRef::Blob)
+    );
+    assert_eq!(
+        snapshot.inferred_symbol_type(consumer, value),
+        Some(&TypeRef::Blob)
+    );
+    assert_eq!(
+        snapshot.inferred_symbol_type(consumer, copy),
+        Some(&TypeRef::Blob)
+    );
+}
+
+#[test]
+fn snapshot_propagates_workspace_call_argument_types_across_files() {
+    let mut db = AnalyzerDatabase::default();
+    db.apply_change(ChangeSet {
+        files: vec![
+            FileChange {
+                path: "provider.rhai".into(),
+                text: r#"
+                    fn echo(value) {
+                        value
+                    }
+
+                    export echo as shared_tools;
+                "#
+                .to_owned(),
+                version: DocumentVersion(1),
+            },
+            FileChange {
+                path: "consumer.rhai".into(),
+                text: r#"
+                    import shared_tools as tools;
+
+                    let result = tools(blob(10));
+                "#
+                .to_owned(),
+                version: DocumentVersion(1),
+            },
+        ],
+        removed_files: Vec::new(),
+        project: None,
+    });
+
+    let snapshot = db.snapshot();
+    assert_workspace_files_have_no_syntax_diagnostics(&snapshot);
+    let provider = snapshot
+        .vfs()
+        .file_id(Path::new("provider.rhai"))
+        .expect("expected provider.rhai");
+    let consumer = snapshot
+        .vfs()
+        .file_id(Path::new("consumer.rhai"))
+        .expect("expected consumer.rhai");
+    let provider_hir = snapshot.hir(provider).expect("expected provider hir");
+    let consumer_hir = snapshot.hir(consumer).expect("expected consumer hir");
+
+    let echo = symbol_id_by_name(&provider_hir, "echo", SymbolKind::Function);
+    let value = symbol_id_by_name(&provider_hir, "value", SymbolKind::Parameter);
+    let tools = symbol_id_by_name(&consumer_hir, "tools", SymbolKind::ImportAlias);
+    let result = symbol_id_by_name(&consumer_hir, "result", SymbolKind::Variable);
+    let propagated_signature = TypeRef::Function(FunctionTypeRef {
+        params: vec![TypeRef::Blob],
+        ret: Box::new(TypeRef::Blob),
+    });
+
+    assert_eq!(
+        snapshot.inferred_symbol_type(provider, value),
+        Some(&TypeRef::Blob)
+    );
+    assert_eq!(
+        snapshot.inferred_symbol_type(provider, echo),
+        Some(&propagated_signature)
+    );
+    assert_eq!(
+        snapshot.inferred_symbol_type(consumer, tools),
+        Some(&propagated_signature)
+    );
+    assert_eq!(
+        snapshot.inferred_symbol_type(consumer, result),
+        Some(&TypeRef::Blob)
+    );
+}
+
+#[test]
+fn workspace_type_inference_refreshes_after_importer_call_changes() {
+    let mut db = AnalyzerDatabase::default();
+    db.apply_change(ChangeSet {
+        files: vec![
+            FileChange {
+                path: "provider.rhai".into(),
+                text: r#"
+                    fn echo(value) {
+                        value
+                    }
+
+                    export echo as shared_tools;
+                "#
+                .to_owned(),
+                version: DocumentVersion(1),
+            },
+            FileChange {
+                path: "consumer.rhai".into(),
+                text: r#"
+                    import shared_tools as tools;
+
+                    let result = tools(blob(10));
+                "#
+                .to_owned(),
+                version: DocumentVersion(1),
+            },
+        ],
+        removed_files: Vec::new(),
+        project: None,
+    });
+
+    let first_snapshot = db.snapshot();
+    assert_workspace_files_have_no_syntax_diagnostics(&first_snapshot);
+    let provider = first_snapshot
+        .vfs()
+        .file_id(Path::new("provider.rhai"))
+        .expect("expected provider.rhai");
+    let consumer = first_snapshot
+        .vfs()
+        .file_id(Path::new("consumer.rhai"))
+        .expect("expected consumer.rhai");
+    let provider_hir = first_snapshot.hir(provider).expect("expected provider hir");
+    let consumer_hir = first_snapshot.hir(consumer).expect("expected consumer hir");
+    let value = symbol_id_by_name(&provider_hir, "value", SymbolKind::Parameter);
+    let result = symbol_id_by_name(&consumer_hir, "result", SymbolKind::Variable);
+
+    assert_eq!(
+        first_snapshot.inferred_symbol_type(provider, value),
+        Some(&TypeRef::Blob)
+    );
+    assert_eq!(
+        first_snapshot.inferred_symbol_type(consumer, result),
+        Some(&TypeRef::Blob)
+    );
+
+    db.apply_change(ChangeSet::single_file(
+        "consumer.rhai",
+        r#"
+            import shared_tools as tools;
+
+            let result = tools("home");
+        "#,
+        DocumentVersion(2),
+    ));
+
+    let second_snapshot = db.snapshot();
+    assert_workspace_files_have_no_syntax_diagnostics(&second_snapshot);
+    let provider_hir = second_snapshot
+        .hir(provider)
+        .expect("expected provider hir");
+    let consumer_hir = second_snapshot
+        .hir(consumer)
+        .expect("expected consumer hir");
+    let echo = symbol_id_by_name(&provider_hir, "echo", SymbolKind::Function);
+    let value = symbol_id_by_name(&provider_hir, "value", SymbolKind::Parameter);
+    let tools = symbol_id_by_name(&consumer_hir, "tools", SymbolKind::ImportAlias);
+    let result = symbol_id_by_name(&consumer_hir, "result", SymbolKind::Variable);
+    let propagated_signature = TypeRef::Function(FunctionTypeRef {
+        params: vec![TypeRef::String],
+        ret: Box::new(TypeRef::String),
+    });
+
+    assert_eq!(
+        second_snapshot.inferred_symbol_type(provider, value),
+        Some(&TypeRef::String)
+    );
+    assert_eq!(
+        second_snapshot.inferred_symbol_type(provider, echo),
+        Some(&propagated_signature)
+    );
+    assert_eq!(
+        second_snapshot.inferred_symbol_type(consumer, tools),
+        Some(&propagated_signature)
+    );
+    assert_eq!(
+        second_snapshot.inferred_symbol_type(consumer, result),
+        Some(&TypeRef::String)
+    );
 }
 
 #[test]
@@ -161,6 +1116,7 @@ fn snapshot_exposes_cached_indexes() {
     ));
 
     let snapshot = db.snapshot();
+    assert_workspace_files_have_no_syntax_diagnostics(&snapshot);
     let file_id = snapshot
         .vfs()
         .file_id(Path::new("main.rhai"))
@@ -227,6 +1183,7 @@ fn snapshot_exposes_workspace_module_graphs_and_symbol_locations() {
     });
 
     let snapshot = db.snapshot();
+    assert_workspace_files_have_no_syntax_diagnostics(&snapshot);
     let one = snapshot
         .vfs()
         .file_id(Path::new("one.rhai"))
@@ -281,6 +1238,7 @@ fn unchanged_files_reuse_cached_analysis_across_snapshots() {
     ));
 
     let first_snapshot = db.snapshot();
+    assert_workspace_files_have_no_syntax_diagnostics(&first_snapshot);
     let file_id = first_snapshot
         .vfs()
         .file_id(Path::new("main.rhai"))
@@ -289,6 +1247,7 @@ fn unchanged_files_reuse_cached_analysis_across_snapshots() {
     let first_hir = first_snapshot.hir(file_id).expect("expected hir");
 
     let second_snapshot = db.snapshot();
+    assert_workspace_files_have_no_syntax_diagnostics(&second_snapshot);
     let second_parse = second_snapshot.parse(file_id).expect("expected parse");
     let second_hir = second_snapshot.hir(file_id).expect("expected hir");
 
@@ -309,6 +1268,7 @@ fn unchanged_files_reuse_cached_indexes_across_snapshots() {
     ));
 
     let first_snapshot = db.snapshot();
+    assert_workspace_files_have_no_syntax_diagnostics(&first_snapshot);
     let file_id = first_snapshot
         .vfs()
         .file_id(Path::new("main.rhai"))
@@ -321,6 +1281,7 @@ fn unchanged_files_reuse_cached_indexes_across_snapshots() {
         .expect("expected module graph");
 
     let second_snapshot = db.snapshot();
+    assert_workspace_files_have_no_syntax_diagnostics(&second_snapshot);
     let second_index = second_snapshot
         .file_symbol_index(file_id)
         .expect("expected file symbol index");
@@ -363,6 +1324,7 @@ fn file_changes_reuse_project_semantics() {
     });
 
     let first_snapshot = db.snapshot();
+    assert_workspace_files_have_no_syntax_diagnostics(&first_snapshot);
     let first_signatures = first_snapshot.external_signatures();
     let first_modules = first_snapshot.host_modules();
 
@@ -373,6 +1335,7 @@ fn file_changes_reuse_project_semantics() {
     ));
 
     let second_snapshot = db.snapshot();
+    assert_workspace_files_have_no_syntax_diagnostics(&second_snapshot);
 
     assert!(ptr::eq(
         first_signatures,
@@ -402,6 +1365,7 @@ fn text_changes_invalidate_only_affected_file_analysis() {
     });
 
     let first_snapshot = db.snapshot();
+    assert_workspace_files_have_no_syntax_diagnostics(&first_snapshot);
     let one = first_snapshot
         .vfs()
         .file_id(Path::new("one.rhai"))
@@ -420,6 +1384,7 @@ fn text_changes_invalidate_only_affected_file_analysis() {
     ));
 
     let second_snapshot = db.snapshot();
+    assert_workspace_files_have_no_syntax_diagnostics(&second_snapshot);
     let second_one_parse = second_snapshot.parse(one).expect("expected parse");
     let second_two_parse = second_snapshot.parse(two).expect("expected parse");
 
@@ -448,6 +1413,7 @@ fn text_changes_invalidate_only_affected_file_indexes_and_refresh_workspace_symb
     });
 
     let first_snapshot = db.snapshot();
+    assert_workspace_files_have_no_syntax_diagnostics(&first_snapshot);
     let one = first_snapshot
         .vfs()
         .file_id(Path::new("one.rhai"))
@@ -470,6 +1436,7 @@ fn text_changes_invalidate_only_affected_file_indexes_and_refresh_workspace_symb
     ));
 
     let second_snapshot = db.snapshot();
+    assert_workspace_files_have_no_syntax_diagnostics(&second_snapshot);
     let second_one_index = second_snapshot
         .file_symbol_index(one)
         .expect("expected file symbol index");
@@ -499,6 +1466,7 @@ fn text_changes_refresh_workspace_module_graphs_and_symbol_locations() {
     ));
 
     let first_snapshot = db.snapshot();
+    assert_workspace_files_have_no_syntax_diagnostics(&first_snapshot);
     let file_id = first_snapshot
         .vfs()
         .file_id(Path::new("main.rhai"))
@@ -519,6 +1487,7 @@ fn text_changes_refresh_workspace_module_graphs_and_symbol_locations() {
     ));
 
     let second_snapshot = db.snapshot();
+    assert_workspace_files_have_no_syntax_diagnostics(&second_snapshot);
     let second_graph = second_snapshot
         .module_graph(file_id)
         .expect("expected module graph");
@@ -558,6 +1527,7 @@ fn workspace_index_invalidation_updates_only_changed_file_contributions() {
     });
 
     let first_snapshot = db.snapshot();
+    assert_workspace_files_have_no_syntax_diagnostics(&first_snapshot);
     let one = first_snapshot
         .vfs()
         .file_id(Path::new("one.rhai"))
@@ -680,6 +1650,7 @@ fn project_changes_refresh_project_semantics() {
     });
 
     let first_snapshot = db.snapshot();
+    assert_workspace_files_have_no_syntax_diagnostics(&first_snapshot);
     let first_signatures = first_snapshot.external_signatures();
     assert!(first_signatures.get("math::add").is_some());
 
@@ -715,6 +1686,7 @@ fn project_changes_refresh_project_semantics() {
     });
 
     let second_snapshot = db.snapshot();
+    assert_workspace_files_have_no_syntax_diagnostics(&second_snapshot);
     assert!(!ptr::eq(
         first_signatures,
         second_snapshot.external_signatures()
@@ -756,6 +1728,7 @@ fn project_changes_invalidate_all_cached_file_analysis() {
     });
 
     let first_snapshot = db.snapshot();
+    assert_workspace_files_have_no_syntax_diagnostics(&first_snapshot);
     let one = first_snapshot
         .vfs()
         .file_id(Path::new("one.rhai"))
@@ -777,6 +1750,7 @@ fn project_changes_invalidate_all_cached_file_analysis() {
     });
 
     let second_snapshot = db.snapshot();
+    assert_workspace_files_have_no_syntax_diagnostics(&second_snapshot);
     let second_one_hir = second_snapshot.hir(one).expect("expected hir");
     let second_two_hir = second_snapshot.hir(two).expect("expected hir");
 
@@ -794,6 +1768,7 @@ fn stale_or_identical_file_changes_do_not_rebuild_analysis() {
     ));
 
     let first_snapshot = db.snapshot();
+    assert_workspace_files_have_no_syntax_diagnostics(&first_snapshot);
     let file_id = first_snapshot
         .vfs()
         .file_id(Path::new("main.rhai"))
@@ -806,6 +1781,7 @@ fn stale_or_identical_file_changes_do_not_rebuild_analysis() {
         DocumentVersion(2),
     ));
     let identical_snapshot = db.snapshot();
+    assert_workspace_files_have_no_syntax_diagnostics(&identical_snapshot);
     let identical_parse = identical_snapshot.parse(file_id).expect("expected parse");
     assert!(Arc::ptr_eq(&first_parse, &identical_parse));
 
@@ -815,6 +1791,7 @@ fn stale_or_identical_file_changes_do_not_rebuild_analysis() {
         DocumentVersion(1),
     ));
     let stale_snapshot = db.snapshot();
+    assert_workspace_files_have_no_syntax_diagnostics(&stale_snapshot);
     let stale_parse = stale_snapshot.parse(file_id).expect("expected parse");
     assert!(Arc::ptr_eq(&first_parse, &stale_parse));
 }
@@ -848,6 +1825,7 @@ fn workspace_symbol_search_supports_project_wide_queries() {
     });
 
     let snapshot = db.snapshot();
+    assert_workspace_files_have_no_syntax_diagnostics(&snapshot);
     let helper_matches = snapshot.workspace_symbols_matching("helper");
     assert_eq!(
         helper_matches
@@ -925,6 +1903,7 @@ fn completion_inputs_collect_visible_member_and_project_symbols() {
     });
 
     let snapshot = db.snapshot();
+    assert_workspace_files_have_no_syntax_diagnostics(&snapshot);
     let main = snapshot
         .vfs()
         .file_id(Path::new("main.rhai"))
@@ -998,6 +1977,7 @@ fn query_support_can_be_warmed_for_completion_and_navigation_queries() {
     ));
 
     let cold_snapshot = db.snapshot();
+    assert_workspace_files_have_no_syntax_diagnostics(&cold_snapshot);
     let file_id = cold_snapshot
         .vfs()
         .file_id(Path::new("main.rhai"))
@@ -1006,6 +1986,7 @@ fn query_support_can_be_warmed_for_completion_and_navigation_queries() {
 
     assert_eq!(db.warm_query_support(&[file_id]), 1);
     let warm_snapshot = db.snapshot();
+    assert_workspace_files_have_no_syntax_diagnostics(&warm_snapshot);
     let query_support = warm_snapshot
         .query_support(file_id)
         .expect("expected warmed query support");
@@ -1047,6 +2028,34 @@ fn query_support_can_be_warmed_for_completion_and_navigation_queries() {
 }
 
 #[test]
+fn builtin_global_functions_suppress_unresolved_name_diagnostics() {
+    let mut db = AnalyzerDatabase::default();
+    db.apply_change(ChangeSet::single_file(
+        "main.rhai",
+        r#"
+            fn helper() {}
+            let _bytes = blob(10);
+            let _now = timestamp();
+            let _callback = Fn("helper");
+        "#,
+        DocumentVersion(1),
+    ));
+
+    let snapshot = db.snapshot();
+    assert_workspace_files_have_no_syntax_diagnostics(&snapshot);
+    let file_id = snapshot
+        .vfs()
+        .file_id(Path::new("main.rhai"))
+        .expect("expected file id");
+
+    let diagnostics = snapshot.project_diagnostics(file_id);
+    assert!(
+        diagnostics.is_empty(),
+        "expected builtin blob call to avoid unresolved-name diagnostics, got {diagnostics:?}"
+    );
+}
+
+#[test]
 fn import_export_linkage_supports_cross_file_navigation() {
     let mut db = AnalyzerDatabase::default();
     db.apply_change(ChangeSet {
@@ -1078,6 +2087,7 @@ fn import_export_linkage_supports_cross_file_navigation() {
     });
 
     let snapshot = db.snapshot();
+    assert_workspace_files_have_no_syntax_diagnostics(&snapshot);
     let provider = snapshot
         .vfs()
         .file_id(Path::new("provider.rhai"))
@@ -1140,6 +2150,7 @@ fn changing_exports_refreshes_import_linkage() {
     });
 
     let first_snapshot = db.snapshot();
+    assert_workspace_files_have_no_syntax_diagnostics(&first_snapshot);
     let consumer = first_snapshot
         .vfs()
         .file_id(Path::new("consumer.rhai"))
@@ -1157,6 +2168,7 @@ fn changing_exports_refreshes_import_linkage() {
     ));
 
     let second_snapshot = db.snapshot();
+    assert_workspace_files_have_no_syntax_diagnostics(&second_snapshot);
     assert!(second_snapshot.linked_imports(consumer).is_empty());
     assert!(second_snapshot.exports_named("shared_tools").is_empty());
     assert_eq!(second_snapshot.exports_named("renamed_tools").len(), 1);
@@ -1183,6 +2195,7 @@ fn workspace_dependency_graph_tracks_importers_and_exporters() {
     });
 
     let snapshot = db.snapshot();
+    assert_workspace_files_have_no_syntax_diagnostics(&snapshot);
     let provider = snapshot
         .vfs()
         .file_id(Path::new("provider.rhai"))
@@ -1230,6 +2243,7 @@ fn project_diagnostics_suppress_false_unresolved_imports_when_workspace_export_e
     });
 
     let snapshot = db.snapshot();
+    assert_workspace_files_have_no_syntax_diagnostics(&snapshot);
     let consumer = snapshot
         .vfs()
         .file_id(Path::new("consumer.rhai"))
@@ -1265,6 +2279,7 @@ fn project_diagnostics_surface_broken_linked_import_usage_when_export_disappears
     ));
 
     let snapshot = db.snapshot();
+    assert_workspace_files_have_no_syntax_diagnostics(&snapshot);
     let consumer = snapshot
         .vfs()
         .file_id(Path::new("consumer.rhai"))
@@ -1310,6 +2325,7 @@ fn change_report_surfaces_dependency_affected_files() {
     ));
 
     let snapshot = db.snapshot();
+    assert_workspace_files_have_no_syntax_diagnostics(&snapshot);
     let provider = snapshot
         .vfs()
         .file_id(Path::new("provider.rhai"))
@@ -1356,6 +2372,7 @@ fn project_find_references_include_linked_imports_for_exported_names() {
     });
 
     let snapshot = db.snapshot();
+    assert_workspace_files_have_no_syntax_diagnostics(&snapshot);
     let consumer = snapshot
         .vfs()
         .file_id(Path::new("consumer.rhai"))
@@ -1409,6 +2426,7 @@ fn auto_import_candidates_plan_imports_for_unresolved_workspace_exports() {
     });
 
     let snapshot = db.snapshot();
+    assert_workspace_files_have_no_syntax_diagnostics(&snapshot);
     let consumer = snapshot
         .vfs()
         .file_id(Path::new("consumer.rhai"))
@@ -1464,6 +2482,7 @@ fn project_rename_plan_tracks_cross_file_import_occurrences_without_renaming_int
     });
 
     let snapshot = db.snapshot();
+    assert_workspace_files_have_no_syntax_diagnostics(&snapshot);
     let provider = snapshot
         .vfs()
         .file_id(Path::new("provider.rhai"))
@@ -1550,6 +2569,7 @@ fn project_rename_plan_reports_cross_file_export_collisions_before_renaming() {
     });
 
     let snapshot = db.snapshot();
+    assert_workspace_files_have_no_syntax_diagnostics(&snapshot);
     let provider = snapshot
         .vfs()
         .file_id(Path::new("provider.rhai"))
@@ -1612,6 +2632,7 @@ fn snapshot_tracks_source_roots_workspace_membership_and_normalized_paths() {
     });
 
     let snapshot = db.snapshot();
+    assert_workspace_files_have_no_syntax_diagnostics(&snapshot);
     let main = snapshot
         .vfs()
         .file_id(Path::new("workspace/src/main.rhai"))
@@ -1670,6 +2691,7 @@ fn analysis_dependencies_track_text_and_project_inputs() {
     ));
 
     let first_snapshot = db.snapshot();
+    assert_workspace_files_have_no_syntax_diagnostics(&first_snapshot);
     let file_id = first_snapshot
         .vfs()
         .file_id(Path::new("src/main.rhai"))
@@ -1702,6 +2724,7 @@ fn analysis_dependencies_track_text_and_project_inputs() {
     });
 
     let second_snapshot = db.snapshot();
+    assert_workspace_files_have_no_syntax_diagnostics(&second_snapshot);
     let second_dependencies = second_snapshot
         .analysis_dependencies(file_id)
         .expect("expected analysis dependencies");
@@ -1736,6 +2759,7 @@ fn removing_files_unloads_cached_analysis_and_updates_workspace_links() {
     });
 
     let first_snapshot = db.snapshot();
+    assert_workspace_files_have_no_syntax_diagnostics(&first_snapshot);
     let provider = first_snapshot
         .vfs()
         .file_id(Path::new("provider.rhai"))
@@ -1750,6 +2774,7 @@ fn removing_files_unloads_cached_analysis_and_updates_workspace_links() {
     db.apply_change(ChangeSet::remove_file("provider.rhai"));
 
     let second_snapshot = db.snapshot();
+    assert_workspace_files_have_no_syntax_diagnostics(&second_snapshot);
     assert!(second_snapshot.file_text(provider).is_none());
     assert!(second_snapshot.parse(provider).is_none());
     assert!(second_snapshot.hir(provider).is_none());
@@ -1769,6 +2794,7 @@ fn revision_stats_and_debug_view_surface_cache_activity() {
         DocumentVersion(1),
     ));
     let first_snapshot = db.snapshot();
+    assert_workspace_files_have_no_syntax_diagnostics(&first_snapshot);
     assert_eq!(first_snapshot.revision(), initial_revision + 1);
     assert_eq!(first_snapshot.stats().parse_rebuilds, 1);
     assert_eq!(first_snapshot.stats().lower_rebuilds, 1);
@@ -1780,6 +2806,7 @@ fn revision_stats_and_debug_view_surface_cache_activity() {
         DocumentVersion(1),
     ));
     let no_op_snapshot = db.snapshot();
+    assert_workspace_files_have_no_syntax_diagnostics(&no_op_snapshot);
     assert_eq!(no_op_snapshot.revision(), first_snapshot.revision());
 
     db.apply_change(ChangeSet::single_file(
@@ -1788,6 +2815,7 @@ fn revision_stats_and_debug_view_surface_cache_activity() {
         DocumentVersion(2),
     ));
     let second_snapshot = db.snapshot();
+    assert_workspace_files_have_no_syntax_diagnostics(&second_snapshot);
     assert_eq!(second_snapshot.revision(), first_snapshot.revision() + 1);
 
     let file_id = second_snapshot
@@ -1796,6 +2824,7 @@ fn revision_stats_and_debug_view_surface_cache_activity() {
         .expect("expected file id");
     assert_eq!(db.warm_query_support(&[file_id]), 1);
     let warmed_snapshot = db.snapshot();
+    assert_workspace_files_have_no_syntax_diagnostics(&warmed_snapshot);
     assert_eq!(warmed_snapshot.stats().query_support_rebuilds, 1);
 
     let debug_view = warmed_snapshot.debug_view();
@@ -1835,6 +2864,7 @@ fn batched_high_frequency_updates_rebuild_each_file_once() {
     });
 
     let snapshot = db.snapshot();
+    assert_workspace_files_have_no_syntax_diagnostics(&snapshot);
     let file_id = snapshot
         .vfs()
         .file_id(Path::new("workspace/src/main.rhai"))
@@ -1869,6 +2899,7 @@ fn query_support_budget_evicts_cold_cached_files_and_updates_file_stats() {
     });
 
     let snapshot = db.snapshot();
+    assert_workspace_files_have_no_syntax_diagnostics(&snapshot);
     let one = snapshot
         .vfs()
         .file_id(Path::new("one.rhai"))
@@ -1886,6 +2917,7 @@ fn query_support_budget_evicts_cold_cached_files_and_updates_file_stats() {
     assert_eq!(db.warm_query_support(&[two]), 1);
 
     let warmed_snapshot = db.snapshot();
+    assert_workspace_files_have_no_syntax_diagnostics(&warmed_snapshot);
     assert!(warmed_snapshot.query_support(one).is_none());
     assert!(warmed_snapshot.query_support(two).is_some());
     assert_eq!(warmed_snapshot.stats().query_support_evictions, 1);
@@ -1919,4 +2951,25 @@ fn offset_in(text: &str, needle: &str) -> TextSize {
 
 fn slice_range(text: &str, range: rhai_syntax::TextRange) -> &str {
     &text[usize::from(range.start())..usize::from(range.end())]
+}
+
+fn assert_workspace_files_have_no_syntax_diagnostics(snapshot: &crate::DatabaseSnapshot) {
+    for file in snapshot.workspace_files() {
+        let diagnostics = snapshot.syntax_diagnostics(file.file_id);
+        assert!(
+            diagnostics.is_empty(),
+            "expected valid Rhai syntax for {:?}, got diagnostics: {:?}",
+            snapshot.normalized_path(file.file_id),
+            diagnostics
+        );
+    }
+}
+
+fn symbol_id_by_name(hir: &rhai_hir::FileHir, name: &str, kind: SymbolKind) -> rhai_hir::SymbolId {
+    let index = hir
+        .symbols
+        .iter()
+        .position(|symbol| symbol.name == name && symbol.kind == kind)
+        .unwrap_or_else(|| panic!("expected symbol `{name}` with kind {kind:?}"));
+    rhai_hir::SymbolId(index as u32)
 }

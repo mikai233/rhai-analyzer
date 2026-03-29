@@ -1,14 +1,16 @@
 use crate::{
-    Body, BodyId, BodyKind, CallSite, CallSiteId, ControlFlowEvent, ControlFlowKind,
-    ControlFlowMergePoint, DocBlock, DocBlockId, DocTag, ExportDirective, ExprId, ExprKind,
-    ExprNode, FileHir, FunctionTypeRef, ImportDirective, LoweredFile, MemberAccess, MergePointKind,
-    ObjectFieldInfo, Reference, ReferenceId, ReferenceKind, Scope, ScopeId, ScopeKind, Symbol,
-    SymbolId, SymbolKind, SymbolValueFlow, TypeRef, TypeSlot, TypeSlotId, ValueFlowKind,
-    collect_doc_block,
+    ArrayExprInfo, BinaryExprInfo, BinaryOperator, BlockExprInfo, Body, BodyId, BodyKind, CallSite,
+    CallSiteId, ClosureExprInfo, ControlFlowEvent, ControlFlowKind, ControlFlowMergePoint,
+    DocBlock, DocBlockId, DocTag, ExportDirective, ExprId, ExprKind, ExprNode, FileHir,
+    FunctionTypeRef, IfExprInfo, ImportDirective, IndexExprInfo, LiteralInfo, LiteralKind,
+    LoweredFile, MemberAccess, MergePointKind, ObjectFieldInfo, Reference, ReferenceId,
+    ReferenceKind, Scope, ScopeId, ScopeKind, SwitchExprInfo, Symbol, SymbolId, SymbolKind,
+    SymbolMutation, SymbolMutationKind, SymbolValueFlow, TypeRef, TypeSlot, TypeSlotId,
+    UnaryExprInfo, UnaryOperator, ValueFlowKind, collect_doc_block,
 };
 use rhai_syntax::{
     AstNode, BlockExpr, Expr, Item, Parse, Root, Stmt, StringPart, SwitchArm, SwitchPatternList,
-    TextRange, TextSize,
+    TextRange, TextSize, TokenKind,
 };
 
 pub fn lower_file(parse: &Parse) -> LoweredFile {
@@ -29,6 +31,7 @@ struct LoweringContext<'a> {
     body_stack: Vec<BodyId>,
     loop_stack: Vec<ScopeId>,
     pending_value_flows: Vec<PendingValueFlow>,
+    pending_mutations: Vec<PendingMutation>,
 }
 
 struct PendingValueFlow {
@@ -36,6 +39,18 @@ struct PendingValueFlow {
     expr: ExprId,
     kind: ValueFlowKind,
     range: TextRange,
+}
+
+struct PendingMutation {
+    receiver_reference: ReferenceId,
+    value: ExprId,
+    kind: PendingMutationKind,
+    range: TextRange,
+}
+
+enum PendingMutationKind {
+    Field { name: String },
+    Index { index: ExprId },
 }
 
 impl<'a> LoweringContext<'a> {
@@ -49,8 +64,18 @@ impl<'a> LoweringContext<'a> {
                 references: Vec::new(),
                 bodies: Vec::new(),
                 exprs: Vec::new(),
+                literals: Vec::new(),
+                array_exprs: Vec::new(),
+                block_exprs: Vec::new(),
+                if_exprs: Vec::new(),
+                switch_exprs: Vec::new(),
+                closure_exprs: Vec::new(),
+                unary_exprs: Vec::new(),
+                binary_exprs: Vec::new(),
+                index_exprs: Vec::new(),
                 type_slots: Vec::new(),
                 value_flows: Vec::new(),
+                symbol_mutations: Vec::new(),
                 calls: Vec::new(),
                 object_fields: Vec::new(),
                 member_accesses: Vec::new(),
@@ -61,6 +86,7 @@ impl<'a> LoweringContext<'a> {
             body_stack: Vec::new(),
             loop_stack: Vec::new(),
             pending_value_flows: Vec::new(),
+            pending_mutations: Vec::new(),
         }
     }
 
@@ -86,10 +112,21 @@ impl<'a> LoweringContext<'a> {
             })
     }
 
+    fn simple_receiver_reference_from(&self, start: usize, expr: Expr<'_>) -> Option<ReferenceId> {
+        match expr {
+            Expr::Name(_) => self.first_name_reference_from(start, expr.syntax().range()),
+            Expr::Paren(paren) => paren
+                .expr()
+                .and_then(|inner| self.simple_receiver_reference_from(start, inner)),
+            _ => None,
+        }
+    }
+
     fn finish(mut self) -> FileHir {
         self.resolve_references();
         self.resolve_call_mappings();
         self.resolve_value_flows();
+        self.resolve_mutations();
         self.annotate_symbol_relationships();
         self.file
     }
@@ -129,6 +166,7 @@ impl<'a> LoweringContext<'a> {
             control_flow: Vec::new(),
             return_values: Vec::new(),
             throw_values: Vec::new(),
+            tail_value: None,
             merge_points: Vec::new(),
             may_fall_through: true,
             unreachable_ranges: Vec::new(),
@@ -144,6 +182,7 @@ impl<'a> LoweringContext<'a> {
         callee_range: Option<TextRange>,
         callee_reference: Option<ReferenceId>,
         arg_ranges: Vec<TextRange>,
+        arg_exprs: Vec<ExprId>,
     ) -> CallSiteId {
         let id = CallSiteId(self.file.calls.len() as u32);
         self.file.calls.push(CallSite {
@@ -153,6 +192,7 @@ impl<'a> LoweringContext<'a> {
             callee_reference,
             resolved_callee: None,
             arg_ranges,
+            arg_exprs,
             parameter_bindings: Vec::new(),
         });
         id
@@ -444,6 +484,28 @@ impl<'a> LoweringContext<'a> {
         }
     }
 
+    fn resolve_mutations(&mut self) {
+        let pending_mutations = std::mem::take(&mut self.pending_mutations);
+        for pending in pending_mutations {
+            let Some(symbol) = self.file.references[pending.receiver_reference.0 as usize].target
+            else {
+                continue;
+            };
+
+            let kind = match pending.kind {
+                PendingMutationKind::Field { name } => SymbolMutationKind::Field { name },
+                PendingMutationKind::Index { index } => SymbolMutationKind::Index { index },
+            };
+
+            self.file.symbol_mutations.push(SymbolMutation {
+                symbol,
+                value: pending.value,
+                kind,
+                range: pending.range,
+            });
+        }
+    }
+
     fn resolve_call_mappings(&mut self) {
         for index in 0..self.file.calls.len() {
             let (callee_reference, arg_count) = {
@@ -452,10 +514,10 @@ impl<'a> LoweringContext<'a> {
             };
 
             let resolved_callee = callee_reference
-                .and_then(|reference| self.file.references[reference.0 as usize].target)
-                .filter(|symbol| self.file.symbols[symbol.0 as usize].kind == SymbolKind::Function);
+                .and_then(|reference| self.file.references[reference.0 as usize].target);
 
             let parameter_bindings = resolved_callee
+                .filter(|symbol| self.file.symbols[symbol.0 as usize].kind == SymbolKind::Function)
                 .map(|function| {
                     self.file
                         .function_parameters(function)
@@ -595,9 +657,12 @@ impl<'a> LoweringContext<'a> {
         }
     }
 
-    fn lower_item(&mut self, item: Item<'_>, scope: ScopeId) {
+    fn lower_item(&mut self, item: Item<'_>, scope: ScopeId) -> Option<ExprId> {
         match item {
-            Item::Fn(function) => self.lower_function(function, scope),
+            Item::Fn(function) => {
+                self.lower_function(function, scope);
+                None
+            }
             Item::Stmt(stmt) => self.lower_stmt(stmt, scope),
         }
     }
@@ -635,7 +700,7 @@ impl<'a> LoweringContext<'a> {
         self.with_body(body_id, |this| this.lower_block_items(body, function_scope));
     }
 
-    fn lower_stmt(&mut self, stmt: Stmt<'_>, scope: ScopeId) {
+    fn lower_stmt(&mut self, stmt: Stmt<'_>, scope: ScopeId) -> Option<ExprId> {
         match stmt {
             Stmt::Let(let_stmt) => {
                 let initializer = let_stmt
@@ -661,6 +726,7 @@ impl<'a> LoweringContext<'a> {
                         let_stmt.syntax().range(),
                     );
                 }
+                None
             }
             Stmt::Const(const_stmt) => {
                 let value = const_stmt
@@ -686,6 +752,7 @@ impl<'a> LoweringContext<'a> {
                         const_stmt.syntax().range(),
                     );
                 }
+                None
             }
             Stmt::Import(import_stmt) => {
                 let mut module_range = None;
@@ -718,6 +785,7 @@ impl<'a> LoweringContext<'a> {
                     module_reference,
                     alias: alias_symbol,
                 });
+                None
             }
             Stmt::Export(export_stmt) => {
                 let mut target_range = None;
@@ -750,6 +818,7 @@ impl<'a> LoweringContext<'a> {
                     target_reference,
                     alias: alias_symbol,
                 });
+                None
             }
             Stmt::Break(stmt) => {
                 let value_range = stmt.value().map(|value| value.syntax().range());
@@ -761,9 +830,11 @@ impl<'a> LoweringContext<'a> {
                 if let Some(value) = stmt.value() {
                     self.lower_expr(value, scope);
                 }
+                None
             }
             Stmt::Continue(stmt) => {
                 self.record_control_flow(ControlFlowKind::Continue, stmt.syntax().range(), None);
+                None
             }
             Stmt::Return(stmt) => {
                 let value_range = stmt.value().map(|value| value.syntax().range());
@@ -776,6 +847,7 @@ impl<'a> LoweringContext<'a> {
                     let value_expr = self.lower_expr(value, scope);
                     self.record_body_value(ControlFlowKind::Return, value_expr);
                 }
+                None
             }
             Stmt::Throw(stmt) => {
                 let value_range = stmt.value().map(|value| value.syntax().range());
@@ -788,6 +860,7 @@ impl<'a> LoweringContext<'a> {
                     let value_expr = self.lower_expr(value, scope);
                     self.record_body_value(ControlFlowKind::Throw, value_expr);
                 }
+                None
             }
             Stmt::Try(stmt) => {
                 if let Some(body) = stmt.body() {
@@ -823,34 +896,41 @@ impl<'a> LoweringContext<'a> {
                         self.with_body(body_id, |this| this.lower_block_items(body, catch_scope));
                     }
                 }
+                None
             }
-            Stmt::Expr(stmt) => {
-                if let Some(expr) = stmt.expr() {
-                    self.lower_expr(expr, scope);
-                }
-            }
+            Stmt::Expr(stmt) => stmt.expr().map(|expr| self.lower_expr(expr, scope)),
         }
     }
 
     fn lower_block_items(&mut self, block: BlockExpr<'_>, scope: ScopeId) {
         let mut terminated = false;
         let mut may_fall_through = true;
+        let mut tail_value = None;
         for item in block.items() {
             if terminated && let Some(body) = self.current_body_mut() {
                 body.unreachable_ranges.push(item.syntax().range());
             }
 
             let item_fallthrough = self.item_may_fall_through(item);
-            self.lower_item(item, scope);
+            let item_expr = self.lower_item(item, scope);
 
             if !terminated {
                 may_fall_through = item_fallthrough;
                 terminated = !item_fallthrough;
+                tail_value = match item {
+                    Item::Stmt(Stmt::Expr(expr_stmt))
+                        if !expr_stmt.has_semicolon() && item_fallthrough =>
+                    {
+                        item_expr
+                    }
+                    _ => None,
+                };
             }
         }
 
         if let Some(body) = self.current_body_mut() {
             body.may_fall_through = may_fall_through;
+            body.tail_value = tail_value;
         }
     }
 
@@ -872,13 +952,29 @@ impl<'a> LoweringContext<'a> {
                     );
                 }
             }
-            Expr::Literal(_) | Expr::Error(_) => {}
+            Expr::Literal(literal) => {
+                if let Some(token) = literal.token()
+                    && let Some(kind) = literal_kind(token.kind())
+                {
+                    self.file.literals.push(LiteralInfo {
+                        owner: expr_id,
+                        kind,
+                        range: token.range(),
+                    });
+                }
+            }
+            Expr::Error(_) => {}
             Expr::Array(array) => {
+                let mut item_exprs = Vec::new();
                 if let Some(items) = array.items() {
                     for item in items.exprs() {
-                        self.lower_expr(item, scope);
+                        item_exprs.push(self.lower_expr(item, scope));
                     }
                 }
+                self.file.array_exprs.push(ArrayExprInfo {
+                    owner: expr_id,
+                    items: item_exprs,
+                });
             }
             Expr::Object(object) => {
                 for field in object.fields() {
@@ -894,24 +990,37 @@ impl<'a> LoweringContext<'a> {
                 }
             }
             Expr::If(if_expr) => {
-                if let Some(condition) = if_expr.condition() {
-                    self.lower_expr(condition, scope);
-                }
-                if let Some(then_branch) = if_expr.then_branch() {
-                    self.lower_block_in_child_scope(then_branch, scope);
-                }
-                if let Some(else_branch) = if_expr.else_branch().and_then(|branch| branch.body()) {
-                    self.lower_expr(else_branch, scope);
-                }
+                let condition = if_expr
+                    .condition()
+                    .map(|condition| self.lower_expr(condition, scope));
+                let then_branch = if_expr
+                    .then_branch()
+                    .map(|then_branch| self.lower_block_expr(then_branch, scope));
+                let else_branch = if_expr
+                    .else_branch()
+                    .and_then(|branch| branch.body())
+                    .map(|else_branch| self.lower_expr(else_branch, scope));
+                self.file.if_exprs.push(IfExprInfo {
+                    owner: expr_id,
+                    condition,
+                    then_branch,
+                    else_branch,
+                });
                 self.record_merge_point(MergePointKind::IfElse, if_expr.syntax().range());
             }
             Expr::Switch(switch_expr) => {
-                if let Some(scrutinee) = switch_expr.scrutinee() {
-                    self.lower_expr(scrutinee, scope);
-                }
+                let scrutinee = switch_expr
+                    .scrutinee()
+                    .map(|scrutinee| self.lower_expr(scrutinee, scope));
+                let mut arms = Vec::new();
                 for arm in switch_expr.arms() {
-                    self.lower_switch_arm(arm, scope);
+                    arms.push(self.lower_switch_arm(arm, scope));
                 }
+                self.file.switch_exprs.push(SwitchExprInfo {
+                    owner: expr_id,
+                    scrutinee,
+                    arms,
+                });
                 self.record_merge_point(MergePointKind::Switch, switch_expr.syntax().range());
             }
             Expr::While(while_expr) => {
@@ -1009,18 +1118,23 @@ impl<'a> LoweringContext<'a> {
             Expr::Closure(closure) => {
                 let closure_scope =
                     self.new_scope(ScopeKind::Closure, closure.syntax().range(), Some(scope));
-                self.new_body(
+                let body_id = self.new_body(
                     BodyKind::Closure,
                     closure.syntax().range(),
                     closure_scope,
                     None,
                 );
-                let body_id = BodyId((self.file.bodies.len() - 1) as u32);
                 let params = self.closure_param_bindings(closure);
                 self.lower_param_symbols(&params, None, closure_scope);
                 if let Some(body) = closure.body() {
-                    self.with_body(body_id, |this| this.lower_expr(body, closure_scope));
+                    let body_expr =
+                        self.with_body(body_id, |this| this.lower_expr(body, closure_scope));
+                    self.file.bodies[body_id.0 as usize].tail_value = Some(body_expr);
                 }
+                self.file.closure_exprs.push(ClosureExprInfo {
+                    owner: expr_id,
+                    body: body_id,
+                });
             }
             Expr::InterpolatedString(string) => {
                 let interpolation_scope = self.new_scope(
@@ -1048,34 +1162,110 @@ impl<'a> LoweringContext<'a> {
                 }
             }
             Expr::Unary(unary) => {
-                if let Some(expr) = unary.expr() {
-                    self.lower_expr(expr, scope);
+                let operand = unary.expr().map(|expr| self.lower_expr(expr, scope));
+                let operator_token = unary.operator_token();
+                if let Some(token) = operator_token
+                    && let Some(operator) = unary_operator(token.kind())
+                {
+                    self.file.unary_exprs.push(UnaryExprInfo {
+                        owner: expr_id,
+                        operator,
+                        operand,
+                        operator_range: Some(token.range()),
+                    });
                 }
             }
             Expr::Binary(binary) => {
-                if let Some(lhs) = binary.lhs() {
-                    self.lower_expr(lhs, scope);
-                }
-                if let Some(rhs) = binary.rhs() {
-                    self.lower_expr(rhs, scope);
+                let lhs = binary.lhs().map(|lhs| self.lower_expr(lhs, scope));
+                let rhs = binary.rhs().map(|rhs| self.lower_expr(rhs, scope));
+                let operator_token = binary.operator_token();
+                if let Some(token) = operator_token
+                    && let Some(operator) = binary_operator(token.kind())
+                {
+                    self.file.binary_exprs.push(BinaryExprInfo {
+                        owner: expr_id,
+                        operator,
+                        lhs,
+                        rhs,
+                        operator_range: Some(token.range()),
+                    });
                 }
             }
             Expr::Assign(assign) => {
                 let assignment_start = self.file.references.len();
-                let lhs_reference = if let Some(lhs) = assign.lhs() {
-                    let lhs_range = lhs.syntax().range();
-                    self.lower_expr(lhs, scope);
-                    if matches!(lhs, Expr::Name(_)) {
-                        self.first_name_reference_from(assignment_start, lhs_range)
-                    } else {
-                        None
-                    }
+                let assignment_operator = assign.operator_token().map(|token| token.kind());
+                let mut mutation_receiver = None::<ReferenceId>;
+                let lhs_expr = if let Some(lhs) = assign.lhs() {
+                    let lowered = self.lower_expr(lhs, scope);
+                    mutation_receiver = match lhs {
+                        Expr::Field(field) => field.receiver().and_then(|receiver| {
+                            self.simple_receiver_reference_from(assignment_start, receiver)
+                        }),
+                        Expr::Index(index) => index.receiver().and_then(|receiver| {
+                            self.simple_receiver_reference_from(assignment_start, receiver)
+                        }),
+                        _ => None,
+                    };
+                    Some(lowered)
                 } else {
                     None
                 };
                 if let Some(rhs) = assign.rhs() {
                     let rhs_expr = self.lower_expr(rhs, scope);
-                    if let Some(reference) = lhs_reference {
+                    if let Some(lhs_expr) = lhs_expr
+                        && matches!(assignment_operator, Some(TokenKind::Eq))
+                        && let Some(receiver_reference) = mutation_receiver
+                    {
+                        match self.file.expr(lhs_expr).kind {
+                            ExprKind::Field => {
+                                if let Some(access) = self
+                                    .file
+                                    .member_accesses
+                                    .iter()
+                                    .find(|access| access.owner == lhs_expr)
+                                {
+                                    self.pending_mutations.push(PendingMutation {
+                                        receiver_reference,
+                                        value: rhs_expr,
+                                        kind: PendingMutationKind::Field {
+                                            name: self
+                                                .file
+                                                .reference(access.field_reference)
+                                                .name
+                                                .clone(),
+                                        },
+                                        range: assign.syntax().range(),
+                                    });
+                                }
+                            }
+                            ExprKind::Index => {
+                                if let Some(index) = self
+                                    .file
+                                    .index_exprs
+                                    .iter()
+                                    .find(|index| index.owner == lhs_expr)
+                                    && let Some(index_expr) = index.index
+                                {
+                                    self.pending_mutations.push(PendingMutation {
+                                        receiver_reference,
+                                        value: rhs_expr,
+                                        kind: PendingMutationKind::Index { index: index_expr },
+                                        range: assign.syntax().range(),
+                                    });
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    if let Some(reference) = lhs_expr
+                        .filter(|lhs_expr| self.file.expr(*lhs_expr).kind == ExprKind::Name)
+                        .and_then(|lhs_expr| {
+                            self.first_name_reference_from(
+                                assignment_start,
+                                self.file.expr(lhs_expr).range,
+                            )
+                        })
+                    {
                         self.pending_value_flows.push(PendingValueFlow {
                             reference,
                             expr: rhs_expr,
@@ -1099,10 +1289,11 @@ impl<'a> LoweringContext<'a> {
                 let callee_reference = callee_range
                     .and_then(|range| self.first_reference_from(reference_start, range));
                 let mut arg_ranges = Vec::new();
+                let mut arg_exprs = Vec::new();
                 if let Some(args) = call.args() {
                     for arg in args.args() {
                         arg_ranges.push(arg.syntax().range());
-                        self.lower_expr(arg, scope);
+                        arg_exprs.push(self.lower_expr(arg, scope));
                     }
                 }
                 self.new_call(
@@ -1111,15 +1302,19 @@ impl<'a> LoweringContext<'a> {
                     callee_range,
                     callee_reference,
                     arg_ranges,
+                    arg_exprs,
                 );
             }
             Expr::Index(index) => {
-                if let Some(receiver) = index.receiver() {
-                    self.lower_expr(receiver, scope);
-                }
-                if let Some(expr) = index.index() {
-                    self.lower_expr(expr, scope);
-                }
+                let receiver = index
+                    .receiver()
+                    .map(|receiver| self.lower_expr(receiver, scope));
+                let index = index.index().map(|expr| self.lower_expr(expr, scope));
+                self.file.index_exprs.push(IndexExprInfo {
+                    owner: expr_id,
+                    receiver,
+                    index,
+                });
             }
             Expr::Field(field) => {
                 if let Some(receiver) = field.receiver() {
@@ -1132,6 +1327,7 @@ impl<'a> LoweringContext<'a> {
                             scope,
                         );
                         self.file.member_accesses.push(MemberAccess {
+                            owner: expr_id,
                             range: field.syntax().range(),
                             scope,
                             receiver: receiver_expr,
@@ -1140,27 +1336,46 @@ impl<'a> LoweringContext<'a> {
                     }
                 }
             }
-            Expr::Block(block) => self.lower_block_in_child_scope(block, scope),
+            Expr::Block(block) => {
+                let body = self.lower_block_expr_with_owner(block, scope);
+                self.file.block_exprs.push(BlockExprInfo {
+                    owner: expr_id,
+                    body,
+                });
+            }
         }
 
         expr_id
     }
 
-    fn lower_block_in_child_scope(&mut self, block: BlockExpr<'_>, parent_scope: ScopeId) {
+    fn lower_block_expr(&mut self, block: BlockExpr<'_>, parent_scope: ScopeId) -> ExprId {
+        let expr_id = self.alloc_expr(ExprKind::Block, block.syntax().range(), parent_scope);
+        let body = self.lower_block_expr_with_owner(block, parent_scope);
+        self.file.block_exprs.push(BlockExprInfo {
+            owner: expr_id,
+            body,
+        });
+        expr_id
+    }
+
+    fn lower_block_expr_with_owner(
+        &mut self,
+        block: BlockExpr<'_>,
+        parent_scope: ScopeId,
+    ) -> BodyId {
         let block_scope =
             self.new_scope(ScopeKind::Block, block.syntax().range(), Some(parent_scope));
         let body_id = self.new_body(BodyKind::Block, block.syntax().range(), block_scope, None);
         self.with_body(body_id, |this| this.lower_block_items(block, block_scope));
+        body_id
     }
 
-    fn lower_switch_arm(&mut self, arm: SwitchArm<'_>, scope: ScopeId) {
+    fn lower_switch_arm(&mut self, arm: SwitchArm<'_>, scope: ScopeId) -> Option<ExprId> {
         let arm_scope = self.new_scope(ScopeKind::SwitchArm, arm.syntax().range(), Some(scope));
         if let Some(patterns) = arm.patterns() {
             self.lower_switch_patterns(patterns, arm_scope);
         }
-        if let Some(value) = arm.value() {
-            self.lower_expr(value, arm_scope);
-        }
+        arm.value().map(|value| self.lower_expr(value, arm_scope))
     }
 
     fn lower_switch_patterns(&mut self, patterns: SwitchPatternList<'_>, scope: ScopeId) {
@@ -1287,4 +1502,55 @@ fn normalize_object_field_name(text: &str) -> String {
         .and_then(|text| text.strip_suffix('"'))
         .unwrap_or(text)
         .to_owned()
+}
+
+fn literal_kind(kind: TokenKind) -> Option<LiteralKind> {
+    match kind {
+        TokenKind::Int => Some(LiteralKind::Int),
+        TokenKind::Float => Some(LiteralKind::Float),
+        TokenKind::String | TokenKind::RawString | TokenKind::BacktickString => {
+            Some(LiteralKind::String)
+        }
+        TokenKind::Char => Some(LiteralKind::Char),
+        TokenKind::TrueKw | TokenKind::FalseKw => Some(LiteralKind::Bool),
+        _ => None,
+    }
+}
+
+fn unary_operator(kind: TokenKind) -> Option<UnaryOperator> {
+    match kind {
+        TokenKind::Plus => Some(UnaryOperator::Plus),
+        TokenKind::Minus => Some(UnaryOperator::Minus),
+        TokenKind::Bang => Some(UnaryOperator::Not),
+        _ => None,
+    }
+}
+
+fn binary_operator(kind: TokenKind) -> Option<BinaryOperator> {
+    match kind {
+        TokenKind::PipePipe => Some(BinaryOperator::OrOr),
+        TokenKind::Pipe => Some(BinaryOperator::Or),
+        TokenKind::Caret => Some(BinaryOperator::Xor),
+        TokenKind::AmpAmp => Some(BinaryOperator::AndAnd),
+        TokenKind::Amp => Some(BinaryOperator::And),
+        TokenKind::EqEq => Some(BinaryOperator::EqEq),
+        TokenKind::BangEq => Some(BinaryOperator::NotEq),
+        TokenKind::InKw => Some(BinaryOperator::In),
+        TokenKind::Gt => Some(BinaryOperator::Gt),
+        TokenKind::GtEq => Some(BinaryOperator::GtEq),
+        TokenKind::Lt => Some(BinaryOperator::Lt),
+        TokenKind::LtEq => Some(BinaryOperator::LtEq),
+        TokenKind::QuestionQuestion => Some(BinaryOperator::NullCoalesce),
+        TokenKind::Range => Some(BinaryOperator::Range),
+        TokenKind::RangeEq => Some(BinaryOperator::RangeInclusive),
+        TokenKind::Plus => Some(BinaryOperator::Add),
+        TokenKind::Minus => Some(BinaryOperator::Subtract),
+        TokenKind::Star => Some(BinaryOperator::Multiply),
+        TokenKind::Slash => Some(BinaryOperator::Divide),
+        TokenKind::Percent => Some(BinaryOperator::Remainder),
+        TokenKind::StarStar => Some(BinaryOperator::Power),
+        TokenKind::Shl => Some(BinaryOperator::ShiftLeft),
+        TokenKind::Shr => Some(BinaryOperator::ShiftRight),
+        _ => None,
+    }
 }

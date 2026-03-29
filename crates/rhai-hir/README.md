@@ -134,6 +134,18 @@ This checklist tracks what the current lowering layer already models and what st
 - [x] function doc signatures usable as inference inputs
 - [x] host/project-provided symbol signatures pluggable into HIR consumers
 - [x] enough expression/query APIs for `expr -> inferred type` lookups downstream
+- [x] literal kind/value-class modeling so downstream inference can distinguish `int` / `float` / `string` / `bool` / `char`
+- [x] unary operator kind modeling for operator-driven result typing
+- [x] binary operator kind modeling for operator-driven result typing
+- [x] richer expression payloads or child-expression edges so downstream inference can reason about array items, object members, index bases, and tail expressions
+- [x] direct call argument `ExprId` links in call-site records so parameter propagation does not need to recover expressions from ranges
+- [ ] path-segment and module-qualified resolution that inference can trust for `foo::bar` lookups
+- [x] field/index write modeling for simple symbol-receiver mutations like `obj.x = value` and `arr[i] = value`
+- [ ] nested/compound write modeling for paths like `root.child.x = value` and `obj.x += 1`
+- [ ] explicit expected-type sites for arguments, returns, declarations, closures, and other contexts that push types into child expressions
+- [ ] loop/iterator binding edges so `for x in value` can seed element types into `x`
+- [ ] richer interpolation / string-part ownership so embedded expressions participate cleanly in type queries
+- [ ] object-literal shape metadata that can preserve per-field precision when downstream inference grows beyond map-style fallback typing
 
 ### Project Rename Readiness
 

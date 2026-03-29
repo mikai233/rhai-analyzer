@@ -105,6 +105,49 @@ pub enum ExprKind {
     Error,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum LiteralKind {
+    Int,
+    Float,
+    String,
+    Char,
+    Bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum UnaryOperator {
+    Plus,
+    Minus,
+    Not,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum BinaryOperator {
+    OrOr,
+    Or,
+    Xor,
+    AndAnd,
+    And,
+    EqEq,
+    NotEq,
+    In,
+    Gt,
+    GtEq,
+    Lt,
+    LtEq,
+    NullCoalesce,
+    Range,
+    RangeInclusive,
+    Add,
+    Subtract,
+    Multiply,
+    Divide,
+    Remainder,
+    Power,
+    ShiftLeft,
+    ShiftRight,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ControlFlowEvent {
     pub kind: ControlFlowKind,
@@ -161,6 +204,7 @@ pub struct Body {
     pub control_flow: Vec<ControlFlowEvent>,
     pub return_values: Vec<ExprId>,
     pub throw_values: Vec<ExprId>,
+    pub tail_value: Option<ExprId>,
     pub merge_points: Vec<ControlFlowMergePoint>,
     pub may_fall_through: bool,
     pub unreachable_ranges: Vec<TextRange>,
@@ -172,6 +216,70 @@ pub struct ExprNode {
     pub range: TextRange,
     pub scope: ScopeId,
     pub result_slot: TypeSlotId,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct LiteralInfo {
+    pub owner: ExprId,
+    pub kind: LiteralKind,
+    pub range: TextRange,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ArrayExprInfo {
+    pub owner: ExprId,
+    pub items: Vec<ExprId>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct BlockExprInfo {
+    pub owner: ExprId,
+    pub body: BodyId,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct IfExprInfo {
+    pub owner: ExprId,
+    pub condition: Option<ExprId>,
+    pub then_branch: Option<ExprId>,
+    pub else_branch: Option<ExprId>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct SwitchExprInfo {
+    pub owner: ExprId,
+    pub scrutinee: Option<ExprId>,
+    pub arms: Vec<Option<ExprId>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ClosureExprInfo {
+    pub owner: ExprId,
+    pub body: BodyId,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct UnaryExprInfo {
+    pub owner: ExprId,
+    pub operator: UnaryOperator,
+    pub operand: Option<ExprId>,
+    pub operator_range: Option<TextRange>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct BinaryExprInfo {
+    pub owner: ExprId,
+    pub operator: BinaryOperator,
+    pub lhs: Option<ExprId>,
+    pub rhs: Option<ExprId>,
+    pub operator_range: Option<TextRange>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct IndexExprInfo {
+    pub owner: ExprId,
+    pub receiver: Option<ExprId>,
+    pub index: Option<ExprId>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -244,6 +352,20 @@ pub struct SymbolValueFlow {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SymbolMutationKind {
+    Field { name: String },
+    Index { index: ExprId },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SymbolMutation {
+    pub symbol: SymbolId,
+    pub value: ExprId,
+    pub kind: SymbolMutationKind,
+    pub range: TextRange,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CallSite {
     pub range: TextRange,
     pub scope: ScopeId,
@@ -251,6 +373,7 @@ pub struct CallSite {
     pub callee_reference: Option<ReferenceId>,
     pub resolved_callee: Option<SymbolId>,
     pub arg_ranges: Vec<TextRange>,
+    pub arg_exprs: Vec<ExprId>,
     pub parameter_bindings: Vec<Option<SymbolId>>,
 }
 
@@ -264,6 +387,7 @@ pub struct ObjectFieldInfo {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MemberAccess {
+    pub owner: ExprId,
     pub range: TextRange,
     pub scope: ScopeId,
     pub receiver: ExprId,
@@ -540,8 +664,18 @@ pub struct FileHir {
     pub references: Vec<Reference>,
     pub bodies: Vec<Body>,
     pub exprs: Vec<ExprNode>,
+    pub literals: Vec<LiteralInfo>,
+    pub array_exprs: Vec<ArrayExprInfo>,
+    pub block_exprs: Vec<BlockExprInfo>,
+    pub if_exprs: Vec<IfExprInfo>,
+    pub switch_exprs: Vec<SwitchExprInfo>,
+    pub closure_exprs: Vec<ClosureExprInfo>,
+    pub unary_exprs: Vec<UnaryExprInfo>,
+    pub binary_exprs: Vec<BinaryExprInfo>,
+    pub index_exprs: Vec<IndexExprInfo>,
     pub type_slots: Vec<TypeSlot>,
     pub value_flows: Vec<SymbolValueFlow>,
+    pub symbol_mutations: Vec<SymbolMutation>,
     pub calls: Vec<CallSite>,
     pub object_fields: Vec<ObjectFieldInfo>,
     pub member_accesses: Vec<MemberAccess>,

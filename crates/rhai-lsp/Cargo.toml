@@ -13,3 +13,6 @@ rhai-db.workspace = true
 rhai-ide.workspace = true
 rhai-project.workspace = true
 rhai-vfs.workspace = true
+
+[dev-dependencies]
+rhai-syntax.workspace = true

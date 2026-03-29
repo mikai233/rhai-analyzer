@@ -7,7 +7,7 @@ use rhai_hir::{
     CompletionSymbol, DocumentSymbol, ExternalSignatureIndex, FileBackedSymbolIdentity, FileHir,
     FileSymbolIndex, FunctionTypeRef, MemberCompletion, ModuleExportEdge, ModuleGraphIndex,
     NavigationTarget, RenamePreflightIssue, SemanticDiagnostic, StableSymbolKey, SymbolId, TypeRef,
-    WorkspaceSymbol,
+    TypeSlotAssignments, WorkspaceSymbol,
 };
 use rhai_syntax::{Parse, SyntaxError, TextRange, TextSize};
 use rhai_vfs::{DocumentVersion, FileId};
@@ -195,6 +195,12 @@ pub struct AutoImportCandidate {
     pub insert_text: String,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FileTypeInference {
+    pub expr_types: TypeSlotAssignments,
+    pub symbol_types: HashMap<SymbolId, TypeRef>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CachedNavigationTarget {
     pub symbol: FileBackedSymbolIdentity,
@@ -308,6 +314,7 @@ pub struct HostType {
 #[derive(Debug, Clone, Default)]
 pub(crate) struct ProjectSemantics {
     pub(crate) external_signatures: ExternalSignatureIndex,
+    pub(crate) global_functions: Vec<HostFunction>,
     pub(crate) modules: Vec<HostModule>,
     pub(crate) types: Vec<HostType>,
     pub(crate) disabled_symbols: Vec<String>,
@@ -341,6 +348,7 @@ pub(crate) struct CachedFileAnalysis {
     pub(crate) document_symbols: Arc<[DocumentSymbol]>,
     pub(crate) workspace_symbols: Arc<[WorkspaceSymbol]>,
     pub(crate) module_graph: Arc<ModuleGraphIndex>,
+    pub(crate) type_inference: Arc<FileTypeInference>,
     pub(crate) dependencies: Arc<FileAnalysisDependencies>,
     pub(crate) query_support: Option<Arc<PerFileQuerySupport>>,
 }

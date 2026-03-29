@@ -3,11 +3,19 @@ pub enum TypeRef {
     Unknown,
     Any,
     Never,
+    Dynamic,
     Bool,
     Int,
     Float,
+    Decimal,
     String,
     Char,
+    Blob,
+    Timestamp,
+    FnPtr,
+    Unit,
+    Range,
+    RangeInclusive,
     Named(String),
     Applied { name: String, args: Vec<TypeRef> },
     Array(Box<TypeRef>),
@@ -80,6 +88,10 @@ impl<'a> Parser<'a> {
         self.skip_ws();
 
         if self.eat_char('(') {
+            self.skip_ws();
+            if self.eat_char(')') {
+                return Some(TypeRef::Unit);
+            }
             let ty = self.parse_type()?;
             self.skip_ws();
             self.expect_char(')')?;
@@ -91,11 +103,23 @@ impl<'a> Parser<'a> {
             "any" => Some(TypeRef::Any),
             "unknown" => Some(TypeRef::Unknown),
             "never" => Some(TypeRef::Never),
+            "dynamic" | "Dynamic" => Some(TypeRef::Dynamic),
             "bool" => Some(TypeRef::Bool),
             "int" => Some(TypeRef::Int),
             "float" => Some(TypeRef::Float),
+            "decimal" => Some(TypeRef::Decimal),
             "string" => Some(TypeRef::String),
             "char" => Some(TypeRef::Char),
+            "blob" => Some(TypeRef::Blob),
+            "timestamp" => Some(TypeRef::Timestamp),
+            "Fn" | "FnPtr" => Some(TypeRef::FnPtr),
+            "range" => {
+                if self.eat_char('=') {
+                    Some(TypeRef::RangeInclusive)
+                } else {
+                    Some(TypeRef::Range)
+                }
+            }
             "array" => {
                 let inner = self.parse_single_generic()?;
                 Some(TypeRef::Array(Box::new(inner)))
@@ -295,5 +319,16 @@ mod tests {
                 args: vec![TypeRef::Int, TypeRef::Nullable(Box::new(TypeRef::String)),],
             })
         );
+    }
+
+    #[test]
+    fn parses_core_rhai_builtin_type_refs() {
+        assert_eq!(parse_type_ref("blob"), Some(TypeRef::Blob));
+        assert_eq!(parse_type_ref("timestamp"), Some(TypeRef::Timestamp));
+        assert_eq!(parse_type_ref("Fn"), Some(TypeRef::FnPtr));
+        assert_eq!(parse_type_ref("Dynamic"), Some(TypeRef::Dynamic));
+        assert_eq!(parse_type_ref("()"), Some(TypeRef::Unit));
+        assert_eq!(parse_type_ref("range"), Some(TypeRef::Range));
+        assert_eq!(parse_type_ref("range="), Some(TypeRef::RangeInclusive));
     }
 }

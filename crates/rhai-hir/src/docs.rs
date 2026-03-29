@@ -47,7 +47,7 @@ pub fn collect_doc_block(
                     break;
                 }
             }
-            _ if doc_tokens.is_empty() => continue,
+            _ if doc_tokens.is_empty() => return None,
             _ => break,
         }
     }
@@ -146,11 +146,20 @@ fn split_name_and_type(input: &str) -> Option<(&str, &str)> {
 
 #[cfg(test)]
 mod tests {
-    use rhai_syntax::{TextSize, lex_text};
+    use rhai_syntax::{TextSize, lex_text, parse_text};
 
     use crate::ty::TypeRef;
 
     use super::{DocTag, collect_doc_block};
+
+    fn assert_valid_rhai_syntax(source: &str) {
+        let parse = parse_text(source);
+        assert!(
+            parse.errors().is_empty(),
+            "expected valid Rhai syntax, got errors: {:?}",
+            parse.errors()
+        );
+    }
 
     #[test]
     fn collects_leading_doc_block_and_tags() {
@@ -161,6 +170,7 @@ mod tests {
 /// @return int
 fn add(x, y) { x + y }
 "#;
+        assert_valid_rhai_syntax(source);
         let lexed = lex_text(source);
         let fn_offset = TextSize::from(u32::try_from(source.find("fn").unwrap()).unwrap());
         let docs = collect_doc_block(lexed.tokens(), source, fn_offset).expect("expected docs");
@@ -185,9 +195,21 @@ fn add(x, y) { x + y }
     #[test]
     fn stops_doc_attachment_at_blank_lines() {
         let source = "/// first\n\nfn value() {}";
+        assert_valid_rhai_syntax(source);
         let lexed = lex_text(source);
         let fn_offset = TextSize::from(u32::try_from(source.find("fn").unwrap()).unwrap());
 
         assert!(collect_doc_block(lexed.tokens(), source, fn_offset).is_none());
+    }
+
+    #[test]
+    fn does_not_attach_docs_past_a_previous_statement() {
+        let source = "/// @type int\nlet first = value;\nlet second = first;";
+        assert_valid_rhai_syntax(source);
+        let lexed = lex_text(source);
+        let second_offset =
+            TextSize::from(u32::try_from(source.find("let second").unwrap()).unwrap());
+
+        assert!(collect_doc_block(lexed.tokens(), source, second_offset).is_none());
     }
 }

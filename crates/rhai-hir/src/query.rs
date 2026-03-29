@@ -3,14 +3,62 @@ use std::collections::{BTreeMap, HashSet};
 use rhai_syntax::{TextRange, TextSize};
 
 use crate::{
-    BodyId, CallSite, CallSiteId, CompletionSymbol, ControlFlowEvent, ControlFlowMergePoint,
-    DocBlock, DocBlockId, DocTag, DocumentedField, ExportDirective, ExprId, ExprKind, FileHir,
-    FindReferencesResult, FunctionTypeRef, ImportDirective, MemberAccess, MemberCompletion,
-    MemberCompletionSource, NavigationTarget, ParameterHint, ParameterHintParameter, ReferenceId,
-    ReferenceLocation, ScopeId, SymbolId, SymbolKind, TypeRef, TypeSlotId, WorkspaceSymbol,
+    ArrayExprInfo, BinaryExprInfo, BlockExprInfo, BodyId, CallSite, CallSiteId, ClosureExprInfo,
+    CompletionSymbol, ControlFlowEvent, ControlFlowMergePoint, DocBlock, DocBlockId, DocTag,
+    DocumentedField, ExportDirective, ExprId, ExprKind, FileHir, FindReferencesResult,
+    FunctionTypeRef, IfExprInfo, ImportDirective, IndexExprInfo, LiteralInfo, MemberAccess,
+    MemberCompletion, MemberCompletionSource, NavigationTarget, ParameterHint,
+    ParameterHintParameter, ReferenceId, ReferenceLocation, ScopeId, SwitchExprInfo, SymbolId,
+    SymbolKind, TypeRef, TypeSlotId, UnaryExprInfo, WorkspaceSymbol,
 };
 
 impl FileHir {
+    pub fn literal(&self, expr: ExprId) -> Option<&LiteralInfo> {
+        self.literals.iter().find(|literal| literal.owner == expr)
+    }
+
+    pub fn array_expr(&self, expr: ExprId) -> Option<&ArrayExprInfo> {
+        self.array_exprs.iter().find(|array| array.owner == expr)
+    }
+
+    pub fn block_expr(&self, expr: ExprId) -> Option<&BlockExprInfo> {
+        self.block_exprs.iter().find(|block| block.owner == expr)
+    }
+
+    pub fn if_expr(&self, expr: ExprId) -> Option<&IfExprInfo> {
+        self.if_exprs.iter().find(|if_expr| if_expr.owner == expr)
+    }
+
+    pub fn switch_expr(&self, expr: ExprId) -> Option<&SwitchExprInfo> {
+        self.switch_exprs
+            .iter()
+            .find(|switch_expr| switch_expr.owner == expr)
+    }
+
+    pub fn closure_expr(&self, expr: ExprId) -> Option<&ClosureExprInfo> {
+        self.closure_exprs
+            .iter()
+            .find(|closure| closure.owner == expr)
+    }
+
+    pub fn unary_expr(&self, expr: ExprId) -> Option<&UnaryExprInfo> {
+        self.unary_exprs.iter().find(|unary| unary.owner == expr)
+    }
+
+    pub fn binary_expr(&self, expr: ExprId) -> Option<&BinaryExprInfo> {
+        self.binary_exprs.iter().find(|binary| binary.owner == expr)
+    }
+
+    pub fn index_expr(&self, expr: ExprId) -> Option<&IndexExprInfo> {
+        self.index_exprs.iter().find(|index| index.owner == expr)
+    }
+
+    pub fn member_access(&self, expr: ExprId) -> Option<&MemberAccess> {
+        self.member_accesses
+            .iter()
+            .find(|access| access.owner == expr)
+    }
+
     pub fn body_of(&self, owner: SymbolId) -> Option<BodyId> {
         self.bodies
             .iter()
@@ -28,6 +76,10 @@ impl FileHir {
 
     pub fn body_throw_values(&self, body: BodyId) -> impl Iterator<Item = ExprId> + '_ {
         self.body(body).throw_values.iter().copied()
+    }
+
+    pub fn body_tail_value(&self, body: BodyId) -> Option<ExprId> {
+        self.body(body).tail_value
     }
 
     pub fn body_merge_points(

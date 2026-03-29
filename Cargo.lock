@@ -138,6 +138,7 @@ dependencies = [
  "rhai-db",
  "rhai-ide",
  "rhai-project",
+ "rhai-syntax",
  "rhai-vfs",
  "serde_json",
 ]

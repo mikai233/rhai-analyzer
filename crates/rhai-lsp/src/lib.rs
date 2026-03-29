@@ -141,7 +141,7 @@ impl Server {
         Ok(analysis
             .auto_import_actions(FilePosition { file_id, offset })
             .into_iter()
-            .map(|action| code_action_edit_from_ide(uri, document.version, action))
+            .filter_map(|action| code_action_edit_from_ide(uri, document.version, action))
             .collect())
     }
 
@@ -252,19 +252,32 @@ fn dedupe_diagnostic_updates(updates: Vec<DiagnosticUpdate>) -> Vec<DiagnosticUp
     by_uri.into_values().collect()
 }
 
-fn code_action_edit_from_ide(uri: &Uri, version: i32, action: AutoImportAction) -> CodeActionEdit {
-    CodeActionEdit {
+fn code_action_edit_from_ide(
+    uri: &Uri,
+    version: i32,
+    action: AutoImportAction,
+) -> Option<CodeActionEdit> {
+    let [file_edit] = action.source_change.file_edits.as_slice() else {
+        return None;
+    };
+    let [edit] = file_edit.edits.as_slice() else {
+        return None;
+    };
+    let insert_offset = edit.insertion_offset()?;
+
+    Some(CodeActionEdit {
         title: action.label,
         uri: uri.clone(),
         version: Some(version),
-        insert_offset: action.insert_offset,
-        insert_text: action.insert_text,
-    }
+        insert_offset,
+        insert_text: edit.new_text.clone(),
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use lsp_types::Uri;
+    use rhai_syntax::parse_text;
 
     use super::Server;
 
@@ -288,24 +301,23 @@ mod tests {
         let mut server = Server::new();
         let provider_uri = file_url("provider.rhai");
         let consumer_uri = file_url("consumer.rhai");
+        let provider_text = "fn helper() {} export helper as shared_tools;";
+        let consumer_text = "import shared_tools as tools;";
+        let renamed_provider_text = "fn helper() {} export helper as renamed_tools;";
+
+        assert_valid_rhai_syntax(provider_text);
+        assert_valid_rhai_syntax(consumer_text);
+        assert_valid_rhai_syntax(renamed_provider_text);
 
         server
-            .open_document(
-                provider_uri.clone(),
-                1,
-                "fn helper() {} export helper as shared_tools;",
-            )
+            .open_document(provider_uri.clone(), 1, provider_text)
             .expect("expected provider open to succeed");
         server
-            .open_document(consumer_uri.clone(), 1, "import shared_tools as tools;")
+            .open_document(consumer_uri.clone(), 1, consumer_text)
             .expect("expected consumer open to succeed");
 
         let updates = server
-            .change_document(
-                provider_uri.clone(),
-                2,
-                "fn helper() {} export helper as renamed_tools;",
-            )
+            .change_document(provider_uri.clone(), 2, renamed_provider_text)
             .expect("expected provider change to succeed");
 
         assert!(updates.iter().any(|update| update.uri == provider_uri));
@@ -354,16 +366,17 @@ mod tests {
         let mut server = Server::new();
         let provider_uri = file_url("provider.rhai");
         let consumer_uri = file_url("consumer.rhai");
+        let provider_text = "fn helper() {} export helper as shared_tools;";
+        let consumer_text = "fn run() { shared_tools(); }";
+
+        assert_valid_rhai_syntax(provider_text);
+        assert_valid_rhai_syntax(consumer_text);
 
         server
-            .open_document(
-                provider_uri,
-                1,
-                "fn helper() {} export helper as shared_tools;",
-            )
+            .open_document(provider_uri, 1, provider_text)
             .expect("expected provider open to succeed");
         server
-            .open_document(consumer_uri.clone(), 1, "fn run() { shared_tools(); }")
+            .open_document(consumer_uri.clone(), 1, consumer_text)
             .expect("expected consumer open to succeed");
 
         let actions = server
@@ -397,5 +410,14 @@ mod tests {
 
     fn offset_in(text: &str, needle: &str) -> u32 {
         u32::try_from(text.find(needle).expect("expected needle")).expect("expected offset")
+    }
+
+    fn assert_valid_rhai_syntax(text: &str) {
+        let parse = parse_text(text);
+        assert!(
+            parse.errors().is_empty(),
+            "expected valid Rhai syntax, got errors: {:?}",
+            parse.errors()
+        );
     }
 }

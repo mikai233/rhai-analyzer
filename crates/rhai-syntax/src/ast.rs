@@ -453,6 +453,10 @@ impl<'a> ExprStmt<'a> {
     pub fn expr(self) -> Option<Expr<'a>> {
         child(self.syntax)
     }
+
+    pub fn has_semicolon(self) -> bool {
+        token_by_kind(self.syntax, TokenKind::Semicolon).is_some()
+    }
 }
 
 impl<'a> NameExpr<'a> {
