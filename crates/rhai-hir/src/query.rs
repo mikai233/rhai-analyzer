@@ -41,12 +41,22 @@ impl FileHir {
             .find(|closure| closure.owner == expr)
     }
 
+    pub fn for_expr(&self, expr: ExprId) -> Option<&crate::ForExprInfo> {
+        self.for_exprs
+            .iter()
+            .find(|for_expr| for_expr.owner == expr)
+    }
+
     pub fn unary_expr(&self, expr: ExprId) -> Option<&UnaryExprInfo> {
         self.unary_exprs.iter().find(|unary| unary.owner == expr)
     }
 
     pub fn binary_expr(&self, expr: ExprId) -> Option<&BinaryExprInfo> {
         self.binary_exprs.iter().find(|binary| binary.owner == expr)
+    }
+
+    pub fn assign_expr(&self, expr: ExprId) -> Option<&crate::AssignExprInfo> {
+        self.assign_exprs.iter().find(|assign| assign.owner == expr)
     }
 
     pub fn index_expr(&self, expr: ExprId) -> Option<&IndexExprInfo> {
@@ -480,7 +490,21 @@ impl FileHir {
     fn object_field_annotation_from_expr(&self, expr: ExprId) -> Option<TypeRef> {
         match self.expr(expr).kind {
             ExprKind::Literal => None,
-            ExprKind::Object => Some(TypeRef::Named("object".to_owned())),
+            ExprKind::Object => Some(TypeRef::Object(
+                self.object_fields
+                    .iter()
+                    .filter(|field| field.owner == expr)
+                    .map(|field| {
+                        (
+                            field.name.clone(),
+                            field
+                                .value
+                                .and_then(|value| self.object_field_annotation_from_expr(value))
+                                .unwrap_or(TypeRef::Unknown),
+                        )
+                    })
+                    .collect(),
+            )),
             ExprKind::Array => Some(TypeRef::Array(Box::new(TypeRef::Unknown))),
             ExprKind::Closure => Some(TypeRef::Function(FunctionTypeRef {
                 params: Vec::new(),

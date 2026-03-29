@@ -1210,7 +1210,8 @@ impl AnalyzerDatabase {
                     continue;
                 };
                 let export = &linked_import.exports[0];
-                let Some((provider_symbol, exported_ty)) = self.exported_symbol_type(export) else {
+                let Some((_provider_symbol, exported_ty)) = self.exported_symbol_type(export)
+                else {
                     continue;
                 };
 
@@ -1221,22 +1222,24 @@ impl AnalyzerDatabase {
                     exported_ty.clone(),
                 );
 
-                let Some(provider_analysis) = self.analysis.get(&export.file_id) else {
+                let Some((provider_file_id, provider_symbol)) =
+                    self.resolve_exported_function_symbol(export, &mut HashSet::new())
+                else {
                     continue;
                 };
-                if provider_analysis.hir.symbol(provider_symbol).kind
-                    != rhai_hir::SymbolKind::Function
-                {
+                let Some(provider_analysis) = self.analysis.get(&provider_file_id) else {
                     continue;
-                }
+                };
 
                 let parameters = provider_analysis.hir.function_parameters(provider_symbol);
-                for call in importer_analysis
-                    .hir
-                    .calls
-                    .iter()
-                    .filter(|call| call.resolved_callee == Some(import_alias))
-                {
+                for call in importer_analysis.hir.calls.iter().filter(|call| {
+                    self.call_targets_import_alias(
+                        importer_file_id,
+                        importer_analysis.hir.as_ref(),
+                        call,
+                        import_alias,
+                    )
+                }) {
                     for (index, parameter) in parameters.iter().copied().enumerate() {
                         let Some(arg_expr) = call.arg_exprs.get(index).copied() else {
                             continue;
@@ -1249,13 +1252,235 @@ impl AnalyzerDatabase {
                         else {
                             continue;
                         };
-                        merge_seed_type(&mut seeds, export.file_id, parameter, arg_ty);
+                        merge_seed_type(&mut seeds, provider_file_id, parameter, arg_ty);
                     }
                 }
             }
         }
 
         seeds
+    }
+
+    fn resolve_exported_function_symbol(
+        &self,
+        export: &LocatedModuleExport,
+        visited: &mut HashSet<(FileId, SymbolId)>,
+    ) -> Option<(FileId, SymbolId)> {
+        let target = export.export.target.as_ref()?;
+        self.resolve_callable_function_symbol(export.file_id, target.symbol, visited)
+    }
+
+    fn resolve_callable_function_symbol(
+        &self,
+        file_id: FileId,
+        symbol: SymbolId,
+        visited: &mut HashSet<(FileId, SymbolId)>,
+    ) -> Option<(FileId, SymbolId)> {
+        if !visited.insert((file_id, symbol)) {
+            return None;
+        }
+
+        let analysis = self.analysis.get(&file_id)?;
+        let result = match analysis.hir.symbol(symbol).kind {
+            rhai_hir::SymbolKind::Function => Some((file_id, symbol)),
+            rhai_hir::SymbolKind::ImportAlias => self
+                .linked_import_for_alias(file_id, analysis.hir.as_ref(), symbol)
+                .filter(|linked_import| linked_import.exports.len() == 1)
+                .and_then(|linked_import| {
+                    self.resolve_exported_function_symbol(&linked_import.exports[0], visited)
+                }),
+            rhai_hir::SymbolKind::Variable | rhai_hir::SymbolKind::Constant => {
+                analysis.hir.value_flows_into(symbol).find_map(|flow| {
+                    self.resolve_callable_function_from_expr(
+                        file_id,
+                        flow.expr,
+                        analysis.hir.expr(flow.expr).range.end(),
+                        visited,
+                    )
+                })
+            }
+            _ => None,
+        };
+
+        visited.remove(&(file_id, symbol));
+        result
+    }
+
+    fn resolve_callable_function_from_expr(
+        &self,
+        file_id: FileId,
+        expr: ExprId,
+        offset: TextSize,
+        visited: &mut HashSet<(FileId, SymbolId)>,
+    ) -> Option<(FileId, SymbolId)> {
+        let analysis = self.analysis.get(&file_id)?;
+        match analysis.hir.expr(expr).kind {
+            ExprKind::Name => self
+                .symbol_for_expr(analysis.hir.as_ref(), expr)
+                .and_then(|symbol| self.resolve_callable_function_symbol(file_id, symbol, visited)),
+            ExprKind::Paren => self
+                .largest_inner_expr(analysis.hir.as_ref(), expr)
+                .and_then(|inner| {
+                    self.resolve_callable_function_from_expr(file_id, inner, offset, visited)
+                }),
+            ExprKind::Call => {
+                let call = analysis
+                    .hir
+                    .calls
+                    .iter()
+                    .find(|call| call.range == analysis.hir.expr(expr).range)?;
+                if !self.is_builtin_fn_call(analysis.hir.as_ref(), call) {
+                    return None;
+                }
+                let name_expr = call.arg_exprs.first().copied()?;
+                let name = self.string_literal_value(analysis.hir.as_ref(), name_expr)?;
+                let symbol = analysis
+                    .hir
+                    .visible_symbols_at(offset)
+                    .into_iter()
+                    .find(|symbol| analysis.hir.symbol(*symbol).name == name)?;
+                self.resolve_callable_function_symbol(file_id, symbol, visited)
+            }
+            _ => None,
+        }
+    }
+
+    fn call_targets_import_alias(
+        &self,
+        file_id: FileId,
+        hir: &FileHir,
+        call: &rhai_hir::CallSite,
+        import_alias: SymbolId,
+    ) -> bool {
+        if call.resolved_callee == Some(import_alias) {
+            return true;
+        }
+
+        let Some(callee_expr) = call.callee_range.and_then(|range| hir.expr_at(range)) else {
+            return false;
+        };
+        self.expr_targets_symbol(
+            file_id,
+            hir,
+            callee_expr,
+            import_alias,
+            call.range.start(),
+            &mut HashSet::new(),
+        )
+    }
+
+    fn expr_targets_symbol(
+        &self,
+        file_id: FileId,
+        hir: &FileHir,
+        expr: ExprId,
+        target: SymbolId,
+        offset: TextSize,
+        visited: &mut HashSet<SymbolId>,
+    ) -> bool {
+        match hir.expr(expr).kind {
+            ExprKind::Name => self.symbol_for_expr(hir, expr).is_some_and(|symbol| {
+                self.symbol_targets_symbol(file_id, hir, symbol, target, offset, visited)
+            }),
+            ExprKind::Paren => self.largest_inner_expr(hir, expr).is_some_and(|inner| {
+                self.expr_targets_symbol(file_id, hir, inner, target, offset, visited)
+            }),
+            _ => false,
+        }
+    }
+
+    fn symbol_targets_symbol(
+        &self,
+        file_id: FileId,
+        hir: &FileHir,
+        symbol: SymbolId,
+        target: SymbolId,
+        offset: TextSize,
+        visited: &mut HashSet<SymbolId>,
+    ) -> bool {
+        if symbol == target {
+            return true;
+        }
+        if !visited.insert(symbol) {
+            return false;
+        }
+
+        let result = match hir.symbol(symbol).kind {
+            rhai_hir::SymbolKind::Variable | rhai_hir::SymbolKind::Constant => hir
+                .value_flows_into(symbol)
+                .filter(|flow| flow.range.start() < offset)
+                .any(|flow| {
+                    self.expr_targets_symbol(
+                        file_id,
+                        hir,
+                        flow.expr,
+                        target,
+                        flow.range.start(),
+                        visited,
+                    )
+                }),
+            rhai_hir::SymbolKind::ImportAlias => symbol == target,
+            _ => false,
+        };
+
+        visited.remove(&symbol);
+        result
+    }
+
+    fn linked_import_for_alias(
+        &self,
+        file_id: FileId,
+        hir: &FileHir,
+        alias: SymbolId,
+    ) -> Option<LinkedModuleImport> {
+        self.workspace_indexes
+            .linked_imports
+            .get(&file_id)?
+            .iter()
+            .find(|linked_import| hir.import(linked_import.import).alias == Some(alias))
+            .cloned()
+    }
+
+    fn symbol_for_expr(&self, hir: &FileHir, expr: ExprId) -> Option<SymbolId> {
+        match hir.expr(expr).kind {
+            ExprKind::Name => hir
+                .reference_at(hir.expr(expr).range)
+                .and_then(|reference| hir.definition_of(reference)),
+            _ => None,
+        }
+    }
+
+    fn largest_inner_expr(&self, hir: &FileHir, expr: ExprId) -> Option<ExprId> {
+        let range = hir.expr(expr).range;
+        hir.exprs
+            .iter()
+            .enumerate()
+            .filter(|(index, node)| {
+                let candidate = ExprId(*index as u32);
+                candidate != expr
+                    && node.range.start() >= range.start()
+                    && node.range.end() <= range.end()
+                    && node.range != range
+            })
+            .max_by_key(|(_, node)| node.range.len())
+            .map(|(index, _)| ExprId(index as u32))
+    }
+
+    fn is_builtin_fn_call(&self, hir: &FileHir, call: &rhai_hir::CallSite) -> bool {
+        call.callee_reference
+            .map(|reference_id| hir.reference(reference_id).name.as_str())
+            == Some("Fn")
+    }
+
+    fn string_literal_value<'a>(&self, hir: &'a FileHir, expr: ExprId) -> Option<&'a str> {
+        let literal = hir.literal(expr)?;
+        (literal.kind == rhai_hir::LiteralKind::String)
+            .then_some(literal.text.as_deref())
+            .flatten()
+            .and_then(|text| {
+                (text.len() >= 2 && text.starts_with('"') && text.ends_with('"'))
+                    .then_some(&text[1..text.len() - 1])
+            })
     }
 
     fn exported_symbol_type(&self, export: &LocatedModuleExport) -> Option<(SymbolId, TypeRef)> {
@@ -1932,7 +2157,21 @@ fn object_field_member_completions(hir: &FileHir, expr: ExprId) -> Vec<MemberCom
 fn object_field_annotation_from_expr(hir: &FileHir, expr: ExprId) -> Option<TypeRef> {
     match hir.expr(expr).kind {
         ExprKind::Literal => None,
-        ExprKind::Object => Some(TypeRef::Named("object".to_owned())),
+        ExprKind::Object => Some(TypeRef::Object(
+            hir.object_fields
+                .iter()
+                .filter(|field| field.owner == expr)
+                .map(|field| {
+                    (
+                        field.name.clone(),
+                        field
+                            .value
+                            .and_then(|value| object_field_annotation_from_expr(hir, value))
+                            .unwrap_or(TypeRef::Unknown),
+                    )
+                })
+                .collect(),
+        )),
         ExprKind::Array => Some(TypeRef::Array(Box::new(TypeRef::Unknown))),
         ExprKind::Closure => Some(TypeRef::Function(rhai_hir::FunctionTypeRef {
             params: Vec::new(),

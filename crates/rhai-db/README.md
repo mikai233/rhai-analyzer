@@ -92,18 +92,22 @@ This checklist tracks what `rhai-db` already provides and what still needs to la
 - [x] import/export seed propagation and direct imported-call parameter seeding across files
 - [x] host-overload resolution beyond simple name/arity matching
 - [x] explicit inference coverage for every lowered Rhai expression kind, including `assign`, `paren`, `path`, `interpolated string`, `while`, `loop`, `for`, and `do`
-- [x] mutation-aware value-flow tracking for simple symbol-receiver member/index writes such as `obj.field = expr` and `arr[i] = expr`
-- [ ] nested/compound mutation tracking for non-trivial lvalues such as `root.child.field = expr`, `obj.field += 1`, and `arr[i] ??= value`
-- [ ] flow-sensitive symbol-state inference across branches and loops instead of only joining final expression results
-- [ ] narrowing / refinement rules for truthiness, nullability, `is`-style checks, and other Rhai-specific control-flow guards
-- [ ] shape-preserving object typing beyond `map<string, union<...>>` so field lookups stay precise after aliasing and partial updates
-- [ ] expected-type propagation from declarations, parameter annotations, return positions, and overload candidates into child expressions
-- [ ] closure inference that can derive parameter and return types from expected function signatures and higher-order call sites
-- [ ] first-class `Fn` / function-pointer inference that tracks referenced callee signatures instead of only the opaque `Fn` type
+- [x] mutation-aware value-flow tracking for member/index writes such as `obj.field = expr` and `arr[i] = expr`
+- [x] nested/compound mutation tracking for non-trivial lvalues such as `root.child.field = expr`, `obj.field += 1`, and `arr[i] ??= value`
+- [x] mixed nested member/index mutation tracking for chains such as `root.items[i].value += 1`
+- [x] flow-sensitive symbol-state inference across branches and loops for read positions instead of only joining final expression results
+- [x] truthy nullable narrowing for branch-local reads such as `if value { ... }` and `if !value { ... } else { ... }`
+- [x] nullable narrowing for equality checks against unit-typed expressions, including negation and simple `&&` / `||` guard composition
+- [ ] broader narrowing / refinement rules for `is`-style checks and other Rhai-specific control-flow guards
+- [x] shape-preserving object typing beyond `map<string, union<...>>` so field lookups stay precise after aliasing and partial updates
+- [x] expected-type propagation from declarations, parameter annotations, return positions, and selected call signatures into child expressions
+- [x] closure inference that can derive parameter and return types from expected function signatures and higher-order call sites
+- [x] first-class `Fn` / function-pointer inference that tracks referenced local, builtin, and externally indexed callee signatures instead of only the opaque `Fn` type
 - [ ] generic/applied-type substitution and type-argument inference for host APIs and future analyzer-known abstractions
-- [ ] builtin container/iterator semantics for common Rhai patterns such as loop element binding, range iteration, and collection transforms
-- [ ] path-qualified and module-qualified call inference through `foo::bar`, imports, re-exports, and alias chains
-- [ ] full workspace call-graph propagation across local calls, imported exports, re-exports, and recursive strongly-connected components
+- [x] loop binding inference for arrays, strings, and numeric ranges, including optional counter bindings in `for` expressions
+- [ ] broader builtin container/iterator semantics for method-based iterables and collection transforms
+- [x] path-qualified and module-qualified call inference through `foo::bar`, imports, re-exports, and alias chains
+- [x] iterative workspace call-graph propagation across local calls, imported exports, re-exports, and recursive strongly-connected components when type information can flow through the cycle
 - [ ] ambiguity tracking so incompatible candidate types can be surfaced distinctly from plain `unknown`
 - [ ] regression coverage that exercises each inference rule with single-file, cross-file, and incremental-update scenarios
 

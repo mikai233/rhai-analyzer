@@ -125,6 +125,14 @@ pub(crate) fn format_type_ref(ty: &TypeRef) -> String {
                 .collect::<Vec<_>>()
                 .join(", ")
         ),
+        TypeRef::Object(fields) => format!(
+            "#{{ {} }}",
+            fields
+                .iter()
+                .map(|(name, ty)| format!("{name}: {}", format_type_ref(ty)))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
         TypeRef::Array(inner) => format!("array<{}>", format_type_ref(inner)),
         TypeRef::Map(key, value) => {
             format!("map<{}, {}>", format_type_ref(key), format_type_ref(value))

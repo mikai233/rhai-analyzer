@@ -148,6 +148,23 @@ pub enum BinaryOperator {
     ShiftRight,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum AssignmentOperator {
+    Assign,
+    NullCoalesce,
+    Add,
+    Subtract,
+    Multiply,
+    Divide,
+    Remainder,
+    Power,
+    ShiftLeft,
+    ShiftRight,
+    Or,
+    Xor,
+    And,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ControlFlowEvent {
     pub kind: ControlFlowKind,
@@ -223,6 +240,7 @@ pub struct LiteralInfo {
     pub owner: ExprId,
     pub kind: LiteralKind,
     pub range: TextRange,
+    pub text: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -259,6 +277,14 @@ pub struct ClosureExprInfo {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ForExprInfo {
+    pub owner: ExprId,
+    pub iterable: Option<ExprId>,
+    pub bindings: Vec<SymbolId>,
+    pub body: Option<BodyId>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct UnaryExprInfo {
     pub owner: ExprId,
     pub operator: UnaryOperator,
@@ -270,6 +296,15 @@ pub struct UnaryExprInfo {
 pub struct BinaryExprInfo {
     pub owner: ExprId,
     pub operator: BinaryOperator,
+    pub lhs: Option<ExprId>,
+    pub rhs: Option<ExprId>,
+    pub operator_range: Option<TextRange>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct AssignExprInfo {
+    pub owner: ExprId,
+    pub operator: AssignmentOperator,
     pub lhs: Option<ExprId>,
     pub rhs: Option<ExprId>,
     pub operator_range: Option<TextRange>,
@@ -352,9 +387,14 @@ pub struct SymbolValueFlow {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SymbolMutationKind {
+pub enum MutationPathSegment {
     Field { name: String },
     Index { index: ExprId },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SymbolMutationKind {
+    Path { segments: Vec<MutationPathSegment> },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -670,8 +710,10 @@ pub struct FileHir {
     pub if_exprs: Vec<IfExprInfo>,
     pub switch_exprs: Vec<SwitchExprInfo>,
     pub closure_exprs: Vec<ClosureExprInfo>,
+    pub for_exprs: Vec<ForExprInfo>,
     pub unary_exprs: Vec<UnaryExprInfo>,
     pub binary_exprs: Vec<BinaryExprInfo>,
+    pub assign_exprs: Vec<AssignExprInfo>,
     pub index_exprs: Vec<IndexExprInfo>,
     pub type_slots: Vec<TypeSlot>,
     pub value_flows: Vec<SymbolValueFlow>,

@@ -1,12 +1,13 @@
 use crate::{
-    ArrayExprInfo, BinaryExprInfo, BinaryOperator, BlockExprInfo, Body, BodyId, BodyKind, CallSite,
-    CallSiteId, ClosureExprInfo, ControlFlowEvent, ControlFlowKind, ControlFlowMergePoint,
-    DocBlock, DocBlockId, DocTag, ExportDirective, ExprId, ExprKind, ExprNode, FileHir,
-    FunctionTypeRef, IfExprInfo, ImportDirective, IndexExprInfo, LiteralInfo, LiteralKind,
-    LoweredFile, MemberAccess, MergePointKind, ObjectFieldInfo, Reference, ReferenceId,
-    ReferenceKind, Scope, ScopeId, ScopeKind, SwitchExprInfo, Symbol, SymbolId, SymbolKind,
-    SymbolMutation, SymbolMutationKind, SymbolValueFlow, TypeRef, TypeSlot, TypeSlotId,
-    UnaryExprInfo, UnaryOperator, ValueFlowKind, collect_doc_block,
+    ArrayExprInfo, AssignExprInfo, AssignmentOperator, BinaryExprInfo, BinaryOperator,
+    BlockExprInfo, Body, BodyId, BodyKind, CallSite, CallSiteId, ClosureExprInfo, ControlFlowEvent,
+    ControlFlowKind, ControlFlowMergePoint, DocBlock, DocBlockId, DocTag, ExportDirective, ExprId,
+    ExprKind, ExprNode, FileHir, ForExprInfo, FunctionTypeRef, IfExprInfo, ImportDirective,
+    IndexExprInfo, LiteralInfo, LiteralKind, LoweredFile, MemberAccess, MergePointKind,
+    MutationPathSegment, ObjectFieldInfo, Reference, ReferenceId, ReferenceKind, Scope, ScopeId,
+    ScopeKind, SwitchExprInfo, Symbol, SymbolId, SymbolKind, SymbolMutation, SymbolMutationKind,
+    SymbolValueFlow, TypeRef, TypeSlot, TypeSlotId, UnaryExprInfo, UnaryOperator, ValueFlowKind,
+    collect_doc_block,
 };
 use rhai_syntax::{
     AstNode, BlockExpr, Expr, Item, Parse, Root, Stmt, StringPart, SwitchArm, SwitchPatternList,
@@ -49,8 +50,7 @@ struct PendingMutation {
 }
 
 enum PendingMutationKind {
-    Field { name: String },
-    Index { index: ExprId },
+    Path { segments: Vec<MutationPathSegment> },
 }
 
 impl<'a> LoweringContext<'a> {
@@ -70,8 +70,10 @@ impl<'a> LoweringContext<'a> {
                 if_exprs: Vec::new(),
                 switch_exprs: Vec::new(),
                 closure_exprs: Vec::new(),
+                for_exprs: Vec::new(),
                 unary_exprs: Vec::new(),
                 binary_exprs: Vec::new(),
+                assign_exprs: Vec::new(),
                 index_exprs: Vec::new(),
                 type_slots: Vec::new(),
                 value_flows: Vec::new(),
@@ -118,6 +120,64 @@ impl<'a> LoweringContext<'a> {
             Expr::Paren(paren) => paren
                 .expr()
                 .and_then(|inner| self.simple_receiver_reference_from(start, inner)),
+            _ => None,
+        }
+    }
+
+    fn expr_id_for_range(&self, range: TextRange) -> Option<ExprId> {
+        self.file
+            .exprs
+            .iter()
+            .enumerate()
+            .find_map(|(index, expr)| (expr.range == range).then_some(ExprId(index as u32)))
+    }
+
+    fn mutation_target_from_expr(
+        &self,
+        start: usize,
+        expr: Expr<'_>,
+    ) -> Option<(ReferenceId, Vec<MutationPathSegment>)> {
+        match expr {
+            Expr::Field(field) => {
+                let name = field.name_token()?.text(self.parse.text()).to_owned();
+                let receiver = field.receiver()?;
+
+                if let Some((reference, mut segments)) =
+                    self.mutation_target_from_expr(start, receiver)
+                {
+                    segments.push(MutationPathSegment::Field { name });
+                    return Some((reference, segments));
+                }
+
+                let reference = self.simple_receiver_reference_from(start, receiver)?;
+                Some((reference, vec![MutationPathSegment::Field { name }]))
+            }
+            Expr::Index(index) => {
+                let receiver = index.receiver()?;
+                let owner = self.expr_id_for_range(index.syntax().range())?;
+                let index_expr = self
+                    .file
+                    .index_exprs
+                    .iter()
+                    .find(|entry| entry.owner == owner)?
+                    .index?;
+
+                if let Some((reference, mut segments)) =
+                    self.mutation_target_from_expr(start, receiver)
+                {
+                    segments.push(MutationPathSegment::Index { index: index_expr });
+                    return Some((reference, segments));
+                }
+
+                let reference = self.simple_receiver_reference_from(start, receiver)?;
+                Some((
+                    reference,
+                    vec![MutationPathSegment::Index { index: index_expr }],
+                ))
+            }
+            Expr::Paren(paren) => paren
+                .expr()
+                .and_then(|inner| self.mutation_target_from_expr(start, inner)),
             _ => None,
         }
     }
@@ -493,8 +553,7 @@ impl<'a> LoweringContext<'a> {
             };
 
             let kind = match pending.kind {
-                PendingMutationKind::Field { name } => SymbolMutationKind::Field { name },
-                PendingMutationKind::Index { index } => SymbolMutationKind::Index { index },
+                PendingMutationKind::Path { segments } => SymbolMutationKind::Path { segments },
             };
 
             self.file.symbol_mutations.push(SymbolMutation {
@@ -960,6 +1019,7 @@ impl<'a> LoweringContext<'a> {
                         owner: expr_id,
                         kind,
                         range: token.range(),
+                        text: Some(token.text(self.parse.text()).to_owned()),
                     });
                 }
             }
@@ -1051,30 +1111,41 @@ impl<'a> LoweringContext<'a> {
                 self.record_merge_point(MergePointKind::LoopIteration, loop_expr.syntax().range());
             }
             Expr::For(for_expr) => {
-                if let Some(iterable) = for_expr.iterable() {
-                    self.lower_expr(iterable, scope);
-                }
+                let iterable_expr = for_expr
+                    .iterable()
+                    .map(|iterable| self.lower_expr(iterable, scope));
 
                 let loop_scope =
                     self.new_scope(ScopeKind::Loop, for_expr.syntax().range(), Some(scope));
+                let mut binding_symbols = Vec::new();
                 if let Some(bindings) = for_expr.bindings() {
                     for binding in bindings.names() {
-                        self.alloc_symbol(
+                        binding_symbols.push(self.alloc_symbol(
                             binding.text(self.parse.text()).to_owned(),
                             SymbolKind::Variable,
                             binding.range(),
                             loop_scope,
                             None,
-                        );
+                        ));
                     }
                 }
+                let mut body_id = None;
                 if let Some(body) = for_expr.body() {
-                    let body_id =
+                    let lowered_body =
                         self.new_body(BodyKind::Block, body.syntax().range(), loop_scope, None);
                     self.with_loop(loop_scope, |this| {
-                        this.with_body(body_id, |this| this.lower_block_items(body, loop_scope))
+                        this.with_body(lowered_body, |this| {
+                            this.lower_block_items(body, loop_scope)
+                        })
                     });
+                    body_id = Some(lowered_body);
                 }
+                self.file.for_exprs.push(ForExprInfo {
+                    owner: expr_id,
+                    iterable: iterable_expr,
+                    bindings: binding_symbols,
+                    body: body_id,
+                });
                 self.record_merge_point(MergePointKind::LoopIteration, for_expr.syntax().range());
             }
             Expr::Do(do_expr) => {
@@ -1193,70 +1264,32 @@ impl<'a> LoweringContext<'a> {
             }
             Expr::Assign(assign) => {
                 let assignment_start = self.file.references.len();
-                let assignment_operator = assign.operator_token().map(|token| token.kind());
-                let mut mutation_receiver = None::<ReferenceId>;
-                let lhs_expr = if let Some(lhs) = assign.lhs() {
-                    let lowered = self.lower_expr(lhs, scope);
-                    mutation_receiver = match lhs {
-                        Expr::Field(field) => field.receiver().and_then(|receiver| {
-                            self.simple_receiver_reference_from(assignment_start, receiver)
-                        }),
-                        Expr::Index(index) => index.receiver().and_then(|receiver| {
-                            self.simple_receiver_reference_from(assignment_start, receiver)
-                        }),
-                        _ => None,
-                    };
-                    Some(lowered)
-                } else {
-                    None
+                let assignment_operator = assign
+                    .operator_token()
+                    .and_then(|token| assignment_operator(token.kind()));
+                let lhs_syntax = assign.lhs();
+                let lhs_expr = lhs_syntax.map(|lhs| self.lower_expr(lhs, scope));
+                let rhs_expr = assign.rhs().map(|rhs| self.lower_expr(rhs, scope));
+
+                if let Some(operator) = assignment_operator {
+                    self.file.assign_exprs.push(AssignExprInfo {
+                        owner: expr_id,
+                        operator,
+                        lhs: lhs_expr,
+                        rhs: rhs_expr,
+                        operator_range: assign.operator_token().map(|token| token.range()),
+                    });
+                }
+
+                let stored_value = match assignment_operator {
+                    Some(AssignmentOperator::Assign) => rhs_expr,
+                    Some(_) => Some(expr_id),
+                    None => rhs_expr,
                 };
-                if let Some(rhs) = assign.rhs() {
-                    let rhs_expr = self.lower_expr(rhs, scope);
-                    if let Some(lhs_expr) = lhs_expr
-                        && matches!(assignment_operator, Some(TokenKind::Eq))
-                        && let Some(receiver_reference) = mutation_receiver
-                    {
-                        match self.file.expr(lhs_expr).kind {
-                            ExprKind::Field => {
-                                if let Some(access) = self
-                                    .file
-                                    .member_accesses
-                                    .iter()
-                                    .find(|access| access.owner == lhs_expr)
-                                {
-                                    self.pending_mutations.push(PendingMutation {
-                                        receiver_reference,
-                                        value: rhs_expr,
-                                        kind: PendingMutationKind::Field {
-                                            name: self
-                                                .file
-                                                .reference(access.field_reference)
-                                                .name
-                                                .clone(),
-                                        },
-                                        range: assign.syntax().range(),
-                                    });
-                                }
-                            }
-                            ExprKind::Index => {
-                                if let Some(index) = self
-                                    .file
-                                    .index_exprs
-                                    .iter()
-                                    .find(|index| index.owner == lhs_expr)
-                                    && let Some(index_expr) = index.index
-                                {
-                                    self.pending_mutations.push(PendingMutation {
-                                        receiver_reference,
-                                        value: rhs_expr,
-                                        kind: PendingMutationKind::Index { index: index_expr },
-                                        range: assign.syntax().range(),
-                                    });
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
+
+                if let Some(lhs) = lhs_syntax
+                    && let Some(value_expr) = stored_value
+                {
                     if let Some(reference) = lhs_expr
                         .filter(|lhs_expr| self.file.expr(*lhs_expr).kind == ExprKind::Name)
                         .and_then(|lhs_expr| {
@@ -1268,8 +1301,19 @@ impl<'a> LoweringContext<'a> {
                     {
                         self.pending_value_flows.push(PendingValueFlow {
                             reference,
-                            expr: rhs_expr,
+                            expr: value_expr,
                             kind: ValueFlowKind::Assignment,
+                            range: assign.syntax().range(),
+                        });
+                    }
+
+                    if let Some((receiver_reference, segments)) =
+                        self.mutation_target_from_expr(assignment_start, lhs)
+                    {
+                        self.pending_mutations.push(PendingMutation {
+                            receiver_reference,
+                            value: value_expr,
+                            kind: PendingMutationKind::Path { segments },
                             range: assign.syntax().range(),
                         });
                     }
@@ -1551,6 +1595,25 @@ fn binary_operator(kind: TokenKind) -> Option<BinaryOperator> {
         TokenKind::StarStar => Some(BinaryOperator::Power),
         TokenKind::Shl => Some(BinaryOperator::ShiftLeft),
         TokenKind::Shr => Some(BinaryOperator::ShiftRight),
+        _ => None,
+    }
+}
+
+fn assignment_operator(kind: TokenKind) -> Option<AssignmentOperator> {
+    match kind {
+        TokenKind::Eq => Some(AssignmentOperator::Assign),
+        TokenKind::QuestionQuestionEq => Some(AssignmentOperator::NullCoalesce),
+        TokenKind::PlusEq => Some(AssignmentOperator::Add),
+        TokenKind::MinusEq => Some(AssignmentOperator::Subtract),
+        TokenKind::StarEq => Some(AssignmentOperator::Multiply),
+        TokenKind::SlashEq => Some(AssignmentOperator::Divide),
+        TokenKind::PercentEq => Some(AssignmentOperator::Remainder),
+        TokenKind::StarStarEq => Some(AssignmentOperator::Power),
+        TokenKind::ShlEq => Some(AssignmentOperator::ShiftLeft),
+        TokenKind::ShrEq => Some(AssignmentOperator::ShiftRight),
+        TokenKind::PipeEq => Some(AssignmentOperator::Or),
+        TokenKind::CaretEq => Some(AssignmentOperator::Xor),
+        TokenKind::AmpEq => Some(AssignmentOperator::And),
         _ => None,
     }
 }

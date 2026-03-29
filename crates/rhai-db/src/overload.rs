@@ -143,6 +143,11 @@ fn param_match_score(expected: &TypeRef, actual: &TypeRef) -> ParamMatchScore {
         (TypeRef::Array(left), TypeRef::Array(right)) => {
             downgrade_nested_match(param_match_score(left, right))
         }
+        (TypeRef::Object(left), TypeRef::Object(right)) => aggregate_nested_match_scores(
+            left.iter()
+                .filter_map(|(name, left_ty)| right.get(name).map(|right_ty| (left_ty, right_ty)))
+                .map(|(left_ty, right_ty)| param_match_score(left_ty, right_ty)),
+        ),
         (TypeRef::Map(left_key, left_value), TypeRef::Map(right_key, right_value)) => {
             aggregate_nested_match_scores([
                 param_match_score(left_key, right_key),

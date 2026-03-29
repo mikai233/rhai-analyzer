@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum TypeRef {
     Unknown,
@@ -18,6 +20,7 @@ pub enum TypeRef {
     RangeInclusive,
     Named(String),
     Applied { name: String, args: Vec<TypeRef> },
+    Object(BTreeMap<String, TypeRef>),
     Array(Box<TypeRef>),
     Map(Box<TypeRef>, Box<TypeRef>),
     Nullable(Box<TypeRef>),

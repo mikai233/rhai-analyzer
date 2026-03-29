@@ -1,8 +1,8 @@
 use crate::{
     BinaryOperator, BodyKind, ControlFlowKind, ExprKind, ExternalSignatureIndex, FunctionTypeRef,
-    LiteralKind, MemberCompletionSource, MergePointKind, ReferenceKind, ScopeKind,
-    SemanticDiagnosticKind, SymbolKind, SymbolMutationKind, TypeRef, UnaryOperator, ValueFlowKind,
-    lower_file,
+    LiteralKind, MemberCompletionSource, MergePointKind, MutationPathSegment, ReferenceKind,
+    ScopeKind, SemanticDiagnosticKind, SymbolKind, SymbolMutationKind, TypeRef, UnaryOperator,
+    ValueFlowKind, lower_file,
 };
 use rhai_syntax::{TextRange, TextSize, parse_text};
 
@@ -619,8 +619,10 @@ fn lowering_records_symbol_mutations_for_simple_field_and_index_assignments() {
     assert_eq!(user_mutations.len(), 1);
     assert_eq!(
         user_mutations[0].kind,
-        SymbolMutationKind::Field {
-            name: "name".to_owned()
+        SymbolMutationKind::Path {
+            segments: vec![MutationPathSegment::Field {
+                name: "name".to_owned(),
+            }]
         }
     );
     assert_eq!(hir.expr(user_mutations[0].value).kind, ExprKind::Literal);
@@ -628,15 +630,139 @@ fn lowering_records_symbol_mutations_for_simple_field_and_index_assignments() {
     let item_mutations = hir.symbol_mutations_into(items_symbol).collect::<Vec<_>>();
     assert_eq!(item_mutations.len(), 1);
     assert!(matches!(
-        item_mutations[0].kind,
-        SymbolMutationKind::Index { .. }
+        &item_mutations[0].kind,
+        SymbolMutationKind::Path { segments }
+            if matches!(segments.as_slice(), [MutationPathSegment::Index { .. }])
     ));
     assert_eq!(hir.expr(item_mutations[0].value).kind, ExprKind::Literal);
 
     assert!(
-        hir.symbol_mutations_into(nested_symbol).next().is_none(),
-        "nested field chains are not modeled as simple symbol mutations yet"
+        hir.symbol_mutations_into(nested_symbol).any(|mutation| {
+            mutation.kind
+                == SymbolMutationKind::Path {
+                    segments: vec![
+                        MutationPathSegment::Field {
+                            name: "profile".to_owned(),
+                        },
+                        MutationPathSegment::Field {
+                            name: "name".to_owned(),
+                        },
+                    ],
+                }
+        }),
+        "nested field chains should be recorded as path-aware mutations"
     );
+}
+
+#[test]
+fn lowering_records_compound_assignments_with_assignment_metadata() {
+    let parse = parse_valid(
+        r#"
+            let count = 1;
+            count += 2;
+
+            let obj = #{};
+            obj.value ??= 3;
+
+            let arr = [];
+            arr[0] += 4;
+        "#,
+    );
+    let hir = lower_file(&parse);
+
+    let assign_exprs = hir.assign_exprs.iter().collect::<Vec<_>>();
+    assert_eq!(assign_exprs.len(), 3);
+    assert_eq!(assign_exprs[0].operator, crate::AssignmentOperator::Add);
+    assert_eq!(
+        assign_exprs[1].operator,
+        crate::AssignmentOperator::NullCoalesce
+    );
+    assert_eq!(assign_exprs[2].operator, crate::AssignmentOperator::Add);
+
+    let obj_symbol = hir
+        .symbols
+        .iter()
+        .enumerate()
+        .find_map(|(index, symbol)| {
+            (symbol.name == "obj" && symbol.kind == SymbolKind::Variable)
+                .then_some(crate::SymbolId(index as u32))
+        })
+        .expect("expected `obj` symbol");
+    let arr_symbol = hir
+        .symbols
+        .iter()
+        .enumerate()
+        .find_map(|(index, symbol)| {
+            (symbol.name == "arr" && symbol.kind == SymbolKind::Variable)
+                .then_some(crate::SymbolId(index as u32))
+        })
+        .expect("expected `arr` symbol");
+
+    assert!(hir.symbol_mutations_into(obj_symbol).any(|mutation| {
+        mutation.kind
+            == SymbolMutationKind::Path {
+                segments: vec![MutationPathSegment::Field {
+                    name: "value".to_owned(),
+                }],
+            }
+            && hir.expr(mutation.value).kind == ExprKind::Assign
+    }));
+    assert!(hir.symbol_mutations_into(arr_symbol).any(|mutation| {
+        matches!(
+            &mutation.kind,
+            SymbolMutationKind::Path { segments }
+                if matches!(segments.as_slice(), [MutationPathSegment::Index { .. }])
+        ) && hir.expr(mutation.value).kind == ExprKind::Assign
+    }));
+}
+
+#[test]
+fn lowering_records_mixed_member_and_index_mutation_paths() {
+    let parse = parse_valid(
+        r#"
+            let root = #{};
+            let slot = 0;
+            root.items[slot].value += 1;
+        "#,
+    );
+    let hir = lower_file(&parse);
+
+    let root_symbol = hir
+        .symbols
+        .iter()
+        .enumerate()
+        .find_map(|(index, symbol)| {
+            (symbol.name == "root" && symbol.kind == SymbolKind::Variable)
+                .then_some(crate::SymbolId(index as u32))
+        })
+        .expect("expected `root` symbol");
+
+    assert!(hir.symbol_mutations_into(root_symbol).any(|mutation| {
+        mutation.kind
+            == SymbolMutationKind::Path {
+                segments: vec![
+                    MutationPathSegment::Field {
+                        name: "items".to_owned(),
+                    },
+                    MutationPathSegment::Index {
+                        index: hir
+                            .exprs
+                            .iter()
+                            .enumerate()
+                            .find_map(|(index, expr)| {
+                                (expr.kind == ExprKind::Name
+                                    && slice_range(parse.text(), expr.range) == "slot")
+                                    .then_some(crate::ExprId(index as u32))
+                            })
+                            .expect("expected slot index expression"),
+                    },
+                    MutationPathSegment::Field {
+                        name: "value".to_owned(),
+                    },
+                ],
+            }
+            && hir.expr(mutation.value).kind == ExprKind::Assign
+    }));
 }
 
 #[test]
@@ -768,6 +894,37 @@ fn body_summaries_track_tail_values_for_functions_blocks_and_closures() {
     assert_eq!(
         hir.body_tail_value(closure_body)
             .map(|expr| hir.expr(expr).kind),
+        Some(ExprKind::Binary)
+    );
+}
+
+#[test]
+fn lowering_tracks_for_iterable_bindings_and_body_metadata() {
+    let source = r#"
+            for (item, index) in [1, 2, 3] { item + index }
+        "#;
+    let parse = parse_valid(source);
+    let hir = lower_file(&parse);
+
+    let for_expr = hir
+        .expr_at_offset(TextSize::from(
+            u32::try_from(source.find("for").unwrap()).unwrap(),
+        ))
+        .expect("expected for expression");
+    let for_info = hir.for_expr(for_expr).expect("expected for expr metadata");
+
+    assert_eq!(
+        for_info.iterable.map(|expr| hir.expr(expr).kind),
+        Some(ExprKind::Array)
+    );
+    assert_eq!(for_info.bindings.len(), 2);
+    assert_eq!(hir.symbol(for_info.bindings[0]).name, "item");
+    assert_eq!(hir.symbol(for_info.bindings[1]).name, "index");
+
+    let body = for_info.body.expect("expected for body");
+    assert_eq!(hir.body(body).kind, BodyKind::Block);
+    assert_eq!(
+        hir.body_tail_value(body).map(|expr| hir.expr(expr).kind),
         Some(ExprKind::Binary)
     );
 }
