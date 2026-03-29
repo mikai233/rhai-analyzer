@@ -8,11 +8,27 @@ use rhai_hir::{
 
 use crate::{FileTypeInference, HostFunction, HostType, best_matching_signature_index};
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ImportedMethodSignature {
+    pub name: String,
+    pub receiver: TypeRef,
+    pub signature: FunctionTypeRef,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ImportedModuleMember {
+    pub module_path: Vec<String>,
+    pub name: String,
+    pub ty: TypeRef,
+}
+
 pub(crate) fn infer_file_types(
     hir: &FileHir,
     external: &ExternalSignatureIndex,
     globals: &[HostFunction],
     host_types: &[HostType],
+    imported_methods: &[ImportedMethodSignature],
+    imported_members: &[ImportedModuleMember],
     seed_symbol_types: &HashMap<SymbolId, TypeRef>,
 ) -> FileTypeInference {
     let mut inference = FileTypeInference {
@@ -35,10 +51,25 @@ pub(crate) fn infer_file_types(
     for _ in 0..max_iterations.max(1) {
         let mut changed = false;
 
-        changed |= infer_expr_types(hir, external, globals, host_types, &mut inference);
+        changed |= infer_expr_types(
+            hir,
+            external,
+            globals,
+            host_types,
+            imported_methods,
+            imported_members,
+            &mut inference,
+        );
         changed |= propagate_for_binding_types(hir, &mut inference);
-        changed |= propagate_expected_types(hir, external, globals, host_types, &mut inference);
-        changed |= propagate_call_argument_types(hir, &mut inference);
+        changed |= propagate_expected_types(
+            hir,
+            external,
+            globals,
+            host_types,
+            imported_methods,
+            &mut inference,
+        );
+        changed |= propagate_call_argument_types(hir, imported_methods, &mut inference);
         changed |= propagate_value_flows(hir, &mut inference);
         changed |= propagate_symbol_mutations(hir, &mut inference);
         changed |= infer_function_signatures(hir, &mut inference);
@@ -56,6 +87,8 @@ fn infer_expr_types(
     external: &ExternalSignatureIndex,
     globals: &[HostFunction],
     host_types: &[HostType],
+    imported_methods: &[ImportedMethodSignature],
+    imported_members: &[ImportedModuleMember],
     inference: &mut FileTypeInference,
 ) -> bool {
     let mut changed = false;
@@ -72,18 +105,26 @@ fn infer_expr_types(
             ExprKind::Loop => infer_loop_expr_type(hir, inference, expr_id),
             ExprKind::For => infer_for_expr_type(hir, inference, expr_id),
             ExprKind::Do => infer_do_expr_type(hir, inference, expr_id),
-            ExprKind::Path => infer_path_expr_type(hir, expr_id, external),
+            ExprKind::Path => infer_path_expr_type(hir, expr_id, external, imported_members),
             ExprKind::Name => infer_name_expr_type(hir, expr_id, inference, external),
             ExprKind::InterpolatedString => Some(TypeRef::String),
             ExprKind::Unary => infer_unary_expr_type(hir, inference, expr_id),
             ExprKind::Binary => infer_binary_expr_type(hir, inference, expr_id),
             ExprKind::Assign => infer_assign_expr_type(hir, inference, expr_id),
             ExprKind::Paren => infer_paren_expr_type(hir, inference, expr_id),
-            ExprKind::Call => {
-                infer_call_expr_type(hir, expr_id, inference, external, globals, host_types)
-            }
+            ExprKind::Call => infer_call_expr_type(
+                hir,
+                expr_id,
+                inference,
+                external,
+                globals,
+                host_types,
+                imported_methods,
+            ),
             ExprKind::Index => infer_index_expr_type(hir, inference, expr_id),
-            ExprKind::Field => infer_field_expr_type(hir, inference, expr_id, host_types),
+            ExprKind::Field => {
+                infer_field_expr_type(hir, inference, expr_id, host_types, imported_methods)
+            }
             ExprKind::Object => infer_object_expr_type(hir, inference, expr_id),
             ExprKind::Closure => infer_closure_expr_type(hir, inference, expr_id),
             ExprKind::Error => Some(TypeRef::Unknown),
@@ -212,7 +253,11 @@ fn infer_path_expr_type(
     hir: &FileHir,
     expr: ExprId,
     external: &ExternalSignatureIndex,
+    imported_members: &[ImportedModuleMember],
 ) -> Option<TypeRef> {
+    if let Some(ty) = imported_module_member_type_for_expr(hir, expr, imported_members) {
+        return Some(ty);
+    }
     let qualified = qualified_path_name(hir, expr)?;
     external.get(qualified.as_str()).cloned()
 }
@@ -224,6 +269,10 @@ fn infer_name_expr_type(
     external: &ExternalSignatureIndex,
 ) -> Option<TypeRef> {
     let reference = hir.reference_at(hir.expr(expr).range)?;
+    if hir.reference(reference).kind == rhai_hir::ReferenceKind::This {
+        return hir.this_type_at(hir.expr(expr).range.start());
+    }
+
     if let Some(target) = hir.definition_of(reference) {
         return refined_symbol_type_at_offset(hir, inference, target, hir.expr(expr).range.start())
             .or_else(|| inference.symbol_types.get(&target).cloned())
@@ -732,12 +781,13 @@ fn infer_call_expr_type(
     external: &ExternalSignatureIndex,
     globals: &[HostFunction],
     host_types: &[HostType],
+    imported_methods: &[ImportedMethodSignature],
 ) -> Option<TypeRef> {
     let call = hir
         .calls
         .iter()
         .find(|call| call.range == hir.expr(expr).range)?;
-    let arg_types = call_argument_types(hir, inference, &call.arg_exprs);
+    let arg_types = effective_call_argument_types(hir, inference, call);
 
     if is_builtin_fn_call(hir, call) {
         return Some(infer_fn_pointer_call_type(
@@ -752,6 +802,7 @@ fn infer_call_expr_type(
         external,
         globals,
         host_types,
+        imported_methods,
         Some(&arg_types),
     )
     .into_iter()
@@ -788,12 +839,18 @@ fn infer_field_expr_type(
     inference: &FileTypeInference,
     expr: ExprId,
     host_types: &[HostType],
+    imported_methods: &[ImportedMethodSignature],
 ) -> Option<TypeRef> {
     let access = hir.member_access(expr)?;
     let field_name = hir.reference(access.field_reference).name.as_str();
     infer_member_type_from_expr(hir, inference, access.receiver, field_name).or_else(|| {
         host_method_signature_for_expr(hir, inference, expr, host_types, None)
             .map(TypeRef::Function)
+            .or_else(|| {
+                imported_method_signature_for_expr(hir, inference, expr, imported_methods, None)
+                    .map(TypeRef::Function)
+            })
+            .or_else(|| builtin_universal_method_signature(field_name).map(TypeRef::Function))
     })
 }
 
@@ -827,7 +884,11 @@ fn infer_closure_expr_type(
     }))
 }
 
-fn propagate_call_argument_types(hir: &FileHir, inference: &mut FileTypeInference) -> bool {
+fn propagate_call_argument_types(
+    hir: &FileHir,
+    imported_methods: &[ImportedMethodSignature],
+    inference: &mut FileTypeInference,
+) -> bool {
     let mut changed = false;
 
     for call in &hir.calls {
@@ -848,7 +909,7 @@ fn propagate_call_argument_types(hir: &FileHir, inference: &mut FileTypeInferenc
             changed |= merge_symbol_type(inference, parameter, arg_ty);
         }
 
-        let arg_types = call_argument_types(hir, inference, &call.arg_exprs);
+        let arg_types = effective_call_argument_types(hir, inference, call);
         for target in callable_targets_for_call(
             hir,
             inference,
@@ -856,6 +917,7 @@ fn propagate_call_argument_types(hir: &FileHir, inference: &mut FileTypeInferenc
             &ExternalSignatureIndex::default(),
             &[],
             &[],
+            imported_methods,
             Some(&arg_types),
         ) {
             let Some(function_symbol) = target.local_symbol else {
@@ -865,7 +927,7 @@ fn propagate_call_argument_types(hir: &FileHir, inference: &mut FileTypeInferenc
             for (parameter, arg_ty) in hir
                 .function_parameters(function_symbol)
                 .into_iter()
-                .zip(arg_types.iter().cloned().flatten())
+                .zip(arg_types.iter().flatten().cloned())
             {
                 changed |= merge_symbol_type(inference, parameter, arg_ty);
             }
@@ -880,6 +942,7 @@ fn propagate_expected_types(
     external: &ExternalSignatureIndex,
     globals: &[HostFunction],
     host_types: &[HostType],
+    imported_methods: &[ImportedMethodSignature],
     inference: &mut FileTypeInference,
 ) -> bool {
     let mut changed = false;
@@ -910,13 +973,23 @@ fn propagate_expected_types(
     }
 
     for call in &hir.calls {
-        let Some(signature) =
-            expected_call_signature(hir, inference, call, external, globals, host_types)
-        else {
+        let Some(signature) = expected_call_signature(
+            hir,
+            inference,
+            call,
+            external,
+            globals,
+            host_types,
+            imported_methods,
+        ) else {
             continue;
         };
 
-        for (arg_expr, expected) in call.arg_exprs.iter().copied().zip(signature.params.iter()) {
+        for (arg_expr, expected) in effective_call_argument_exprs(hir, call)
+            .iter()
+            .copied()
+            .zip(signature.params.iter())
+        {
             changed |= propagate_expected_type_to_expr(hir, inference, arg_expr, expected);
         }
     }
@@ -1251,7 +1324,7 @@ struct CallableTarget {
     local_symbol: Option<SymbolId>,
 }
 
-fn call_builtin_fn_signature<'a>(globals: &'a [HostFunction]) -> Option<&'a FunctionTypeRef> {
+fn call_builtin_fn_signature(globals: &[HostFunction]) -> Option<&FunctionTypeRef> {
     globals
         .iter()
         .find(|function| function.name == "Fn")?
@@ -1297,6 +1370,7 @@ fn infer_fn_pointer_call_type(
         .unwrap_or(TypeRef::FnPtr)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn callable_targets_for_call(
     hir: &FileHir,
     inference: &FileTypeInference,
@@ -1304,9 +1378,28 @@ fn callable_targets_for_call(
     external: &ExternalSignatureIndex,
     globals: &[HostFunction],
     host_types: &[HostType],
+    imported_methods: &[ImportedMethodSignature],
     arg_types: Option<&[Option<TypeRef>]>,
 ) -> Vec<CallableTarget> {
     let mut targets = Vec::new();
+    let arg_types = effective_arg_types_for_call(hir, inference, call, arg_types);
+
+    if caller_scope_dispatches_via_first_arg(hir, call)
+        && let Some(target_expr) = call.arg_exprs.first().copied()
+    {
+        targets.extend(callable_targets_for_expr(
+            hir,
+            inference,
+            target_expr,
+            call.range.start(),
+            external,
+            globals,
+            imported_methods,
+            arg_types.as_deref(),
+            &mut Vec::new(),
+        ));
+        return dedup_callable_targets(targets);
+    }
 
     if let Some(callee) = call.resolved_callee {
         targets.extend(callable_targets_for_symbol_use(
@@ -1316,15 +1409,20 @@ fn callable_targets_for_call(
             call.range.start(),
             external,
             globals,
-            arg_types,
+            imported_methods,
+            arg_types.as_deref(),
             &mut Vec::new(),
         ));
     }
 
     if let Some(callee_expr) = call.callee_range.and_then(|range| hir.expr_at(range)) {
-        if let Some(signature) =
-            host_method_signature_for_expr(hir, inference, callee_expr, host_types, arg_types)
-        {
+        if let Some(signature) = host_method_signature_for_expr(
+            hir,
+            inference,
+            callee_expr,
+            host_types,
+            arg_types.as_deref(),
+        ) {
             return vec![CallableTarget {
                 signature,
                 local_symbol: None,
@@ -1338,7 +1436,8 @@ fn callable_targets_for_call(
             call.range.start(),
             external,
             globals,
-            arg_types,
+            imported_methods,
+            arg_types.as_deref(),
             &mut Vec::new(),
         ));
     }
@@ -1355,7 +1454,7 @@ fn callable_targets_for_call(
             call.range.start(),
             external,
             globals,
-            arg_types,
+            arg_types.as_deref(),
             &mut Vec::new(),
         ));
     }
@@ -1363,6 +1462,7 @@ fn callable_targets_for_call(
     dedup_callable_targets(targets)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn callable_targets_for_expr(
     hir: &FileHir,
     inference: &FileTypeInference,
@@ -1370,6 +1470,7 @@ fn callable_targets_for_expr(
     use_offset: rhai_syntax::TextSize,
     external: &ExternalSignatureIndex,
     globals: &[HostFunction],
+    imported_methods: &[ImportedMethodSignature],
     arg_types: Option<&[Option<TypeRef>]>,
     visited_symbols: &mut Vec<SymbolId>,
 ) -> Vec<CallableTarget> {
@@ -1383,11 +1484,23 @@ fn callable_targets_for_expr(
                     use_offset,
                     external,
                     globals,
+                    imported_methods,
                     arg_types,
                     visited_symbols,
                 )
             })
             .unwrap_or_default(),
+        ExprKind::Field => local_method_targets_for_expr(
+            hir,
+            inference,
+            expr,
+            use_offset,
+            external,
+            globals,
+            imported_methods,
+            arg_types,
+            visited_symbols,
+        ),
         ExprKind::Paren => largest_inner_expr(hir, expr)
             .map(|inner| {
                 callable_targets_for_expr(
@@ -1397,6 +1510,7 @@ fn callable_targets_for_expr(
                     use_offset,
                     external,
                     globals,
+                    imported_methods,
                     arg_types,
                     visited_symbols,
                 )
@@ -1443,6 +1557,7 @@ fn callable_targets_for_expr(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn callable_targets_for_symbol_use(
     hir: &FileHir,
     inference: &FileTypeInference,
@@ -1450,6 +1565,7 @@ fn callable_targets_for_symbol_use(
     use_offset: rhai_syntax::TextSize,
     external: &ExternalSignatureIndex,
     globals: &[HostFunction],
+    imported_methods: &[ImportedMethodSignature],
     arg_types: Option<&[Option<TypeRef>]>,
     visited_symbols: &mut Vec<SymbolId>,
 ) -> Vec<CallableTarget> {
@@ -1478,6 +1594,7 @@ fn callable_targets_for_symbol_use(
             use_offset,
             external,
             globals,
+            imported_methods,
             arg_types,
             visited_symbols,
         ));
@@ -1485,6 +1602,215 @@ fn callable_targets_for_symbol_use(
 
     visited_symbols.pop();
     dedup_callable_targets(targets)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn local_method_targets_for_expr(
+    hir: &FileHir,
+    inference: &FileTypeInference,
+    expr: ExprId,
+    use_offset: rhai_syntax::TextSize,
+    external: &ExternalSignatureIndex,
+    globals: &[HostFunction],
+    imported_methods: &[ImportedMethodSignature],
+    arg_types: Option<&[Option<TypeRef>]>,
+    visited_symbols: &mut Vec<SymbolId>,
+) -> Vec<CallableTarget> {
+    let access = match hir.member_access(expr) {
+        Some(access) => access,
+        None => return Vec::new(),
+    };
+    let receiver_ty = match inferred_expr_type(hir, inference, access.receiver) {
+        Some(ty) => ty,
+        None => return Vec::new(),
+    };
+    let method_name = hir.reference(access.field_reference).name.as_str();
+    local_method_targets_for_name(
+        hir,
+        inference,
+        method_name,
+        &receiver_ty,
+        use_offset,
+        external,
+        globals,
+        imported_methods,
+        arg_types,
+        visited_symbols,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn local_method_targets_for_name(
+    hir: &FileHir,
+    inference: &FileTypeInference,
+    name: &str,
+    receiver_ty: &TypeRef,
+    use_offset: rhai_syntax::TextSize,
+    external: &ExternalSignatureIndex,
+    globals: &[HostFunction],
+    imported_methods: &[ImportedMethodSignature],
+    arg_types: Option<&[Option<TypeRef>]>,
+    visited_symbols: &mut Vec<SymbolId>,
+) -> Vec<CallableTarget> {
+    let mut blanket = Vec::new();
+    let mut typed = Vec::new();
+
+    for (index, symbol_data) in hir.symbols.iter().enumerate() {
+        let symbol = SymbolId(index as u32);
+        if symbol_data.kind != SymbolKind::Function || symbol_data.name != name {
+            continue;
+        }
+
+        let targets = callable_targets_for_symbol_use(
+            hir,
+            inference,
+            symbol,
+            use_offset,
+            external,
+            globals,
+            imported_methods,
+            arg_types,
+            visited_symbols,
+        );
+        if targets.is_empty() {
+            continue;
+        }
+
+        match hir
+            .function_info(symbol)
+            .and_then(|info| info.this_type.as_ref())
+        {
+            Some(this_type) if receiver_matches_method_type(receiver_ty, this_type) => {
+                typed.extend(targets);
+            }
+            Some(_) => {}
+            None => blanket.extend(targets),
+        }
+    }
+
+    if typed.is_empty() {
+        return dedup_callable_targets(builtin_universal_method_targets(
+            name,
+            arg_types,
+            imported_method_targets_for_name(
+                name,
+                receiver_ty,
+                imported_methods,
+                arg_types,
+                blanket,
+            ),
+        ));
+    }
+
+    if receiver_dispatch_is_precise(receiver_ty) {
+        typed = builtin_universal_method_targets(
+            name,
+            arg_types,
+            imported_method_targets_for_name(name, receiver_ty, imported_methods, arg_types, typed),
+        );
+        return dedup_callable_targets(typed);
+    }
+
+    typed.extend(blanket);
+    dedup_callable_targets(builtin_universal_method_targets(
+        name,
+        arg_types,
+        imported_method_targets_for_name(name, receiver_ty, imported_methods, arg_types, typed),
+    ))
+}
+
+fn imported_method_signature_for_expr(
+    hir: &FileHir,
+    inference: &FileTypeInference,
+    expr: ExprId,
+    imported_methods: &[ImportedMethodSignature],
+    arg_types: Option<&[Option<TypeRef>]>,
+) -> Option<FunctionTypeRef> {
+    let access = hir.member_access(expr)?;
+    let receiver_ty = inferred_expr_type(hir, inference, access.receiver)?;
+    let method_name = hir.reference(access.field_reference).name.as_str();
+    let targets = imported_method_targets_for_name(
+        method_name,
+        &receiver_ty,
+        imported_methods,
+        arg_types,
+        Vec::new(),
+    );
+    join_callable_target_signatures(&targets, arg_types.map(|items| items.len()))
+}
+
+fn imported_method_targets_for_name(
+    name: &str,
+    receiver_ty: &TypeRef,
+    imported_methods: &[ImportedMethodSignature],
+    arg_types: Option<&[Option<TypeRef>]>,
+    mut targets: Vec<CallableTarget>,
+) -> Vec<CallableTarget> {
+    let matching = imported_methods
+        .iter()
+        .filter(|method| {
+            method.name == name && receiver_matches_method_type(receiver_ty, &method.receiver)
+        })
+        .filter(|method| {
+            arg_types.is_none_or(|arg_types| method.signature.params.len() == arg_types.len())
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+
+    if matching.is_empty() {
+        return targets;
+    }
+
+    if let Some(arg_types) = arg_types
+        && has_informative_arg_types(arg_types)
+        && let Some(index) = best_matching_signature_index(
+            matching.iter().map(|method| &method.signature),
+            arg_types,
+        )
+        && let Some(method) = matching.get(index)
+    {
+        targets.push(CallableTarget {
+            signature: method.signature.clone(),
+            local_symbol: None,
+        });
+        return targets;
+    }
+
+    targets.extend(matching.into_iter().map(|method| CallableTarget {
+        signature: method.signature,
+        local_symbol: None,
+    }));
+    targets
+}
+
+fn builtin_universal_method_targets(
+    method_name: &str,
+    arg_types: Option<&[Option<TypeRef>]>,
+    mut targets: Vec<CallableTarget>,
+) -> Vec<CallableTarget> {
+    let Some(signature) = builtin_universal_method_signature(method_name) else {
+        return targets;
+    };
+
+    if arg_types.is_some_and(|arg_types| signature.params.len() != arg_types.len()) {
+        return targets;
+    }
+
+    targets.push(CallableTarget {
+        signature,
+        local_symbol: None,
+    });
+    targets
+}
+
+fn builtin_universal_method_signature(method_name: &str) -> Option<FunctionTypeRef> {
+    match method_name {
+        "type_of" => Some(FunctionTypeRef {
+            params: Vec::new(),
+            ret: Box::new(TypeRef::String),
+        }),
+        _ => None,
+    }
 }
 
 fn callable_signature_for_symbol(
@@ -1501,6 +1827,7 @@ fn callable_signature_for_symbol(
         .and_then(signature_from_type)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn named_callable_targets_at_offset(
     hir: &FileHir,
     inference: &FileTypeInference,
@@ -1527,6 +1854,7 @@ fn named_callable_targets_at_offset(
                 offset,
                 external,
                 globals,
+                &[],
                 arg_types,
                 visited_symbols,
             ));
@@ -1625,12 +1953,13 @@ fn expected_call_signature(
     external: &ExternalSignatureIndex,
     globals: &[HostFunction],
     host_types: &[HostType],
+    imported_methods: &[ImportedMethodSignature],
 ) -> Option<FunctionTypeRef> {
     if is_builtin_fn_call(hir, call) {
         return call_builtin_fn_signature(globals).cloned();
     }
 
-    let arg_types = call_argument_types(hir, inference, &call.arg_exprs);
+    let arg_types = effective_call_argument_types(hir, inference, call);
     let targets = callable_targets_for_call(
         hir,
         inference,
@@ -1638,9 +1967,10 @@ fn expected_call_signature(
         external,
         globals,
         host_types,
+        imported_methods,
         Some(&arg_types),
     );
-    join_callable_target_signatures(&targets, Some(call.arg_exprs.len()))
+    join_callable_target_signatures(&targets, Some(arg_types.len()))
 }
 
 fn signature_from_type(ty: &TypeRef) -> Option<FunctionTypeRef> {
@@ -1675,6 +2005,44 @@ fn call_argument_types(
                 .cloned()
         })
         .collect()
+}
+
+fn caller_scope_dispatches_via_first_arg(hir: &FileHir, call: &rhai_hir::CallSite) -> bool {
+    call.caller_scope
+        && call
+            .callee_reference
+            .map(|reference| hir.reference(reference).name.as_str())
+            == Some("call")
+}
+
+fn effective_call_argument_exprs<'a>(hir: &FileHir, call: &'a rhai_hir::CallSite) -> &'a [ExprId] {
+    let offset =
+        usize::from(caller_scope_dispatches_via_first_arg(hir, call)).min(call.arg_exprs.len());
+    &call.arg_exprs[offset..]
+}
+
+fn effective_call_argument_types(
+    hir: &FileHir,
+    inference: &FileTypeInference,
+    call: &rhai_hir::CallSite,
+) -> Vec<Option<TypeRef>> {
+    let arg_offset =
+        usize::from(caller_scope_dispatches_via_first_arg(hir, call)).min(call.arg_exprs.len());
+    call_argument_types(hir, inference, &call.arg_exprs[arg_offset..])
+}
+
+fn effective_arg_types_for_call(
+    hir: &FileHir,
+    inference: &FileTypeInference,
+    call: &rhai_hir::CallSite,
+    arg_types: Option<&[Option<TypeRef>]>,
+) -> Option<Vec<Option<TypeRef>>> {
+    arg_types
+        .map(|arg_types| {
+            let arg_offset = usize::from(caller_scope_dispatches_via_first_arg(hir, call));
+            arg_types[arg_offset.min(arg_types.len())..].to_vec()
+        })
+        .or_else(|| Some(effective_call_argument_types(hir, inference, call)))
 }
 
 fn for_binding_types_from_iterable(ty: &TypeRef, binding_count: usize) -> Option<Vec<TypeRef>> {
@@ -1962,7 +2330,7 @@ fn expr_is_unit_like(hir: &FileHir, inference: &FileTypeInference, expr: ExprId)
     }
 }
 
-fn string_literal_value<'a>(hir: &'a FileHir, expr: ExprId) -> Option<&'a str> {
+fn string_literal_value(hir: &FileHir, expr: ExprId) -> Option<&str> {
     let literal = hir.literal(expr)?;
     (literal.kind == LiteralKind::String)
         .then_some(literal.text.as_deref())
@@ -2037,6 +2405,45 @@ fn qualified_path_name(hir: &FileHir, expr: ExprId) -> Option<String> {
     })
 }
 
+fn imported_module_member_type_for_expr(
+    hir: &FileHir,
+    expr: ExprId,
+    imported_members: &[ImportedModuleMember],
+) -> Option<TypeRef> {
+    let parts = qualified_path_parts(hir, expr)?;
+    let (member_name, module_path) = parts.split_last()?;
+    if module_path.is_empty() {
+        return None;
+    }
+    imported_members
+        .iter()
+        .find(|member| member.module_path == module_path && member.name == *member_name)
+        .map(|member| member.ty.clone())
+}
+
+fn qualified_path_parts(hir: &FileHir, expr: ExprId) -> Option<Vec<String>> {
+    let range = hir.expr(expr).range;
+    let mut parts = hir
+        .references
+        .iter()
+        .filter(|reference| {
+            matches!(
+                reference.kind,
+                rhai_hir::ReferenceKind::Name | rhai_hir::ReferenceKind::PathSegment
+            ) && reference.range.start() >= range.start()
+                && reference.range.end() <= range.end()
+        })
+        .collect::<Vec<_>>();
+
+    parts.sort_by_key(|reference| reference.range.start());
+    (!parts.is_empty()).then(|| {
+        parts
+            .into_iter()
+            .map(|reference| reference.name.clone())
+            .collect()
+    })
+}
+
 fn host_method_signature_for_expr(
     hir: &FileHir,
     inference: &FileTypeInference,
@@ -2048,6 +2455,50 @@ fn host_method_signature_for_expr(
     let method_name = hir.reference(access.field_reference).name.as_str();
     let receiver_ty = inferred_expr_type(hir, inference, access.receiver)?;
     host_method_signature_for_type(&receiver_ty, method_name, host_types, arg_types)
+}
+
+fn receiver_matches_method_type(receiver: &TypeRef, expected: &TypeRef) -> bool {
+    if receiver == expected {
+        return true;
+    }
+
+    match (receiver, expected) {
+        (TypeRef::Unknown | TypeRef::Any | TypeRef::Dynamic | TypeRef::Never, _) => true,
+        (TypeRef::Union(items), expected) => items
+            .iter()
+            .any(|item| receiver_matches_method_type(item, expected)),
+        (TypeRef::Nullable(inner), expected) => receiver_matches_method_type(inner, expected),
+        (TypeRef::Applied { name, .. }, TypeRef::Named(expected_name))
+        | (
+            TypeRef::Named(name),
+            TypeRef::Applied {
+                name: expected_name,
+                ..
+            },
+        ) => name == expected_name,
+        (
+            TypeRef::Applied { name, args },
+            TypeRef::Applied {
+                name: expected_name,
+                args: expected_args,
+            },
+        ) => {
+            name == expected_name
+                && args.len() == expected_args.len()
+                && args
+                    .iter()
+                    .zip(expected_args.iter())
+                    .all(|(arg, expected)| receiver_matches_method_type(arg, expected))
+        }
+        _ => false,
+    }
+}
+
+fn receiver_dispatch_is_precise(receiver: &TypeRef) -> bool {
+    !matches!(
+        receiver,
+        TypeRef::Unknown | TypeRef::Any | TypeRef::Dynamic | TypeRef::Never | TypeRef::Union(_)
+    )
 }
 
 fn host_method_signature_for_type(

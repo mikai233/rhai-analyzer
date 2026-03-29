@@ -301,9 +301,9 @@ mod tests {
         let mut server = Server::new();
         let provider_uri = file_url("provider.rhai");
         let consumer_uri = file_url("consumer.rhai");
-        let provider_text = "fn helper() {} export helper as shared_tools;";
-        let consumer_text = "import shared_tools as tools;";
-        let renamed_provider_text = "fn helper() {} export helper as renamed_tools;";
+        let provider_text = "export const VALUE = 1;";
+        let consumer_text = "import \"provider\" as tools;\ntools;\nfn run() {}";
+        let renamed_provider_text = "export const VALUE = 2;";
 
         assert_valid_rhai_syntax(provider_text);
         assert_valid_rhai_syntax(consumer_text);
@@ -325,7 +325,7 @@ mod tests {
             .iter()
             .find(|update| update.uri == consumer_uri)
             .expect("expected consumer diagnostics update");
-        assert!(!consumer_update.diagnostics.is_empty());
+        assert!(consumer_update.diagnostics.is_empty());
 
         let analysis = server.analysis_host().snapshot();
         let provider = analysis
@@ -362,11 +362,11 @@ mod tests {
     }
 
     #[test]
-    fn auto_import_actions_are_exposed_for_open_documents() {
+    fn auto_import_actions_are_not_exposed_for_workspace_exports() {
         let mut server = Server::new();
         let provider_uri = file_url("provider.rhai");
         let consumer_uri = file_url("consumer.rhai");
-        let provider_text = "fn helper() {} export helper as shared_tools;";
+        let provider_text = "let helper = 1; export helper as shared_tools;";
         let consumer_text = "fn run() { shared_tools(); }";
 
         assert_valid_rhai_syntax(provider_text);
@@ -386,14 +386,7 @@ mod tests {
             )
             .expect("expected auto import actions");
 
-        assert_eq!(actions.len(), 1);
-        assert_eq!(actions[0].title, "Import `shared_tools`");
-        assert_eq!(actions[0].uri, consumer_uri);
-        assert_eq!(actions[0].insert_offset, 0);
-        assert_eq!(
-            actions[0].insert_text,
-            "import shared_tools as shared_tools;\n"
-        );
+        assert!(actions.is_empty());
     }
 
     fn file_url(path: &str) -> Uri {

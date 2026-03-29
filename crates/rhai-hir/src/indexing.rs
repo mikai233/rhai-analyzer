@@ -145,32 +145,46 @@ impl FileHir {
             })
             .collect();
 
-        let exports = self
+        let mut exports = self
             .exports
             .iter()
             .enumerate()
-            .map(|(index, export)| {
-                let target = export
-                    .target_reference
-                    .and_then(|reference| self.definition_of(reference))
-                    .map(|symbol| self.file_backed_symbol_identity(symbol));
+            .filter_map(|(index, export)| {
+                let target_symbol = self.explicit_export_target_symbol(export)?;
+                let target = self.file_backed_symbol_identity(target_symbol);
                 let alias = export
                     .alias
                     .map(|symbol| self.file_backed_symbol_identity(symbol));
                 let exported_name = alias
                     .as_ref()
                     .map(|alias| alias.name.clone())
-                    .or_else(|| target.as_ref().map(|target| target.name.clone()))
-                    .or_else(|| export.target_text.clone());
+                    .unwrap_or_else(|| target.name.clone());
 
-                ModuleExportEdge {
+                Some(ModuleExportEdge {
                     export: index,
-                    target,
-                    exported_name,
+                    target: Some(target),
+                    exported_name: Some(exported_name),
                     alias,
-                }
+                })
             })
-            .collect();
+            .collect::<Vec<_>>();
+
+        let implicit_export_base = self.exports.len();
+        exports.extend(
+            self.symbols
+                .iter()
+                .enumerate()
+                .filter_map(|(index, _symbol)| {
+                    let symbol_id = SymbolId(index as u32);
+                    self.implicit_export_name(symbol_id)
+                        .map(|exported_name| ModuleExportEdge {
+                            export: implicit_export_base + index,
+                            target: Some(self.file_backed_symbol_identity(symbol_id)),
+                            exported_name: Some(exported_name),
+                            alias: None,
+                        })
+                }),
+        );
 
         ModuleGraphIndex { imports, exports }
     }
@@ -232,19 +246,33 @@ impl FileHir {
     }
 
     fn is_exported_symbol(&self, symbol: SymbolId) -> bool {
-        let symbol_name = self.symbol(symbol).name.as_str();
+        self.implicit_export_name(symbol).is_some()
+            || self.exports.iter().any(|export| {
+                export.alias == Some(symbol)
+                    || self.explicit_export_target_symbol(export) == Some(symbol)
+            })
+    }
 
-        self.exports.iter().any(|export| {
-            export.alias == Some(symbol)
-                || export
-                    .target_reference
-                    .and_then(|reference| self.definition_of(reference))
-                    == Some(symbol)
-                || export.target_reference.is_some_and(|reference| {
-                    self.reference(reference).name == symbol_name
-                        && self.definition_of(reference).is_none()
-                })
-        })
+    fn implicit_export_name(&self, symbol: SymbolId) -> Option<String> {
+        let symbol_data = self.symbol(symbol);
+        (symbol_data.kind == SymbolKind::Function
+            && !symbol_data.is_private
+            && self.scope(symbol_data.scope).kind == ScopeKind::File)
+            .then(|| symbol_data.name.clone())
+    }
+
+    fn explicit_export_target_symbol(&self, export: &crate::ExportDirective) -> Option<SymbolId> {
+        let symbol = export.target_symbol.or_else(|| {
+            export
+                .target_reference
+                .and_then(|reference| self.definition_of(reference))
+        })?;
+        let symbol_data = self.symbol(symbol);
+        (matches!(
+            symbol_data.kind,
+            SymbolKind::Variable | SymbolKind::Constant
+        ) && self.scope(symbol_data.scope).kind == ScopeKind::File)
+            .then_some(symbol)
     }
 
     fn import_module_specifier(&self, import: &ImportDirective) -> Option<ModuleSpecifier> {

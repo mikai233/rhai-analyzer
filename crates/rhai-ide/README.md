@@ -86,6 +86,9 @@ This checklist tracks what `rhai-ide` already provides and what still needs to l
 ### Type-Aware UX
 
 - [x] signature help backed by local, workspace-exported, and builtin function signatures
+- [x] signature help for imported global typed methods exposed by linked Rhai modules
+- [x] signature help for module-qualified imported functions such as `tools::helper(...)`
+- [x] signature help for nested module-qualified imported functions such as `tools::sub::helper(...)`
 - [x] hover fallback to inferred symbol/function types when declarations lack explicit annotations
 - [x] completion detail backed by inferred local symbol types when declared annotations are absent
 - [ ] inlay hints driven by inferred parameter / variable / return types

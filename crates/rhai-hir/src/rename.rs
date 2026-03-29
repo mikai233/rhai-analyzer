@@ -70,10 +70,11 @@ impl FileHir {
         }
 
         for export in &self.exports {
-            if export
-                .target_reference
-                .and_then(|reference| self.definition_of(reference))
-                == Some(symbol)
+            if (export.target_symbol == Some(symbol)
+                || export
+                    .target_reference
+                    .and_then(|reference| self.definition_of(reference))
+                    == Some(symbol))
                 && let Some(alias) = export.alias
             {
                 aliases.push(LinkedAlias {

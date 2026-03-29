@@ -58,7 +58,28 @@ This checklist is based on the Rhai Book language reference and appendix pages f
 - [x] `import` / `export` / `as`
 - [x] function definitions
 - [x] `private` modifier on functions
-- [x] `export` statements and `global`-qualified paths
+- [x] `import` statements with arbitrary expression module specifiers
+- [x] `export` statements restricted to plain identifiers plus `export let` / `export const`
+
+### Rhai Function Syntax Alignment
+
+- [x] top-level `fn name(params) { ... }` definitions
+- [x] global-only function definitions (reject nested `fn`)
+- [x] method-call syntax such as `object.method(args...)`
+- [x] Elvis method-call syntax such as `object?.method(args...)`
+- [x] typed method definitions such as `fn Type.method(args...) { ... }`
+- [x] quoted typed method definitions such as `fn "Custom-Type".method(args...) { ... }`
+- [x] caller-scope function-call syntax such as `foo!(args...)` / `call!(fn_name, args...)`
+- [x] syntax-level rejection/recovery for invalid caller-scope forms like `object.method!()` and `module::func!()`
+
+### Rhai Module Syntax Alignment
+
+- [x] `import <expr> [as alias]` grammar, including dynamic module-path expressions
+- [x] `export <name> [as alias]` grammar for plain identifier targets
+- [x] `export let ...` / `export const ...` shorthand declarations
+- [x] reject non-identifier export targets such as paths, calls, and other expressions
+- [x] reject `export` statements outside global level
+- [ ] targeted recovery/messages for `import` expressions that are syntactically valid but semantically suspicious
 
 ### Parser Quality
 

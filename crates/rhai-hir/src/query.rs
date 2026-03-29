@@ -8,8 +8,8 @@ use crate::{
     DocumentedField, ExportDirective, ExprId, ExprKind, FileHir, FindReferencesResult,
     FunctionTypeRef, IfExprInfo, ImportDirective, IndexExprInfo, LiteralInfo, MemberAccess,
     MemberCompletion, MemberCompletionSource, NavigationTarget, ParameterHint,
-    ParameterHintParameter, ReferenceId, ReferenceLocation, ScopeId, SwitchExprInfo, SymbolId,
-    SymbolKind, TypeRef, TypeSlotId, UnaryExprInfo, WorkspaceSymbol,
+    ParameterHintParameter, ReferenceId, ReferenceLocation, ScopeId, ScopeKind, SwitchExprInfo,
+    SymbolId, SymbolKind, TypeRef, TypeSlotId, UnaryExprInfo, WorkspaceSymbol,
 };
 
 impl FileHir {
@@ -45,6 +45,38 @@ impl FileHir {
         self.for_exprs
             .iter()
             .find(|for_expr| for_expr.owner == expr)
+    }
+
+    pub fn function_info(&self, function: SymbolId) -> Option<&crate::FunctionInfo> {
+        self.function_infos
+            .iter()
+            .find(|info| info.symbol == function)
+    }
+
+    pub fn enclosing_function_symbol_at(&self, offset: TextSize) -> Option<SymbolId> {
+        let mut scope = self.find_scope_at(offset)?;
+
+        loop {
+            let scope_data = self.scope(scope);
+            if scope_data.kind == ScopeKind::Function {
+                return self
+                    .bodies
+                    .iter()
+                    .find(|body| body.scope == scope && body.owner.is_some())
+                    .and_then(|body| body.owner);
+            }
+
+            scope = scope_data.parent?;
+        }
+    }
+
+    pub fn this_type_at(&self, offset: TextSize) -> Option<TypeRef> {
+        let function = self.enclosing_function_symbol_at(offset)?;
+        Some(
+            self.function_info(function)
+                .and_then(|info| info.this_type.clone())
+                .unwrap_or(TypeRef::Unknown),
+        )
     }
 
     pub fn unary_expr(&self, expr: ExprId) -> Option<&UnaryExprInfo> {
@@ -303,6 +335,7 @@ impl FileHir {
         if function.kind != SymbolKind::Function {
             return None;
         }
+        let active_parameter = self.active_parameter_index(call, offset)?;
 
         let parameters = self
             .function_parameters(target)
@@ -326,7 +359,7 @@ impl FileHir {
             call: call_id,
             callee: self.navigation_target(target),
             callee_name: function.name.clone(),
-            active_parameter: self.active_parameter_index(call, offset),
+            active_parameter,
             parameters,
             return_type,
         })
@@ -339,6 +372,7 @@ impl FileHir {
             Some(scope) => scope,
             None => return visible,
         };
+        let mut crossed_function_boundary = false;
 
         loop {
             let scope_data = self.scope(scope);
@@ -347,12 +381,13 @@ impl FileHir {
                 if hidden_names.contains(symbol.name.as_str()) {
                     continue;
                 }
-                if self.symbol_is_visible_at(symbol_id, offset) {
+                if self.symbol_is_visible_at(symbol_id, offset, crossed_function_boundary) {
                     hidden_names.insert(symbol.name.clone());
                     visible.push(symbol_id);
                 }
             }
 
+            crossed_function_boundary |= scope_data.kind == ScopeKind::Function;
             match scope_data.parent {
                 Some(parent) => scope = parent,
                 None => break,
@@ -405,8 +440,20 @@ impl FileHir {
         self.member_completions_for_expr(access.receiver)
     }
 
-    fn symbol_is_visible_at(&self, symbol: SymbolId, offset: TextSize) -> bool {
+    fn symbol_is_visible_at(
+        &self,
+        symbol: SymbolId,
+        offset: TextSize,
+        crossed_function_boundary: bool,
+    ) -> bool {
         let symbol = self.symbol(symbol);
+        if crossed_function_boundary {
+            let symbol_scope = self.scope(symbol.scope);
+            return symbol.kind == SymbolKind::Function
+                || (symbol.kind == SymbolKind::ImportAlias
+                    && symbol_scope.kind == ScopeKind::File
+                    && symbol.range.start() <= offset);
+        }
         matches!(symbol.kind, SymbolKind::Function) || symbol.range.start() <= offset
     }
 
@@ -517,15 +564,26 @@ impl FileHir {
         }
     }
 
-    fn active_parameter_index(&self, call: &CallSite, offset: TextSize) -> usize {
+    fn caller_scope_arg_offset(&self, call: &CallSite) -> usize {
+        usize::from(
+            call.caller_scope
+                && call
+                    .callee_reference
+                    .map(|reference| self.reference(reference).name.as_str())
+                    == Some("call"),
+        )
+    }
+
+    fn active_parameter_index(&self, call: &CallSite, offset: TextSize) -> Option<usize> {
         if call.arg_ranges.is_empty() {
-            return 0;
+            return Some(0);
         }
 
+        let arg_offset = self.caller_scope_arg_offset(call);
         let mut index = 0usize;
         for (current, range) in call.arg_ranges.iter().enumerate() {
             if range.contains(offset) {
-                return current;
+                return current.checked_sub(arg_offset);
             }
 
             if offset >= range.start() {
@@ -536,10 +594,10 @@ impl FileHir {
                 && offset >= range.end()
                 && offset < next.start()
             {
-                return current + 1;
+                return (current + 1).checked_sub(arg_offset);
             }
         }
 
-        index
+        index.checked_sub(arg_offset)
     }
 }

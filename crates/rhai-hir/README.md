@@ -57,6 +57,30 @@ This checklist tracks what the current lowering layer already models and what st
 - [ ] project-wide / cross-file resolution
 - [ ] import/export linkage and module graph aware resolution
 
+### Rhai Module Semantics Alignment
+
+- [x] explicit export lowering for global variables/constants and `export let` / `export const`
+- [x] semantic rejection of explicit `export` targets that resolve to functions, params, aliases, or non-global bindings
+- [x] implicit module export of top-level non-`private` functions
+- [x] exclusion of `private fn` items from implicit module exports
+- [x] module-graph output that merges explicit variable exports with implicit public-function exports
+- [x] static semantic/type diagnostics for `import` expressions that can be proven not to evaluate to `string`
+- [x] conservative static import-path evaluation for string literals, interpolated strings, simple string concatenation, block tail values, and `if` branches with matching string outcomes
+- [x] global-level `import` aliases remain visible inside functions
+- [ ] clearer distinction between “syntactically valid dynamic import” and “workspace-linkable static import”
+- [ ] module-member resolution/querying that follows Rhai import visibility rules instead of analyzer-specific shortcuts
+
+### Rhai Function Semantics Alignment
+
+- [x] semantic rejection of nested function definitions happens earlier in syntax
+- [x] functions do not capture outer variables
+- [x] functions can still call other functions across file/global scope
+- [x] functions can access global-level imported modules
+- [x] typed-method lowering/metadata for `fn Type.method(...)` / `fn "Type".method(...)`
+- [x] query support for contextual `this` typing inside typed and blanket methods
+- [x] caller-scope call metadata for `foo!(...)` / `call!(...)`
+- [x] full caller-scope call semantics and downstream query behavior
+
 ### Docs and Type Annotations
 
 - [x] doc block attachment from syntax trivia

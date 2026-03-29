@@ -164,12 +164,82 @@ fn snapshot_exposes_project_semantics() {
             ret: Box::new(rhai_hir::TypeRef::FnPtr),
         }))
     );
-    assert_eq!(snapshot.global_functions().len(), 3);
+    assert_eq!(
+        snapshot.external_signatures().get("is_def_var"),
+        Some(&rhai_hir::TypeRef::Function(rhai_hir::FunctionTypeRef {
+            params: vec![rhai_hir::TypeRef::String],
+            ret: Box::new(rhai_hir::TypeRef::Bool),
+        }))
+    );
+    assert_eq!(
+        snapshot.external_signatures().get("is_def_fn"),
+        Some(&rhai_hir::TypeRef::Function(rhai_hir::FunctionTypeRef {
+            params: vec![rhai_hir::TypeRef::String, rhai_hir::TypeRef::Int],
+            ret: Box::new(rhai_hir::TypeRef::Bool),
+        }))
+    );
+    assert_eq!(
+        snapshot.external_signatures().get("type_of"),
+        Some(&rhai_hir::TypeRef::Function(rhai_hir::FunctionTypeRef {
+            params: vec![rhai_hir::TypeRef::Any],
+            ret: Box::new(rhai_hir::TypeRef::String),
+        }))
+    );
+    assert_eq!(snapshot.global_functions().len(), 6);
     assert_eq!(snapshot.global_functions()[0].name, "blob");
     assert_eq!(snapshot.global_functions()[1].name, "timestamp");
     assert_eq!(snapshot.global_functions()[2].name, "Fn");
+    assert_eq!(snapshot.global_functions()[3].name, "is_def_var");
+    assert_eq!(snapshot.global_functions()[4].name, "is_def_fn");
+    assert_eq!(snapshot.global_functions()[5].name, "type_of");
     assert_eq!(snapshot.global_functions()[0].overloads.len(), 3);
     assert_eq!(snapshot.external_signatures().get("math::parse"), None);
+}
+
+#[test]
+fn snapshot_infers_builtin_introspection_function_types() {
+    let mut db = AnalyzerDatabase::default();
+    db.apply_change(ChangeSet::single_file(
+        "main.rhai",
+        r#"
+            fn check(value) { value }
+            fn int.bump(delta) { this + delta }
+
+            let answer = 42;
+            let has_var = is_def_var("answer");
+            let has_fn = is_def_fn("check", 1);
+            let has_method = is_def_fn("int", "bump", 1);
+            let kind_fn = type_of(answer);
+            let kind_method = answer.type_of();
+        "#,
+        DocumentVersion(1),
+    ));
+
+    let snapshot = db.snapshot();
+    assert_workspace_files_have_no_syntax_diagnostics(&snapshot);
+    let file_id = snapshot
+        .vfs()
+        .file_id(Path::new("main.rhai"))
+        .expect("expected file id");
+    let hir = snapshot.hir(file_id).expect("expected hir");
+
+    for name in ["has_var", "has_fn", "has_method"] {
+        let symbol = symbol_id_by_name(&hir, name, SymbolKind::Variable);
+        assert_eq!(
+            snapshot.inferred_symbol_type(file_id, symbol),
+            Some(&TypeRef::Bool),
+            "expected `{name}` to infer as bool"
+        );
+    }
+
+    for name in ["kind_fn", "kind_method"] {
+        let symbol = symbol_id_by_name(&hir, name, SymbolKind::Variable);
+        assert_eq!(
+            snapshot.inferred_symbol_type(file_id, symbol),
+            Some(&TypeRef::String),
+            "expected `{name}` to infer as string"
+        );
+    }
 }
 
 #[test]
@@ -314,6 +384,48 @@ fn snapshot_infers_local_function_pointers_with_indirect_call_signatures() {
     assert_eq!(snapshot.inferred_symbol_type(file_id, ptr), Some(&blob_fn));
     assert_eq!(
         snapshot.inferred_symbol_type(file_id, result),
+        Some(&TypeRef::Blob)
+    );
+}
+
+#[test]
+fn snapshot_infers_caller_scope_call_targets_and_return_types() {
+    let mut db = AnalyzerDatabase::default();
+    db.apply_change(ChangeSet::single_file(
+        "main.rhai",
+        r#"
+            fn echo(value) {
+                value
+            }
+
+            let direct = call!(echo, blob(10));
+            let indirect = call!(Fn("echo"), blob(11));
+        "#,
+        DocumentVersion(1),
+    ));
+
+    let snapshot = db.snapshot();
+    assert_workspace_files_have_no_syntax_diagnostics(&snapshot);
+    let file_id = snapshot
+        .vfs()
+        .file_id(Path::new("main.rhai"))
+        .expect("expected file id");
+    let hir = snapshot.hir(file_id).expect("expected hir");
+
+    let value = symbol_id_by_name(&hir, "value", SymbolKind::Parameter);
+    let direct = symbol_id_by_name(&hir, "direct", SymbolKind::Variable);
+    let indirect = symbol_id_by_name(&hir, "indirect", SymbolKind::Variable);
+
+    assert_eq!(
+        snapshot.inferred_symbol_type(file_id, value),
+        Some(&TypeRef::Blob)
+    );
+    assert_eq!(
+        snapshot.inferred_symbol_type(file_id, direct),
+        Some(&TypeRef::Blob)
+    );
+    assert_eq!(
+        snapshot.inferred_symbol_type(file_id, indirect),
         Some(&TypeRef::Blob)
     );
 }
@@ -1609,6 +1721,384 @@ fn snapshot_infers_host_method_member_and_call_types() {
 }
 
 #[test]
+fn snapshot_infers_local_script_method_calls_and_this_types() {
+    let mut db = AnalyzerDatabase::default();
+    let source = r#"
+            /// @param delta int
+            /// @return int
+            fn int.bump(delta) {
+                this + delta
+            }
+
+            let value = 40;
+            let result = value.bump(2);
+        "#;
+    db.apply_change(ChangeSet::single_file(
+        "main.rhai",
+        source,
+        DocumentVersion(1),
+    ));
+
+    let snapshot = db.snapshot();
+    assert_workspace_files_have_no_syntax_diagnostics(&snapshot);
+    let file_id = snapshot
+        .vfs()
+        .file_id(Path::new("main.rhai"))
+        .expect("expected main.rhai");
+    let hir = snapshot.hir(file_id).expect("expected hir");
+
+    let value = symbol_id_by_name(&hir, "value", SymbolKind::Variable);
+    let result = symbol_id_by_name(&hir, "result", SymbolKind::Variable);
+    let this_offset =
+        TextSize::from(u32::try_from(source.find("this +").expect("expected this")).unwrap());
+
+    assert_eq!(
+        snapshot.inferred_symbol_type(file_id, value),
+        Some(&TypeRef::Int)
+    );
+    assert_eq!(
+        snapshot.inferred_expr_type_at(file_id, this_offset),
+        Some(&TypeRef::Int)
+    );
+    assert_eq!(
+        snapshot.inferred_symbol_type(file_id, result),
+        Some(&TypeRef::Int)
+    );
+}
+
+#[test]
+fn snapshot_prefers_typed_script_methods_over_blanket_methods() {
+    let mut db = AnalyzerDatabase::default();
+    db.apply_change(ChangeSet::single_file(
+        "main.rhai",
+        r#"
+            /// @param delta int
+            /// @return int
+            fn int.bump(delta) {
+                this + delta
+            }
+
+            /// @param delta string
+            /// @return string
+            fn bump(delta) {
+                delta
+            }
+
+            let value = 40;
+            let result = value.bump(2);
+        "#,
+        DocumentVersion(1),
+    ));
+
+    let snapshot = db.snapshot();
+    assert_workspace_files_have_no_syntax_diagnostics(&snapshot);
+    let file_id = snapshot
+        .vfs()
+        .file_id(Path::new("main.rhai"))
+        .expect("expected main.rhai");
+    let hir = snapshot.hir(file_id).expect("expected hir");
+    let result = symbol_id_by_name(&hir, "result", SymbolKind::Variable);
+
+    assert_eq!(
+        snapshot.inferred_symbol_type(file_id, result),
+        Some(&TypeRef::Int)
+    );
+}
+
+#[test]
+fn snapshot_resolves_imported_typed_methods_as_global_method_targets() {
+    let mut db = AnalyzerDatabase::default();
+    db.apply_change(ChangeSet {
+        files: vec![
+            FileChange {
+                path: "provider.rhai".into(),
+                text: r#"
+                    /// @param delta int
+                    /// @return int
+                    fn int.bump(delta) {
+                        this + delta
+                    }
+                "#
+                .to_owned(),
+                version: DocumentVersion(1),
+            },
+            FileChange {
+                path: "consumer.rhai".into(),
+                text: r#"
+                    import "provider";
+
+                    fn run() {
+                        let value = 1;
+                        let result = value.bump(2);
+                    }
+                "#
+                .to_owned(),
+                version: DocumentVersion(1),
+            },
+        ],
+        removed_files: Vec::new(),
+        project: Some(ProjectConfig::default()),
+    });
+
+    let snapshot = db.snapshot();
+    assert_workspace_files_have_no_syntax_diagnostics(&snapshot);
+    let consumer = snapshot
+        .vfs()
+        .file_id(Path::new("consumer.rhai"))
+        .expect("expected consumer.rhai");
+    let provider = snapshot
+        .vfs()
+        .file_id(Path::new("provider.rhai"))
+        .expect("expected provider.rhai");
+    let consumer_hir = snapshot.hir(consumer).expect("expected consumer hir");
+    let imported = snapshot.imported_global_method_symbols(consumer, &TypeRef::Int, "bump");
+    let result = symbol_id_by_name(&consumer_hir, "result", SymbolKind::Variable);
+
+    assert_eq!(imported.len(), 1);
+    assert_eq!(imported[0].file_id, provider);
+    assert_eq!(
+        snapshot.inferred_symbol_type(consumer, result),
+        Some(&TypeRef::Int)
+    );
+
+    let text = snapshot
+        .file_text(consumer)
+        .expect("expected consumer text");
+    let method_offset = offset_in(&text, "bump(2)") + TextSize::from(1);
+    let definitions = snapshot.goto_definition(consumer, method_offset);
+
+    assert_eq!(definitions.len(), 1);
+    assert_eq!(definitions[0].file_id, provider);
+    let provider_hir = snapshot.hir(provider).expect("expected provider hir");
+    assert_eq!(
+        provider_hir.symbol(definitions[0].target.symbol).name,
+        "bump"
+    );
+}
+
+#[test]
+fn snapshot_keeps_unaliased_imports_from_exposing_regular_module_members() {
+    let mut db = AnalyzerDatabase::default();
+    db.apply_change(ChangeSet {
+        files: vec![
+            FileChange {
+                path: "provider.rhai".into(),
+                text: r#"
+                    export const VALUE = 1;
+
+                    fn helper(value) {
+                        value
+                    }
+
+                    fn int.bump(delta) {
+                        this + delta
+                    }
+                "#
+                .to_owned(),
+                version: DocumentVersion(1),
+            },
+            FileChange {
+                path: "consumer.rhai".into(),
+                text: r#"
+                    import "provider";
+
+                    fn run() {
+                        let value = 1;
+                        let direct = helper(1);
+                        let constant = VALUE;
+                        let method = value.bump(2);
+                    }
+                "#
+                .to_owned(),
+                version: DocumentVersion(1),
+            },
+        ],
+        removed_files: Vec::new(),
+        project: Some(ProjectConfig::default()),
+    });
+
+    let snapshot = db.snapshot();
+    assert_workspace_files_have_no_syntax_diagnostics(&snapshot);
+    let consumer = snapshot
+        .vfs()
+        .file_id(Path::new("consumer.rhai"))
+        .expect("expected consumer.rhai");
+    let diagnostics = snapshot.project_diagnostics(consumer);
+    let imported = snapshot.imported_global_method_symbols(consumer, &TypeRef::Int, "bump");
+
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message == "unresolved name `helper`")
+    );
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message == "unresolved name `VALUE`")
+    );
+    assert_eq!(imported.len(), 1);
+}
+
+#[test]
+fn snapshot_infers_module_qualified_import_member_types() {
+    let mut db = AnalyzerDatabase::default();
+    db.apply_change(ChangeSet {
+        files: vec![
+            FileChange {
+                path: "provider.rhai".into(),
+                text: r#"
+                    /// @return int
+                    fn helper() {
+                        1
+                    }
+
+                    export const VALUE = 1;
+                "#
+                .to_owned(),
+                version: DocumentVersion(1),
+            },
+            FileChange {
+                path: "consumer.rhai".into(),
+                text: r#"
+                    import "provider" as tools;
+
+                    fn run() {
+                        let fn_result = tools::helper();
+                        let value = tools::VALUE;
+                    }
+                "#
+                .to_owned(),
+                version: DocumentVersion(1),
+            },
+        ],
+        removed_files: Vec::new(),
+        project: Some(ProjectConfig::default()),
+    });
+
+    let snapshot = db.snapshot();
+    assert_workspace_files_have_no_syntax_diagnostics(&snapshot);
+    let consumer = snapshot
+        .vfs()
+        .file_id(Path::new("consumer.rhai"))
+        .expect("expected consumer.rhai");
+    let provider = snapshot
+        .vfs()
+        .file_id(Path::new("provider.rhai"))
+        .expect("expected provider.rhai");
+    let consumer_hir = snapshot.hir(consumer).expect("expected consumer hir");
+
+    let fn_result = symbol_id_by_name(&consumer_hir, "fn_result", SymbolKind::Variable);
+    let value = symbol_id_by_name(&consumer_hir, "value", SymbolKind::Variable);
+
+    assert_eq!(
+        snapshot.inferred_symbol_type(consumer, fn_result),
+        Some(&TypeRef::Int)
+    );
+    assert_eq!(
+        snapshot.inferred_symbol_type(consumer, value),
+        Some(&TypeRef::Int)
+    );
+
+    let text = snapshot
+        .file_text(consumer)
+        .expect("expected consumer text");
+    let helper_offset = offset_in(&text, "helper()");
+    let value_offset = offset_in(&text, "VALUE");
+
+    let helper_definitions = snapshot.goto_definition(consumer, helper_offset);
+    let value_definitions = snapshot.goto_definition(consumer, value_offset);
+
+    assert_eq!(helper_definitions.len(), 1);
+    assert_eq!(helper_definitions[0].file_id, provider);
+    assert_eq!(value_definitions.len(), 1);
+    assert_eq!(value_definitions[0].file_id, provider);
+}
+
+#[test]
+fn snapshot_infers_nested_module_qualified_import_member_types() {
+    let mut db = AnalyzerDatabase::default();
+    db.apply_change(ChangeSet {
+        files: vec![
+            FileChange {
+                path: "sub.rhai".into(),
+                text: r#"
+                    /// @param value int
+                    /// @return int
+                    fn helper(value) {
+                        value
+                    }
+
+                    export const VALUE = 1;
+                "#
+                .to_owned(),
+                version: DocumentVersion(1),
+            },
+            FileChange {
+                path: "provider.rhai".into(),
+                text: r#"
+                    import "sub" as sub;
+                "#
+                .to_owned(),
+                version: DocumentVersion(1),
+            },
+            FileChange {
+                path: "consumer.rhai".into(),
+                text: r#"
+                    import "provider" as tools;
+
+                    fn run() {
+                        let fn_result = tools::sub::helper(1);
+                        let value = tools::sub::VALUE;
+                    }
+                "#
+                .to_owned(),
+                version: DocumentVersion(1),
+            },
+        ],
+        removed_files: Vec::new(),
+        project: Some(ProjectConfig::default()),
+    });
+
+    let snapshot = db.snapshot();
+    assert_workspace_files_have_no_syntax_diagnostics(&snapshot);
+    let consumer = snapshot
+        .vfs()
+        .file_id(Path::new("consumer.rhai"))
+        .expect("expected consumer.rhai");
+    let sub = snapshot
+        .vfs()
+        .file_id(Path::new("sub.rhai"))
+        .expect("expected sub.rhai");
+    let consumer_hir = snapshot.hir(consumer).expect("expected consumer hir");
+
+    let fn_result = symbol_id_by_name(&consumer_hir, "fn_result", SymbolKind::Variable);
+    let value = symbol_id_by_name(&consumer_hir, "value", SymbolKind::Variable);
+
+    assert_eq!(
+        snapshot.inferred_symbol_type(consumer, fn_result),
+        Some(&TypeRef::Int)
+    );
+    assert_eq!(
+        snapshot.inferred_symbol_type(consumer, value),
+        Some(&TypeRef::Int)
+    );
+
+    let text = snapshot
+        .file_text(consumer)
+        .expect("expected consumer text");
+    let helper_offset = offset_in(&text, "helper(1)");
+    let value_offset = offset_in(&text, "VALUE");
+
+    let helper_definitions = snapshot.goto_definition(consumer, helper_offset);
+    let value_definitions = snapshot.goto_definition(consumer, value_offset);
+
+    assert_eq!(helper_definitions.len(), 1);
+    assert_eq!(helper_definitions[0].file_id, sub);
+    assert_eq!(value_definitions.len(), 1);
+    assert_eq!(value_definitions[0].file_id, sub);
+}
+
+#[test]
 fn snapshot_infers_types_from_mixed_member_and_index_mutations() {
     let mut db = AnalyzerDatabase::default();
     db.apply_change(ChangeSet::single_file(
@@ -1736,78 +2226,41 @@ fn snapshot_prefers_host_method_overload_matching_argument_types() {
 }
 
 #[test]
-fn snapshot_propagates_exported_types_into_import_aliases() {
+fn snapshot_reports_unresolved_bare_import_module_names() {
     let mut db = AnalyzerDatabase::default();
-    db.apply_change(ChangeSet {
-        files: vec![
-            FileChange {
-                path: "provider.rhai".into(),
-                text: r#"
-                    let shared = blob(10);
-                    export shared as shared_value;
-                "#
-                .to_owned(),
-                version: DocumentVersion(1),
-            },
-            FileChange {
-                path: "consumer.rhai".into(),
-                text: r#"
-                    import shared_value as value;
-
-                    let copy = value;
-                "#
-                .to_owned(),
-                version: DocumentVersion(1),
-            },
-        ],
-        removed_files: Vec::new(),
-        project: None,
-    });
+    db.apply_change(ChangeSet::single_file(
+        "consumer.rhai",
+        r#"
+            import shared_tools as tools;
+        "#,
+        DocumentVersion(1),
+    ));
 
     let snapshot = db.snapshot();
     assert_workspace_files_have_no_syntax_diagnostics(&snapshot);
-    let provider = snapshot
-        .vfs()
-        .file_id(Path::new("provider.rhai"))
-        .expect("expected provider.rhai");
     let consumer = snapshot
         .vfs()
         .file_id(Path::new("consumer.rhai"))
         .expect("expected consumer.rhai");
-    let provider_hir = snapshot.hir(provider).expect("expected provider hir");
-    let consumer_hir = snapshot.hir(consumer).expect("expected consumer hir");
+    let diagnostics = snapshot.project_diagnostics(consumer);
 
-    let shared = symbol_id_by_name(&provider_hir, "shared", SymbolKind::Variable);
-    let value = symbol_id_by_name(&consumer_hir, "value", SymbolKind::ImportAlias);
-    let copy = symbol_id_by_name(&consumer_hir, "copy", SymbolKind::Variable);
-
-    assert_eq!(
-        snapshot.inferred_symbol_type(provider, shared),
-        Some(&TypeRef::Blob)
-    );
-    assert_eq!(
-        snapshot.inferred_symbol_type(consumer, value),
-        Some(&TypeRef::Blob)
-    );
-    assert_eq!(
-        snapshot.inferred_symbol_type(consumer, copy),
-        Some(&TypeRef::Blob)
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message == "unresolved import module `shared_tools`")
     );
 }
 
 #[test]
-fn snapshot_propagates_workspace_call_argument_types_across_files() {
+fn workspace_dependency_graph_tracks_static_string_imports() {
     let mut db = AnalyzerDatabase::default();
     db.apply_change(ChangeSet {
         files: vec![
             FileChange {
                 path: "provider.rhai".into(),
                 text: r#"
-                    fn echo(value) {
-                        value
-                    }
-
-                    export echo as shared_tools;
+                    fn helper() {}
+                    export const VALUE = 1;
                 "#
                 .to_owned(),
                 version: DocumentVersion(1),
@@ -1815,9 +2268,7 @@ fn snapshot_propagates_workspace_call_argument_types_across_files() {
             FileChange {
                 path: "consumer.rhai".into(),
                 text: r#"
-                    import shared_tools as tools;
-
-                    let result = tools(blob(10));
+                    import "provider" as tools;
                 "#
                 .to_owned(),
                 version: DocumentVersion(1),
@@ -1837,444 +2288,47 @@ fn snapshot_propagates_workspace_call_argument_types_across_files() {
         .vfs()
         .file_id(Path::new("consumer.rhai"))
         .expect("expected consumer.rhai");
-    let provider_hir = snapshot.hir(provider).expect("expected provider hir");
-    let consumer_hir = snapshot.hir(consumer).expect("expected consumer hir");
 
-    let echo = symbol_id_by_name(&provider_hir, "echo", SymbolKind::Function);
-    let value = symbol_id_by_name(&provider_hir, "value", SymbolKind::Parameter);
-    let tools = symbol_id_by_name(&consumer_hir, "tools", SymbolKind::ImportAlias);
-    let result = symbol_id_by_name(&consumer_hir, "result", SymbolKind::Variable);
-    let propagated_signature = TypeRef::Function(FunctionTypeRef {
-        params: vec![TypeRef::Blob],
-        ret: Box::new(TypeRef::Blob),
-    });
-
-    assert_eq!(
-        snapshot.inferred_symbol_type(provider, value),
-        Some(&TypeRef::Blob)
+    let linked_imports = snapshot.linked_imports(consumer);
+    assert_eq!(linked_imports.len(), 1);
+    assert_eq!(linked_imports[0].module_name, "provider");
+    assert!(
+        linked_imports[0]
+            .exports
+            .iter()
+            .all(|export| export.file_id == provider)
     );
-    assert_eq!(
-        snapshot.inferred_symbol_type(provider, echo),
-        Some(&propagated_signature)
-    );
-    assert_eq!(
-        snapshot.inferred_symbol_type(consumer, tools),
-        Some(&propagated_signature)
-    );
-    assert_eq!(
-        snapshot.inferred_symbol_type(consumer, result),
-        Some(&TypeRef::Blob)
-    );
-}
 
-#[test]
-fn snapshot_propagates_workspace_call_argument_types_through_reexport_chains() {
-    let mut db = AnalyzerDatabase::default();
-    db.apply_change(ChangeSet {
-        files: vec![
-            FileChange {
-                path: "provider.rhai".into(),
-                text: r#"
-                    fn echo(value) {
-                        value
-                    }
-
-                    export echo as shared_tools;
-                "#
-                .to_owned(),
-                version: DocumentVersion(1),
-            },
-            FileChange {
-                path: "middle.rhai".into(),
-                text: r#"
-                    import shared_tools as tools;
-                    export tools as shared_tools_v2;
-                "#
-                .to_owned(),
-                version: DocumentVersion(1),
-            },
-            FileChange {
-                path: "consumer.rhai".into(),
-                text: r#"
-                    import shared_tools_v2 as tools;
-
-                    let result = tools(blob(10));
-                "#
-                .to_owned(),
-                version: DocumentVersion(1),
-            },
-        ],
-        removed_files: Vec::new(),
-        project: None,
-    });
-
-    let snapshot = db.snapshot();
-    assert_workspace_files_have_no_syntax_diagnostics(&snapshot);
-    let provider = snapshot
-        .vfs()
-        .file_id(Path::new("provider.rhai"))
-        .expect("expected provider.rhai");
-    let middle = snapshot
-        .vfs()
-        .file_id(Path::new("middle.rhai"))
-        .expect("expected middle.rhai");
-    let consumer = snapshot
-        .vfs()
-        .file_id(Path::new("consumer.rhai"))
-        .expect("expected consumer.rhai");
-    let provider_hir = snapshot.hir(provider).expect("expected provider hir");
-    let middle_hir = snapshot.hir(middle).expect("expected middle hir");
-    let consumer_hir = snapshot.hir(consumer).expect("expected consumer hir");
-
-    let echo = symbol_id_by_name(&provider_hir, "echo", SymbolKind::Function);
-    let value = symbol_id_by_name(&provider_hir, "value", SymbolKind::Parameter);
-    let middle_tools = symbol_id_by_name(&middle_hir, "tools", SymbolKind::ImportAlias);
-    let consumer_tools = symbol_id_by_name(&consumer_hir, "tools", SymbolKind::ImportAlias);
-    let result = symbol_id_by_name(&consumer_hir, "result", SymbolKind::Variable);
-    let propagated_signature = TypeRef::Function(FunctionTypeRef {
-        params: vec![TypeRef::Blob],
-        ret: Box::new(TypeRef::Blob),
-    });
-
-    assert_eq!(
-        snapshot.inferred_symbol_type(provider, value),
-        Some(&TypeRef::Blob)
-    );
-    assert_eq!(
-        snapshot.inferred_symbol_type(provider, echo),
-        Some(&propagated_signature)
-    );
-    assert_eq!(
-        snapshot.inferred_symbol_type(middle, middle_tools),
-        Some(&propagated_signature)
-    );
-    assert_eq!(
-        snapshot.inferred_symbol_type(consumer, consumer_tools),
-        Some(&propagated_signature)
-    );
-    assert_eq!(
-        snapshot.inferred_symbol_type(consumer, result),
-        Some(&TypeRef::Blob)
-    );
-}
-
-#[test]
-fn snapshot_propagates_workspace_call_argument_types_through_local_aliases() {
-    let mut db = AnalyzerDatabase::default();
-    db.apply_change(ChangeSet {
-        files: vec![
-            FileChange {
-                path: "provider.rhai".into(),
-                text: r#"
-                    fn echo(value) {
-                        value
-                    }
-
-                    export echo as shared_tools;
-                "#
-                .to_owned(),
-                version: DocumentVersion(1),
-            },
-            FileChange {
-                path: "consumer.rhai".into(),
-                text: r#"
-                    import shared_tools as tools;
-
-                    let runner = tools;
-                    let result = runner(blob(10));
-                "#
-                .to_owned(),
-                version: DocumentVersion(1),
-            },
-        ],
-        removed_files: Vec::new(),
-        project: None,
-    });
-
-    let snapshot = db.snapshot();
-    assert_workspace_files_have_no_syntax_diagnostics(&snapshot);
-    let provider = snapshot
-        .vfs()
-        .file_id(Path::new("provider.rhai"))
-        .expect("expected provider.rhai");
-    let consumer = snapshot
-        .vfs()
-        .file_id(Path::new("consumer.rhai"))
-        .expect("expected consumer.rhai");
-    let provider_hir = snapshot.hir(provider).expect("expected provider hir");
-    let consumer_hir = snapshot.hir(consumer).expect("expected consumer hir");
-
-    let echo = symbol_id_by_name(&provider_hir, "echo", SymbolKind::Function);
-    let value = symbol_id_by_name(&provider_hir, "value", SymbolKind::Parameter);
-    let tools = symbol_id_by_name(&consumer_hir, "tools", SymbolKind::ImportAlias);
-    let runner = symbol_id_by_name(&consumer_hir, "runner", SymbolKind::Variable);
-    let result = symbol_id_by_name(&consumer_hir, "result", SymbolKind::Variable);
-    let propagated_signature = TypeRef::Function(FunctionTypeRef {
-        params: vec![TypeRef::Blob],
-        ret: Box::new(TypeRef::Blob),
-    });
-
-    assert_eq!(
-        snapshot.inferred_symbol_type(provider, value),
-        Some(&TypeRef::Blob)
-    );
-    assert_eq!(
-        snapshot.inferred_symbol_type(provider, echo),
-        Some(&propagated_signature)
-    );
-    assert_eq!(
-        snapshot.inferred_symbol_type(consumer, tools),
-        Some(&propagated_signature)
-    );
-    assert_eq!(
-        snapshot.inferred_symbol_type(consumer, runner),
-        Some(&propagated_signature)
-    );
-    assert_eq!(
-        snapshot.inferred_symbol_type(consumer, result),
-        Some(&TypeRef::Blob)
-    );
-}
-
-#[test]
-fn snapshot_propagates_workspace_call_argument_types_through_local_call_chains() {
-    let mut db = AnalyzerDatabase::default();
-    db.apply_change(ChangeSet {
-        files: vec![
-            FileChange {
-                path: "provider.rhai".into(),
-                text: r#"
-                    fn helper(value) {
-                        value
-                    }
-
-                    fn run(value) {
-                        helper(value)
-                    }
-
-                    export run as shared_tools;
-                "#
-                .to_owned(),
-                version: DocumentVersion(1),
-            },
-            FileChange {
-                path: "consumer.rhai".into(),
-                text: r#"
-                    import shared_tools as tools;
-
-                    let result = tools(blob(10));
-                "#
-                .to_owned(),
-                version: DocumentVersion(1),
-            },
-        ],
-        removed_files: Vec::new(),
-        project: None,
-    });
-
-    let snapshot = db.snapshot();
-    assert_workspace_files_have_no_syntax_diagnostics(&snapshot);
-    let provider = snapshot
-        .vfs()
-        .file_id(Path::new("provider.rhai"))
-        .expect("expected provider.rhai");
-    let consumer = snapshot
-        .vfs()
-        .file_id(Path::new("consumer.rhai"))
-        .expect("expected consumer.rhai");
-    let provider_hir = snapshot.hir(provider).expect("expected provider hir");
-    let consumer_hir = snapshot.hir(consumer).expect("expected consumer hir");
-
-    let helper = symbol_id_by_name(&provider_hir, "helper", SymbolKind::Function);
-    let helper_value = symbol_id_by_name(&provider_hir, "value", SymbolKind::Parameter);
-    let run = symbol_id_by_name(&provider_hir, "run", SymbolKind::Function);
-    let run_value = provider_hir
-        .symbols
+    let dependency_edges = snapshot
+        .workspace_dependency_graph()
+        .edges
         .iter()
-        .enumerate()
-        .filter_map(|(index, symbol)| {
-            (symbol.name == "value"
-                && symbol.kind == SymbolKind::Parameter
-                && symbol.range != provider_hir.symbol(helper_value).range)
-                .then_some(rhai_hir::SymbolId(index as u32))
+        .map(|edge| {
+            (
+                edge.importer_file_id,
+                edge.exporter_file_id,
+                edge.module_name.as_str(),
+            )
         })
-        .next()
-        .expect("expected run parameter");
-    let tools = symbol_id_by_name(&consumer_hir, "tools", SymbolKind::ImportAlias);
-    let result = symbol_id_by_name(&consumer_hir, "result", SymbolKind::Variable);
-    let propagated_signature = TypeRef::Function(FunctionTypeRef {
-        params: vec![TypeRef::Blob],
-        ret: Box::new(TypeRef::Blob),
-    });
-
-    assert_eq!(
-        snapshot.inferred_symbol_type(provider, helper_value),
-        Some(&TypeRef::Blob)
-    );
-    assert_eq!(
-        snapshot.inferred_symbol_type(provider, run_value),
-        Some(&TypeRef::Blob)
-    );
-    assert_eq!(
-        snapshot.inferred_symbol_type(provider, helper),
-        Some(&propagated_signature)
-    );
-    assert_eq!(
-        snapshot.inferred_symbol_type(provider, run),
-        Some(&propagated_signature)
-    );
-    assert_eq!(
-        snapshot.inferred_symbol_type(consumer, tools),
-        Some(&propagated_signature)
-    );
-    assert_eq!(
-        snapshot.inferred_symbol_type(consumer, result),
-        Some(&TypeRef::Blob)
-    );
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(dependency_edges, [(consumer, provider, "provider")].into());
+    assert_eq!(snapshot.dependency_files(consumer), [provider]);
+    assert_eq!(snapshot.dependent_files(provider), [consumer]);
 }
 
 #[test]
-fn snapshot_propagates_workspace_call_argument_types_across_recursive_sccs() {
-    let mut db = AnalyzerDatabase::default();
-    db.apply_change(ChangeSet {
-        files: vec![
-            FileChange {
-                path: "alpha.rhai".into(),
-                text: r#"
-                    import beta_tools as beta;
-
-                    fn alpha(value) {
-                        beta(value)
-                    }
-
-                    export alpha as alpha_tools;
-                "#
-                .to_owned(),
-                version: DocumentVersion(1),
-            },
-            FileChange {
-                path: "beta.rhai".into(),
-                text: r#"
-                    import alpha_tools as alpha;
-
-                    fn beta(value) {
-                        if false {
-                            alpha(value)
-                        } else {
-                            value
-                        }
-                    }
-
-                    export beta as beta_tools;
-                "#
-                .to_owned(),
-                version: DocumentVersion(1),
-            },
-            FileChange {
-                path: "consumer.rhai".into(),
-                text: r#"
-                    import alpha_tools as tools;
-
-                    let result = tools(blob(10));
-                "#
-                .to_owned(),
-                version: DocumentVersion(1),
-            },
-        ],
-        removed_files: Vec::new(),
-        project: None,
-    });
-
-    let snapshot = db.snapshot();
-    assert_workspace_files_have_no_syntax_diagnostics(&snapshot);
-    let alpha = snapshot
-        .vfs()
-        .file_id(Path::new("alpha.rhai"))
-        .expect("expected alpha.rhai");
-    let beta = snapshot
-        .vfs()
-        .file_id(Path::new("beta.rhai"))
-        .expect("expected beta.rhai");
-    let consumer = snapshot
-        .vfs()
-        .file_id(Path::new("consumer.rhai"))
-        .expect("expected consumer.rhai");
-    let alpha_hir = snapshot.hir(alpha).expect("expected alpha hir");
-    let beta_hir = snapshot.hir(beta).expect("expected beta hir");
-    let consumer_hir = snapshot.hir(consumer).expect("expected consumer hir");
-
-    let alpha_fn = symbol_id_by_name(&alpha_hir, "alpha", SymbolKind::Function);
-    let alpha_value = symbol_id_by_name(&alpha_hir, "value", SymbolKind::Parameter);
-    let alpha_beta = symbol_id_by_name(&alpha_hir, "beta", SymbolKind::ImportAlias);
-    let beta_fn = symbol_id_by_name(&beta_hir, "beta", SymbolKind::Function);
-    let beta_value = symbol_id_by_name(&beta_hir, "value", SymbolKind::Parameter);
-    let beta_alpha = symbol_id_by_name(&beta_hir, "alpha", SymbolKind::ImportAlias);
-    let tools = symbol_id_by_name(&consumer_hir, "tools", SymbolKind::ImportAlias);
-    let result = symbol_id_by_name(&consumer_hir, "result", SymbolKind::Variable);
-    let propagated_signature = TypeRef::Function(FunctionTypeRef {
-        params: vec![TypeRef::Blob],
-        ret: Box::new(TypeRef::Blob),
-    });
-
-    assert_eq!(
-        snapshot.inferred_symbol_type(alpha, alpha_value),
-        Some(&TypeRef::Blob)
-    );
-    assert_eq!(
-        snapshot.inferred_symbol_type(beta, beta_value),
-        Some(&TypeRef::Blob)
-    );
-    assert_eq!(
-        snapshot.inferred_symbol_type(alpha, alpha_fn),
-        Some(&propagated_signature)
-    );
-    assert_eq!(
-        snapshot.inferred_symbol_type(beta, beta_fn),
-        Some(&propagated_signature)
-    );
-    assert_eq!(
-        snapshot.inferred_symbol_type(alpha, alpha_beta),
-        Some(&propagated_signature)
-    );
-    assert_eq!(
-        snapshot.inferred_symbol_type(beta, beta_alpha),
-        Some(&propagated_signature)
-    );
-    assert_eq!(
-        snapshot.inferred_symbol_type(consumer, tools),
-        Some(&propagated_signature)
-    );
-    assert_eq!(
-        snapshot.inferred_symbol_type(consumer, result),
-        Some(&TypeRef::Blob)
-    );
-}
-
-#[test]
-fn workspace_type_inference_refreshes_after_importer_call_changes() {
+fn changing_consumer_import_paths_refreshes_workspace_linkage() {
     let mut db = AnalyzerDatabase::default();
     db.apply_change(ChangeSet {
         files: vec![
             FileChange {
                 path: "provider.rhai".into(),
-                text: r#"
-                    fn echo(value) {
-                        value
-                    }
-
-                    export echo as shared_tools;
-                "#
-                .to_owned(),
+                text: "export const VALUE = 1;".to_owned(),
                 version: DocumentVersion(1),
             },
             FileChange {
                 path: "consumer.rhai".into(),
-                text: r#"
-                    import shared_tools as tools;
-
-                    let result = tools(blob(10));
-                "#
-                .to_owned(),
+                text: r#"import "provider" as tools;"#.to_owned(),
                 version: DocumentVersion(1),
             },
         ],
@@ -2284,71 +2338,21 @@ fn workspace_type_inference_refreshes_after_importer_call_changes() {
 
     let first_snapshot = db.snapshot();
     assert_workspace_files_have_no_syntax_diagnostics(&first_snapshot);
-    let provider = first_snapshot
-        .vfs()
-        .file_id(Path::new("provider.rhai"))
-        .expect("expected provider.rhai");
     let consumer = first_snapshot
         .vfs()
         .file_id(Path::new("consumer.rhai"))
         .expect("expected consumer.rhai");
-    let provider_hir = first_snapshot.hir(provider).expect("expected provider hir");
-    let consumer_hir = first_snapshot.hir(consumer).expect("expected consumer hir");
-    let value = symbol_id_by_name(&provider_hir, "value", SymbolKind::Parameter);
-    let result = symbol_id_by_name(&consumer_hir, "result", SymbolKind::Variable);
-
-    assert_eq!(
-        first_snapshot.inferred_symbol_type(provider, value),
-        Some(&TypeRef::Blob)
-    );
-    assert_eq!(
-        first_snapshot.inferred_symbol_type(consumer, result),
-        Some(&TypeRef::Blob)
-    );
+    assert_eq!(first_snapshot.linked_imports(consumer).len(), 1);
 
     db.apply_change(ChangeSet::single_file(
         "consumer.rhai",
-        r#"
-            import shared_tools as tools;
-
-            let result = tools("home");
-        "#,
+        r#"import "missing" as tools;"#,
         DocumentVersion(2),
     ));
 
     let second_snapshot = db.snapshot();
     assert_workspace_files_have_no_syntax_diagnostics(&second_snapshot);
-    let provider_hir = second_snapshot
-        .hir(provider)
-        .expect("expected provider hir");
-    let consumer_hir = second_snapshot
-        .hir(consumer)
-        .expect("expected consumer hir");
-    let echo = symbol_id_by_name(&provider_hir, "echo", SymbolKind::Function);
-    let value = symbol_id_by_name(&provider_hir, "value", SymbolKind::Parameter);
-    let tools = symbol_id_by_name(&consumer_hir, "tools", SymbolKind::ImportAlias);
-    let result = symbol_id_by_name(&consumer_hir, "result", SymbolKind::Variable);
-    let propagated_signature = TypeRef::Function(FunctionTypeRef {
-        params: vec![TypeRef::String],
-        ret: Box::new(TypeRef::String),
-    });
-
-    assert_eq!(
-        second_snapshot.inferred_symbol_type(provider, value),
-        Some(&TypeRef::String)
-    );
-    assert_eq!(
-        second_snapshot.inferred_symbol_type(provider, echo),
-        Some(&propagated_signature)
-    );
-    assert_eq!(
-        second_snapshot.inferred_symbol_type(consumer, tools),
-        Some(&propagated_signature)
-    );
-    assert_eq!(
-        second_snapshot.inferred_symbol_type(consumer, result),
-        Some(&TypeRef::String)
-    );
+    assert!(second_snapshot.linked_imports(consumer).is_empty());
 }
 
 #[test]
@@ -2357,13 +2361,13 @@ fn snapshot_exposes_cached_indexes() {
     db.apply_change(ChangeSet::single_file(
         "main.rhai",
         r#"
-            fn outer() {
-                fn inner() {}
-            }
+            fn outer() {}
+            fn helper() {}
 
             const LIMIT = 1;
+            let exported_limit = LIMIT;
             import "crypto" as secure;
-            export outer as public_outer;
+            export exported_limit as public_outer;
         "#,
         DocumentVersion(1),
     ));
@@ -2393,12 +2397,19 @@ fn snapshot_exposes_cached_indexes() {
             .iter()
             .map(|symbol| symbol.name.as_str())
             .collect::<Vec<_>>(),
-        vec!["outer", "LIMIT", "secure", "public_outer"]
+        vec![
+            "outer",
+            "helper",
+            "LIMIT",
+            "exported_limit",
+            "secure",
+            "public_outer"
+        ]
     );
-    assert_eq!(document_symbols[0].children.len(), 1);
-    assert_eq!(document_symbols[0].children[0].name, "inner");
+    assert!(document_symbols[0].children.is_empty());
+    assert!(document_symbols[1].children.is_empty());
     assert_eq!(module_graph.imports.len(), 1);
-    assert_eq!(module_graph.exports.len(), 1);
+    assert_eq!(module_graph.exports.len(), 3);
     assert_eq!(
         snapshot
             .workspace_symbols()
@@ -2407,7 +2418,8 @@ fn snapshot_exposes_cached_indexes() {
             .collect::<Vec<_>>(),
         vec![
             (file_id, "LIMIT"),
-            (file_id, "inner"),
+            (file_id, "exported_limit"),
+            (file_id, "helper"),
             (file_id, "outer"),
             (file_id, "public_outer"),
             (file_id, "secure"),
@@ -2422,7 +2434,7 @@ fn snapshot_exposes_workspace_module_graphs_and_symbol_locations() {
         files: vec![
             FileChange {
                 path: "one.rhai".into(),
-                text: "fn local_module() {} export local_module as public_api;".to_owned(),
+                text: "let local_module = 1; export local_module as public_api;".to_owned(),
                 version: DocumentVersion(1),
             },
             FileChange {
@@ -2514,7 +2526,7 @@ fn unchanged_files_reuse_cached_indexes_across_snapshots() {
     db.apply_change(ChangeSet::single_file(
         "main.rhai",
         r#"
-            fn sample() {}
+            let sample = 1;
             export sample as public_sample;
         "#,
         DocumentVersion(1),
@@ -2714,7 +2726,7 @@ fn text_changes_refresh_workspace_module_graphs_and_symbol_locations() {
     let mut db = AnalyzerDatabase::default();
     db.apply_change(ChangeSet::single_file(
         "main.rhai",
-        "fn alpha() {} export alpha as public_alpha;",
+        "let alpha = 1; export alpha as public_alpha;",
         DocumentVersion(1),
     ));
 
@@ -2735,7 +2747,7 @@ fn text_changes_refresh_workspace_module_graphs_and_symbol_locations() {
 
     db.apply_change(ChangeSet::single_file(
         "main.rhai",
-        "fn beta() {} export beta as public_beta;",
+        "let beta = 2; export beta as public_beta;",
         DocumentVersion(2),
     ));
 
@@ -2766,12 +2778,12 @@ fn workspace_index_invalidation_updates_only_changed_file_contributions() {
         files: vec![
             FileChange {
                 path: "one.rhai".into(),
-                text: "fn alpha() {} export alpha as public_alpha;".to_owned(),
+                text: "let alpha = 1; export alpha as public_alpha;".to_owned(),
                 version: DocumentVersion(1),
             },
             FileChange {
                 path: "two.rhai".into(),
-                text: "fn beta() {} export beta as public_beta;".to_owned(),
+                text: "let beta = 2; export beta as public_beta;".to_owned(),
                 version: DocumentVersion(1),
             },
         ],
@@ -2829,7 +2841,7 @@ fn workspace_index_invalidation_updates_only_changed_file_contributions() {
 
     db.apply_change(ChangeSet::single_file(
         "one.rhai",
-        "fn gamma() {} export gamma as public_gamma;",
+        "let gamma = 3; export gamma as public_gamma;",
         DocumentVersion(2),
     ));
 
@@ -3058,7 +3070,8 @@ fn workspace_symbol_search_supports_project_wide_queries() {
                 path: "alpha.rhai".into(),
                 text: r#"
                     fn helper() {}
-                    export helper as public_helper;
+                    let api_value = 1;
+                    export api_value as public_helper;
                 "#
                 .to_owned(),
                 version: DocumentVersion(1),
@@ -3104,7 +3117,7 @@ fn workspace_symbol_search_supports_project_wide_queries() {
                     .file_id(Path::new("beta.rhai"))
                     .expect("expected beta.rhai"),
                 "helper_tool",
-                false,
+                true,
             ),
             (
                 snapshot
@@ -3309,14 +3322,14 @@ fn builtin_global_functions_suppress_unresolved_name_diagnostics() {
 }
 
 #[test]
-fn import_export_linkage_supports_cross_file_navigation() {
+fn changing_exports_does_not_break_static_import_linkage() {
     let mut db = AnalyzerDatabase::default();
     db.apply_change(ChangeSet {
         files: vec![
             FileChange {
                 path: "provider.rhai".into(),
                 text: r#"
-                    fn helper() {}
+                    let helper = 1;
                     export helper as shared_tools;
                 "#
                 .to_owned(),
@@ -3324,77 +3337,7 @@ fn import_export_linkage_supports_cross_file_navigation() {
             },
             FileChange {
                 path: "consumer.rhai".into(),
-                text: r#"
-                    import shared_tools as tools;
-
-                    fn run() {
-                        tools();
-                    }
-                "#
-                .to_owned(),
-                version: DocumentVersion(1),
-            },
-        ],
-        removed_files: Vec::new(),
-        project: None,
-    });
-
-    let snapshot = db.snapshot();
-    assert_workspace_files_have_no_syntax_diagnostics(&snapshot);
-    let provider = snapshot
-        .vfs()
-        .file_id(Path::new("provider.rhai"))
-        .expect("expected provider.rhai");
-    let consumer = snapshot
-        .vfs()
-        .file_id(Path::new("consumer.rhai"))
-        .expect("expected consumer.rhai");
-    let consumer_text = snapshot
-        .file_text(consumer)
-        .expect("expected consumer text");
-
-    assert_eq!(snapshot.workspace_exports().len(), 1);
-    assert_eq!(snapshot.exports_named("shared_tools").len(), 1);
-    assert_eq!(snapshot.exports_named("shared_tools")[0].file_id, provider);
-
-    let linked_imports = snapshot.linked_imports(consumer);
-    assert_eq!(linked_imports.len(), 1);
-    assert_eq!(linked_imports[0].module_name, "shared_tools");
-    assert_eq!(linked_imports[0].exports.len(), 1);
-    assert_eq!(linked_imports[0].exports[0].file_id, provider);
-
-    let definition_targets =
-        snapshot.goto_definition(consumer, offset_in(&consumer_text, "shared_tools"));
-    assert_eq!(definition_targets.len(), 1);
-    assert_eq!(definition_targets[0].file_id, provider);
-    assert_eq!(
-        slice_range(
-            &snapshot
-                .file_text(provider)
-                .expect("expected provider text"),
-            definition_targets[0].target.focus_range,
-        ),
-        "shared_tools"
-    );
-}
-
-#[test]
-fn changing_exports_refreshes_import_linkage() {
-    let mut db = AnalyzerDatabase::default();
-    db.apply_change(ChangeSet {
-        files: vec![
-            FileChange {
-                path: "provider.rhai".into(),
-                text: r#"
-                    fn helper() {}
-                    export helper as shared_tools;
-                "#
-                .to_owned(),
-                version: DocumentVersion(1),
-            },
-            FileChange {
-                path: "consumer.rhai".into(),
-                text: r#"import shared_tools as tools;"#.to_owned(),
+                text: r#"import "provider" as tools;"#.to_owned(),
                 version: DocumentVersion(1),
             },
         ],
@@ -3409,12 +3352,11 @@ fn changing_exports_refreshes_import_linkage() {
         .file_id(Path::new("consumer.rhai"))
         .expect("expected consumer.rhai");
     assert_eq!(first_snapshot.linked_imports(consumer).len(), 1);
-    assert_eq!(first_snapshot.exports_named("shared_tools").len(), 1);
 
     db.apply_change(ChangeSet::single_file(
         "provider.rhai",
         r#"
-            fn helper() {}
+            let helper = 1;
             export helper as renamed_tools;
         "#,
         DocumentVersion(2),
@@ -3422,148 +3364,24 @@ fn changing_exports_refreshes_import_linkage() {
 
     let second_snapshot = db.snapshot();
     assert_workspace_files_have_no_syntax_diagnostics(&second_snapshot);
-    assert!(second_snapshot.linked_imports(consumer).is_empty());
+    assert_eq!(second_snapshot.linked_imports(consumer).len(), 1);
     assert!(second_snapshot.exports_named("shared_tools").is_empty());
     assert_eq!(second_snapshot.exports_named("renamed_tools").len(), 1);
 }
 
 #[test]
-fn workspace_dependency_graph_tracks_importers_and_exporters() {
+fn change_report_surfaces_dependency_affected_files_for_static_imports() {
     let mut db = AnalyzerDatabase::default();
     db.apply_change(ChangeSet {
         files: vec![
             FileChange {
                 path: "provider.rhai".into(),
-                text: "fn helper() {} export helper as shared_tools;".to_owned(),
+                text: "export const VALUE = 1;".to_owned(),
                 version: DocumentVersion(1),
             },
             FileChange {
                 path: "consumer.rhai".into(),
-                text: "import shared_tools as tools;".to_owned(),
-                version: DocumentVersion(1),
-            },
-        ],
-        removed_files: Vec::new(),
-        project: None,
-    });
-
-    let snapshot = db.snapshot();
-    assert_workspace_files_have_no_syntax_diagnostics(&snapshot);
-    let provider = snapshot
-        .vfs()
-        .file_id(Path::new("provider.rhai"))
-        .expect("expected provider.rhai");
-    let consumer = snapshot
-        .vfs()
-        .file_id(Path::new("consumer.rhai"))
-        .expect("expected consumer.rhai");
-
-    assert_eq!(
-        snapshot
-            .workspace_dependency_graph()
-            .edges
-            .iter()
-            .map(|edge| (
-                edge.importer_file_id,
-                edge.exporter_file_id,
-                edge.module_name.as_str()
-            ))
-            .collect::<Vec<_>>(),
-        vec![(consumer, provider, "shared_tools")]
-    );
-    assert_eq!(snapshot.dependency_files(consumer), [provider]);
-    assert_eq!(snapshot.dependent_files(provider), [consumer]);
-}
-
-#[test]
-fn project_diagnostics_suppress_false_unresolved_imports_when_workspace_export_exists() {
-    let mut db = AnalyzerDatabase::default();
-    db.apply_change(ChangeSet {
-        files: vec![
-            FileChange {
-                path: "provider.rhai".into(),
-                text: "fn helper() {} export helper as shared_tools;".to_owned(),
-                version: DocumentVersion(1),
-            },
-            FileChange {
-                path: "consumer.rhai".into(),
-                text: "import shared_tools as tools;\n\nfn run() { tools(); }".to_owned(),
-                version: DocumentVersion(1),
-            },
-        ],
-        removed_files: Vec::new(),
-        project: None,
-    });
-
-    let snapshot = db.snapshot();
-    assert_workspace_files_have_no_syntax_diagnostics(&snapshot);
-    let consumer = snapshot
-        .vfs()
-        .file_id(Path::new("consumer.rhai"))
-        .expect("expected consumer.rhai");
-
-    assert!(snapshot.project_diagnostics(consumer).is_empty());
-}
-
-#[test]
-fn project_diagnostics_surface_broken_linked_import_usage_when_export_disappears() {
-    let mut db = AnalyzerDatabase::default();
-    db.apply_change(ChangeSet {
-        files: vec![
-            FileChange {
-                path: "provider.rhai".into(),
-                text: "fn helper() {} export helper as shared_tools;".to_owned(),
-                version: DocumentVersion(1),
-            },
-            FileChange {
-                path: "consumer.rhai".into(),
-                text: "import shared_tools as tools;\n\nfn run() { tools(); }".to_owned(),
-                version: DocumentVersion(1),
-            },
-        ],
-        removed_files: Vec::new(),
-        project: None,
-    });
-
-    db.apply_change(ChangeSet::single_file(
-        "provider.rhai",
-        "fn helper() {} export helper as renamed_tools;",
-        DocumentVersion(2),
-    ));
-
-    let snapshot = db.snapshot();
-    assert_workspace_files_have_no_syntax_diagnostics(&snapshot);
-    let consumer = snapshot
-        .vfs()
-        .file_id(Path::new("consumer.rhai"))
-        .expect("expected consumer.rhai");
-    let diagnostics = snapshot.project_diagnostics(consumer);
-
-    assert!(
-        diagnostics
-            .iter()
-            .any(|diagnostic| { diagnostic.message == "unresolved import module `shared_tools`" })
-    );
-    assert!(diagnostics.iter().any(|diagnostic| {
-        diagnostic
-            .message
-            .contains("import alias no longer resolves")
-    }));
-}
-
-#[test]
-fn change_report_surfaces_dependency_affected_files() {
-    let mut db = AnalyzerDatabase::default();
-    db.apply_change(ChangeSet {
-        files: vec![
-            FileChange {
-                path: "provider.rhai".into(),
-                text: "fn helper() {} export helper as shared_tools;".to_owned(),
-                version: DocumentVersion(1),
-            },
-            FileChange {
-                path: "consumer.rhai".into(),
-                text: "import shared_tools as tools;".to_owned(),
+                text: r#"import "provider" as tools;"#.to_owned(),
                 version: DocumentVersion(1),
             },
         ],
@@ -3573,7 +3391,7 @@ fn change_report_surfaces_dependency_affected_files() {
 
     let impact = db.apply_change_report(ChangeSet::single_file(
         "provider.rhai",
-        "fn helper() {} export helper as renamed_tools;",
+        "export const VALUE = 2;",
         DocumentVersion(2),
     ));
 
@@ -3594,14 +3412,14 @@ fn change_report_surfaces_dependency_affected_files() {
 }
 
 #[test]
-fn project_find_references_include_linked_imports_for_exported_names() {
+fn project_find_references_for_exports_stay_local_to_the_exporting_file() {
     let mut db = AnalyzerDatabase::default();
     db.apply_change(ChangeSet {
         files: vec![
             FileChange {
                 path: "provider.rhai".into(),
                 text: r#"
-                    fn helper() {}
+                    let helper = 1;
                     export helper as shared_tools;
                 "#
                 .to_owned(),
@@ -3610,11 +3428,7 @@ fn project_find_references_include_linked_imports_for_exported_names() {
             FileChange {
                 path: "consumer.rhai".into(),
                 text: r#"
-                    import shared_tools as tools;
-
-                    fn run() {
-                        tools();
-                    }
+                    import "provider" as tools;
                 "#
                 .to_owned(),
                 version: DocumentVersion(1),
@@ -3626,46 +3440,38 @@ fn project_find_references_include_linked_imports_for_exported_names() {
 
     let snapshot = db.snapshot();
     assert_workspace_files_have_no_syntax_diagnostics(&snapshot);
-    let consumer = snapshot
+    let provider = snapshot
         .vfs()
-        .file_id(Path::new("consumer.rhai"))
-        .expect("expected consumer.rhai");
-    let consumer_text = snapshot
-        .file_text(consumer)
-        .expect("expected consumer text");
+        .file_id(Path::new("provider.rhai"))
+        .expect("expected provider.rhai");
+    let provider_text = snapshot
+        .file_text(provider)
+        .expect("expected provider text");
 
     let references = snapshot
-        .find_references(consumer, offset_in(&consumer_text, "shared_tools"))
+        .find_references(provider, offset_in(&provider_text, "shared_tools"))
         .expect("expected project references");
 
     assert_eq!(references.targets.len(), 1);
     assert_eq!(references.targets[0].symbol.name, "shared_tools");
-    let mut reference_kinds = references
-        .references
-        .iter()
-        .map(|reference| (reference.file_id, reference.kind))
-        .collect::<Vec<_>>();
-    reference_kinds.sort_by_key(|(file_id, kind)| (file_id.0, *kind as u8));
     assert_eq!(
-        reference_kinds,
-        vec![
-            (consumer, ProjectReferenceKind::LinkedImport),
-            (
-                references.targets[0].file_id,
-                ProjectReferenceKind::Definition
-            ),
-        ]
+        references
+            .references
+            .iter()
+            .map(|reference| (reference.file_id, reference.kind))
+            .collect::<Vec<_>>(),
+        vec![(provider, ProjectReferenceKind::Definition)]
     );
 }
 
 #[test]
-fn auto_import_candidates_plan_imports_for_unresolved_workspace_exports() {
+fn auto_import_candidates_do_not_plan_symbol_imports_from_workspace_exports() {
     let mut db = AnalyzerDatabase::default();
     db.apply_change(ChangeSet {
         files: vec![
             FileChange {
                 path: "provider.rhai".into(),
-                text: "fn helper() {} export helper as shared_tools;".to_owned(),
+                text: "let helper = 1; export helper as shared_tools;".to_owned(),
                 version: DocumentVersion(1),
             },
             FileChange {
@@ -3690,28 +3496,18 @@ fn auto_import_candidates_plan_imports_for_unresolved_workspace_exports() {
 
     let candidates =
         snapshot.auto_import_candidates(consumer, offset_in(&consumer_text, "shared_tools"));
-    assert_eq!(candidates.len(), 1);
-    assert_eq!(candidates[0].module_name, "shared_tools");
-    assert_eq!(candidates[0].alias, "shared_tools");
-    assert_eq!(candidates[0].insertion_offset, TextSize::from(0));
-    assert_eq!(
-        candidates[0].insert_text,
-        "import shared_tools as shared_tools;\n"
-    );
+    assert!(candidates.is_empty());
 }
 
 #[test]
-fn project_rename_plan_tracks_cross_file_import_occurrences_without_renaming_internal_target() {
+fn project_rename_plan_for_exports_does_not_include_module_import_paths() {
     let mut db = AnalyzerDatabase::default();
     db.apply_change(ChangeSet {
         files: vec![
             FileChange {
                 path: "provider.rhai".into(),
                 text: r#"
-                    fn helper() {
-                        helper();
-                    }
-
+                    let helper = 1;
                     export helper as shared_tools;
                 "#
                 .to_owned(),
@@ -3720,11 +3516,7 @@ fn project_rename_plan_tracks_cross_file_import_occurrences_without_renaming_int
             FileChange {
                 path: "consumer.rhai".into(),
                 text: r#"
-                    import shared_tools as tools;
-
-                    fn run() {
-                        tools();
-                    }
+                    import "provider" as tools;
                 "#
                 .to_owned(),
                 version: DocumentVersion(1),
@@ -3740,119 +3532,25 @@ fn project_rename_plan_tracks_cross_file_import_occurrences_without_renaming_int
         .vfs()
         .file_id(Path::new("provider.rhai"))
         .expect("expected provider.rhai");
-    let consumer = snapshot
-        .vfs()
-        .file_id(Path::new("consumer.rhai"))
-        .expect("expected consumer.rhai");
     let provider_text = snapshot
         .file_text(provider)
         .expect("expected provider text");
-    let consumer_text = snapshot
-        .file_text(consumer)
-        .expect("expected consumer text");
 
     let export_plan = snapshot
         .rename_plan(
-            consumer,
-            offset_in(&consumer_text, "shared_tools"),
+            provider,
+            offset_in(&provider_text, "shared_tools"),
             "renamed_tools",
         )
         .expect("expected project rename plan");
     assert_eq!(export_plan.targets.len(), 1);
     assert_eq!(export_plan.targets[0].symbol.name, "shared_tools");
-    assert_eq!(export_plan.occurrences.len(), 2);
-    assert!(export_plan.occurrences.iter().any(|occurrence| {
-        occurrence.file_id == provider && occurrence.kind == ProjectReferenceKind::Definition
-    }));
-    assert!(export_plan.occurrences.iter().any(|occurrence| {
-        occurrence.file_id == consumer && occurrence.kind == ProjectReferenceKind::LinkedImport
-    }));
-
-    let helper_plan = snapshot
-        .rename_plan(
-            provider,
-            offset_in(&provider_text, "helper"),
-            "renamed_helper",
-        )
-        .expect("expected helper rename plan");
-    assert_eq!(helper_plan.targets.len(), 1);
-    assert_eq!(helper_plan.targets[0].symbol.name, "helper");
-    assert!(helper_plan.occurrences.iter().any(|occurrence| {
-        occurrence.file_id == provider && occurrence.kind == ProjectReferenceKind::Definition
-    }));
-    assert!(helper_plan.occurrences.iter().any(|occurrence| {
-        occurrence.file_id == provider && occurrence.kind == ProjectReferenceKind::Reference
-    }));
-    assert!(!helper_plan.occurrences.iter().any(|occurrence| {
-        occurrence.file_id == consumer && occurrence.kind == ProjectReferenceKind::LinkedImport
-    }));
-}
-
-#[test]
-fn project_rename_plan_reports_cross_file_export_collisions_before_renaming() {
-    let mut db = AnalyzerDatabase::default();
-    db.apply_change(ChangeSet {
-        files: vec![
-            FileChange {
-                path: "provider.rhai".into(),
-                text: r#"
-                    fn helper() {}
-                    export helper as shared_tools;
-                "#
-                .to_owned(),
-                version: DocumentVersion(1),
-            },
-            FileChange {
-                path: "existing.rhai".into(),
-                text: r#"
-                    fn helper() {}
-                    export helper as renamed_tools;
-                "#
-                .to_owned(),
-                version: DocumentVersion(1),
-            },
-            FileChange {
-                path: "consumer.rhai".into(),
-                text: "import shared_tools as tools;".to_owned(),
-                version: DocumentVersion(1),
-            },
-        ],
-        removed_files: Vec::new(),
-        project: None,
-    });
-
-    let snapshot = db.snapshot();
-    assert_workspace_files_have_no_syntax_diagnostics(&snapshot);
-    let provider = snapshot
-        .vfs()
-        .file_id(Path::new("provider.rhai"))
-        .expect("expected provider.rhai");
-    let consumer = snapshot
-        .vfs()
-        .file_id(Path::new("consumer.rhai"))
-        .expect("expected consumer.rhai");
-    let consumer_text = snapshot
-        .file_text(consumer)
-        .expect("expected consumer text");
-
-    let plan = snapshot
-        .rename_plan(
-            consumer,
-            offset_in(&consumer_text, "shared_tools"),
-            "renamed_tools",
-        )
-        .expect("expected rename plan");
-
-    assert!(plan.issues.iter().any(|issue| {
-        issue.file_id == provider
-            && issue
-                .issue
-                .message
-                .contains("collide with another workspace export")
-    }));
-    assert!(plan.issues.iter().any(|issue| {
-        issue.file_id == consumer && issue.issue.message.contains("linked import ambiguous")
-    }));
+    assert_eq!(export_plan.occurrences.len(), 1);
+    assert_eq!(export_plan.occurrences[0].file_id, provider);
+    assert_eq!(
+        export_plan.occurrences[0].kind,
+        ProjectReferenceKind::Definition
+    );
 }
 
 #[test]
@@ -3998,12 +3696,12 @@ fn removing_files_unloads_cached_analysis_and_updates_workspace_links() {
         files: vec![
             FileChange {
                 path: "provider.rhai".into(),
-                text: "fn helper() {} export helper as shared_tools;".to_owned(),
+                text: "export const VALUE = 1;".to_owned(),
                 version: DocumentVersion(1),
             },
             FileChange {
                 path: "consumer.rhai".into(),
-                text: "import shared_tools as tools;".to_owned(),
+                text: r#"import "provider" as tools;"#.to_owned(),
                 version: DocumentVersion(1),
             },
         ],
@@ -4021,7 +3719,6 @@ fn removing_files_unloads_cached_analysis_and_updates_workspace_links() {
         .vfs()
         .file_id(Path::new("consumer.rhai"))
         .expect("expected consumer.rhai");
-    assert_eq!(first_snapshot.exports_named("shared_tools").len(), 1);
     assert_eq!(first_snapshot.linked_imports(consumer).len(), 1);
 
     db.apply_change(ChangeSet::remove_file("provider.rhai"));
@@ -4032,7 +3729,6 @@ fn removing_files_unloads_cached_analysis_and_updates_workspace_links() {
     assert!(second_snapshot.parse(provider).is_none());
     assert!(second_snapshot.hir(provider).is_none());
     assert!(second_snapshot.module_graph(provider).is_none());
-    assert!(second_snapshot.exports_named("shared_tools").is_empty());
     assert!(second_snapshot.linked_imports(consumer).is_empty());
 }
 
@@ -4200,10 +3896,6 @@ fn offset_in(text: &str, needle: &str) -> TextSize {
         .find(needle)
         .unwrap_or_else(|| panic!("expected to find `{needle}` in:\n{text}"));
     TextSize::from(u32::try_from(offset).expect("expected offset to fit into u32"))
-}
-
-fn slice_range(text: &str, range: rhai_syntax::TextRange) -> &str {
-    &text[usize::from(range.start())..usize::from(range.end())]
 }
 
 fn assert_workspace_files_have_no_syntax_diagnostics(snapshot: &crate::DatabaseSnapshot) {

@@ -106,23 +106,24 @@ fn attaches_doc_blocks_and_type_annotations() {
 }
 
 #[test]
-fn attaches_docs_to_more_declaration_kinds_and_nested_cases() {
+fn attaches_docs_to_more_declaration_kinds() {
     let parse = parse_valid(
         r#"
             /** outer docs */
-            fn outer() {
-                //! inner docs
-                fn inner() {}
-            }
+            fn outer() {}
+
+            //! helper docs
+            fn helper() {}
 
             /// const docs
             const LIMIT = 1;
+            let exported_limit = LIMIT;
 
             /// import docs
             import "crypto" as secure;
 
             /// export docs
-            export outer as public_outer;
+            export exported_limit as public_outer;
         "#,
     );
 
@@ -139,7 +140,7 @@ fn attaches_docs_to_more_declaration_kinds_and_nested_cases() {
     };
 
     assert!(docs_for("outer", SymbolKind::Function).contains("outer docs"));
-    assert!(docs_for("inner", SymbolKind::Function).contains("inner docs"));
+    assert!(docs_for("helper", SymbolKind::Function).contains("helper docs"));
     assert!(docs_for("LIMIT", SymbolKind::Constant).contains("const docs"));
     assert!(docs_for("secure", SymbolKind::ImportAlias).contains("import docs"));
     assert!(docs_for("public_outer", SymbolKind::ExportAlias).contains("export docs"));
@@ -187,14 +188,89 @@ fn synthesizes_function_and_parameter_annotations_from_docs() {
 }
 
 #[test]
+fn lowers_typed_method_receiver_metadata() {
+    let parse = parse_valid(
+        r#"
+            fn int.do_update(x) {
+                this += x;
+            }
+
+            fn "Custom-Type".refresh() {
+                this = 1;
+            }
+        "#,
+    );
+
+    let hir = lower_file(&parse);
+    let method_symbols = hir
+        .symbols
+        .iter()
+        .enumerate()
+        .filter_map(|(index, symbol)| {
+            (symbol.name == "do_update" || symbol.name == "refresh")
+                .then_some(crate::SymbolId(index as u32))
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(method_symbols.len(), 2);
+
+    let first = hir
+        .function_info(method_symbols[0])
+        .expect("expected first function info");
+    let second = hir
+        .function_info(method_symbols[1])
+        .expect("expected second function info");
+    assert_eq!(first.this_type, Some(TypeRef::Int));
+    assert_eq!(
+        second.this_type,
+        Some(TypeRef::Named("Custom-Type".to_owned()))
+    );
+}
+
+#[test]
+fn typed_methods_with_distinct_receivers_do_not_conflict() {
+    let parse = parse_valid(
+        r#"
+            fn int.do_update(x) { this += x; }
+            fn string.do_update(x) { this += x; }
+        "#,
+    );
+
+    let hir = lower_file(&parse);
+    let duplicates = hir
+        .diagnostics()
+        .into_iter()
+        .filter(|diagnostic| diagnostic.kind == SemanticDiagnosticKind::DuplicateDefinition)
+        .collect::<Vec<_>>();
+    assert!(duplicates.is_empty(), "{duplicates:?}");
+}
+
+#[test]
+fn typed_methods_with_same_receiver_still_conflict() {
+    let parse = parse_valid(
+        r#"
+            fn int.do_update(x) { this += x; }
+            fn int.do_update(x) { this += x; }
+        "#,
+    );
+
+    let hir = lower_file(&parse);
+    let duplicates = hir
+        .diagnostics()
+        .into_iter()
+        .filter(|diagnostic| diagnostic.kind == SemanticDiagnosticKind::DuplicateDefinition)
+        .collect::<Vec<_>>();
+    assert_eq!(duplicates.len(), 1, "{duplicates:?}");
+}
+
+#[test]
 fn resolves_forward_functions_without_resolving_future_variables() {
     let parse = parse_valid(
         r#"
-            let result = later();
+            let result = later(1);
             let early = value;
             let value = 1;
 
-            fn later() {
+            fn later(value) {
                 value
             }
         "#,
@@ -232,7 +308,8 @@ fn resolves_forward_functions_without_resolving_future_variables() {
     assert!(
         value_refs
             .iter()
-            .any(|reference| reference.target.is_some())
+            .filter_map(|reference| reference.target)
+            .any(|target| hir.symbol(target).kind == SymbolKind::Parameter)
     );
 }
 
@@ -268,10 +345,10 @@ fn query_helpers_support_definition_body_and_visible_symbol_lookups() {
             const OUTER = 1;
 
             fn helper(arg) {
-                let before = OUTER;
+                let before = arg;
                 {
                     let value = before;
-                    value + arg + OUTER
+                    value + arg
                 }
             }
 
@@ -323,9 +400,9 @@ fn query_helpers_support_definition_body_and_visible_symbol_lookups() {
     );
     assert!(visible.iter().any(|symbol| symbol.name == "arg"));
     assert!(visible.iter().any(|symbol| symbol.name == "before"));
-    assert!(visible.iter().any(|symbol| symbol.name == "OUTER"));
     assert!(visible.iter().any(|symbol| symbol.name == "helper"));
     assert!(!visible.iter().any(|symbol| symbol.name == "result"));
+    assert!(!visible.iter().any(|symbol| symbol.name == "OUTER"));
 }
 
 #[test]
@@ -1017,13 +1094,14 @@ fn file_symbol_index_exposes_indexable_symbols_with_container_and_export_metadat
         r#"
             const LIMIT = 1;
 
-            fn outer() {
-                fn inner() {}
+            fn outer() {}
+            {
                 let local = 1;
             }
 
             import "crypto" as secure;
-            export outer as public_outer;
+            let exported_outer = LIMIT;
+            export exported_outer as public_outer;
         "#,
     );
     let hir = lower_file(&parse);
@@ -1037,18 +1115,9 @@ fn file_symbol_index_exposes_indexable_symbols_with_container_and_export_metadat
 
     assert!(names.contains(&"LIMIT"));
     assert!(names.contains(&"outer"));
-    assert!(names.contains(&"inner"));
     assert!(names.contains(&"secure"));
     assert!(names.contains(&"public_outer"));
     assert!(!names.contains(&"local"));
-
-    let inner = index
-        .entries
-        .iter()
-        .find(|entry| entry.name == "inner")
-        .expect("expected inner entry");
-    assert_eq!(inner.container_name.as_deref(), Some("outer"));
-    assert!(!inner.exported);
 
     let outer = index
         .entries
@@ -1056,6 +1125,7 @@ fn file_symbol_index_exposes_indexable_symbols_with_container_and_export_metadat
         .find(|entry| entry.name == "outer")
         .expect("expected outer entry");
     assert!(outer.exported);
+    assert!(outer.container_name.is_none());
 
     let public_outer = index
         .entries
@@ -1069,11 +1139,13 @@ fn file_symbol_index_exposes_indexable_symbols_with_container_and_export_metadat
 fn file_backed_symbol_identity_captures_container_path_and_export_status() {
     let parse = parse_valid(
         r#"
-            fn outer() {
-                fn inner() {}
+            fn outer(arg) {
+                let local = arg;
             }
 
-            export outer as public_outer;
+            private fn hidden() {}
+            let exported_value = 1;
+            export exported_value as public_outer;
         "#,
     );
     let hir = lower_file(&parse);
@@ -1087,35 +1159,44 @@ fn file_backed_symbol_identity_captures_container_path_and_export_status() {
                 .then_some(crate::SymbolId(index as u32))
         })
         .expect("expected `outer` symbol");
-    let inner = hir
+    let arg = hir
         .symbols
         .iter()
         .enumerate()
         .find_map(|(index, symbol)| {
-            (symbol.name == "inner" && symbol.kind == SymbolKind::Function)
+            (symbol.name == "arg" && symbol.kind == SymbolKind::Parameter)
                 .then_some(crate::SymbolId(index as u32))
         })
-        .expect("expected `inner` symbol");
+        .expect("expected `arg` symbol");
+    let hidden = hir
+        .symbols
+        .iter()
+        .enumerate()
+        .find_map(|(index, symbol)| {
+            (symbol.name == "hidden" && symbol.kind == SymbolKind::Function)
+                .then_some(crate::SymbolId(index as u32))
+        })
+        .expect("expected `hidden` symbol");
 
     let outer_identity = hir.file_backed_symbol_identity(outer);
-    let inner_identity = hir.file_backed_symbol_identity(inner);
+    let arg_identity = hir.file_backed_symbol_identity(arg);
+    let hidden_identity = hir.file_backed_symbol_identity(hidden);
 
     assert!(outer_identity.exported);
     assert!(outer_identity.container_path.is_empty());
     assert_eq!(outer_identity.stable_key.name, "outer");
     assert_eq!(outer_identity.stable_key.ordinal, 0);
-    assert_eq!(inner_identity.container_path, vec!["outer"]);
-    assert!(!inner_identity.exported);
+    assert_eq!(arg_identity.container_path, vec!["outer"]);
+    assert!(!arg_identity.exported);
+    assert!(!hidden_identity.exported);
 }
 
 #[test]
 fn stable_symbol_keys_distinguish_duplicate_indexable_symbols() {
     let parse = parse_valid(
         r#"
-            fn outer() {
-                fn inner() {}
-                fn inner() {}
-            }
+            const inner = 1;
+            const inner = 2;
         "#,
     );
     let hir = lower_file(&parse);
@@ -1134,17 +1215,20 @@ fn stable_symbol_keys_distinguish_duplicate_indexable_symbols() {
 fn module_graph_index_preserves_import_and_export_linkage_shapes() {
     let parse = parse_valid(
         r#"
-            fn local_module() {}
+            fn exported_fn() {}
+            private fn hidden() {}
+            let module_name = "crypto";
+            let module_value = 1;
             import "crypto" as secure;
-            import local_module as local_alias;
-            export local_module as public_api;
+            import module_name as local_alias;
+            export module_value as public_api;
         "#,
     );
     let hir = lower_file(&parse);
     let module_index = hir.module_graph_index();
 
     assert_eq!(module_index.imports.len(), 2);
-    assert_eq!(module_index.exports.len(), 1);
+    assert_eq!(module_index.exports.len(), 2);
 
     let literal_import = &module_index.imports[0];
     assert!(matches!(
@@ -1162,22 +1246,76 @@ fn module_graph_index_preserves_import_and_export_linkage_shapes() {
     let local_import = &module_index.imports[1];
     assert!(matches!(
         local_import.module,
-        Some(crate::ModuleSpecifier::LocalSymbol(ref symbol)) if symbol.name == "local_module"
+        Some(crate::ModuleSpecifier::LocalSymbol(ref symbol)) if symbol.name == "module_name"
     ));
     assert_eq!(
         local_import.alias.as_ref().map(|alias| alias.name.as_str()),
         Some("local_alias")
     );
 
-    let export = &module_index.exports[0];
-    assert_eq!(export.exported_name.as_deref(), Some("public_api"));
+    let implicit_export = module_index
+        .exports
+        .iter()
+        .find(|export| export.exported_name.as_deref() == Some("exported_fn"))
+        .expect("expected implicit function export");
+    assert_eq!(
+        implicit_export
+            .target
+            .as_ref()
+            .map(|target| target.name.as_str()),
+        Some("exported_fn")
+    );
+    assert!(implicit_export.alias.is_none());
+
+    let export = module_index
+        .exports
+        .iter()
+        .find(|export| export.exported_name.as_deref() == Some("public_api"))
+        .expect("expected explicit export");
     assert_eq!(
         export.target.as_ref().map(|target| target.name.as_str()),
-        Some("local_module")
+        Some("module_value")
     );
     assert_eq!(
         export.alias.as_ref().map(|alias| alias.name.as_str()),
         Some("public_api")
+    );
+    assert!(
+        !module_index
+            .exports
+            .iter()
+            .any(|export| export.exported_name.as_deref() == Some("hidden"))
+    );
+}
+
+#[test]
+fn lowering_records_exported_declarations_and_alias_targets() {
+    let parse = parse_valid(
+        r#"
+            export const ANSWER = 42;
+            let value = 1;
+            export value as public_value;
+        "#,
+    );
+    let hir = lower_file(&parse);
+
+    assert_eq!(hir.exports.len(), 2);
+
+    let answer_export = &hir.exports[0];
+    assert_eq!(answer_export.target_text.as_deref(), Some("ANSWER"));
+    assert!(answer_export.target_symbol.is_some());
+    assert!(answer_export.target_reference.is_none());
+    assert!(answer_export.alias.is_none());
+
+    let value_export = &hir.exports[1];
+    assert_eq!(value_export.target_text.as_deref(), Some("value"));
+    assert!(value_export.target_symbol.is_none());
+    assert!(value_export.target_reference.is_some());
+    assert_eq!(
+        value_export
+            .alias
+            .map(|symbol| hir.symbol(symbol).name.as_str()),
+        Some("public_value")
     );
 }
 
@@ -1213,13 +1351,13 @@ fn rename_plan_tracks_occurrences_aliases_and_preflight_issues() {
     let parse = parse_valid(
         r#"
             let taken = 0;
-            fn helper() {}
+            let helper = 1;
             import helper as helper_alias;
             export helper as public_api;
 
             {
                 let public_helper = 1;
-                helper();
+                helper;
             }
         "#,
     );
@@ -1230,7 +1368,7 @@ fn rename_plan_tracks_occurrences_aliases_and_preflight_issues() {
         .iter()
         .enumerate()
         .find_map(|(index, symbol)| {
-            (symbol.name == "helper" && symbol.kind == SymbolKind::Function)
+            (symbol.name == "helper" && symbol.kind == SymbolKind::Variable)
                 .then_some(crate::SymbolId(index as u32))
         })
         .expect("expected `helper` symbol");
@@ -1412,18 +1550,16 @@ fn navigation_helpers_return_single_file_definition_and_reference_results() {
 #[test]
 fn completion_symbols_follow_visible_scope_and_preserve_metadata() {
     let source = r#"
-            const OUTER = 1;
-
             /// helper docs
             /// @param arg int
             /// @return int
             fn helper(arg) {
-                let before = OUTER;
+                let before = arg;
                 {
                     /// local docs
                     /// @type string
                     let value = before;
-                    value + arg + OUTER
+                    value + arg
                 }
             }
         "#;
@@ -1438,7 +1574,7 @@ fn completion_symbols_follow_visible_scope_and_preserve_metadata() {
         .map(|item| item.name.as_str())
         .collect::<Vec<_>>();
 
-    assert_eq!(names, vec!["value", "before", "arg", "helper", "OUTER"]);
+    assert_eq!(names, vec!["value", "before", "arg", "helper"]);
 
     let value_completion = completions
         .iter()
@@ -1593,6 +1729,55 @@ fn import_alias_calls_retain_resolved_callee_without_local_parameter_bindings() 
 }
 
 #[test]
+fn caller_scope_calls_record_caller_scope_metadata() {
+    let parse = parse_valid(
+        r#"
+            fn helper(value) {
+                value
+            }
+
+            helper!(1);
+            call!(helper, 2);
+        "#,
+    );
+    let hir = lower_file(&parse);
+
+    assert_eq!(hir.calls.len(), 2);
+    assert!(hir.calls.iter().all(|call| call.caller_scope));
+    assert_eq!(hir.calls[0].parameter_bindings.len(), 1);
+    assert_eq!(hir.calls[1].parameter_bindings.len(), 2);
+    assert_eq!(hir.calls[1].resolved_callee, hir.calls[0].resolved_callee);
+    assert_eq!(hir.calls[1].parameter_bindings[0], None);
+}
+
+#[test]
+fn caller_scope_parameter_hints_skip_the_dispatch_argument() {
+    let source = r#"
+            /// @param value int
+            fn helper(value) {
+                value
+            }
+
+            call!(helper, answer);
+        "#;
+    let parse = parse_valid(source);
+    let hir = lower_file(&parse);
+
+    let helper_offset = TextSize::from(u32::try_from(source.find("helper,").unwrap()).unwrap());
+    let answer_offset = TextSize::from(u32::try_from(source.find("answer);").unwrap()).unwrap());
+
+    assert!(hir.parameter_hint_at(helper_offset).is_none());
+
+    let hint = hir
+        .parameter_hint_at(answer_offset)
+        .expect("expected parameter hint on caller-scope argument");
+    assert_eq!(hint.callee_name, "helper");
+    assert_eq!(hint.active_parameter, 0);
+    assert_eq!(hint.parameters.len(), 1);
+    assert_eq!(hint.parameters[0].name, "value");
+}
+
+#[test]
 fn symbol_reverse_references_follow_scope_resolution() {
     let parse = parse_valid(
         r#"
@@ -1672,6 +1857,30 @@ fn lowering_models_this_as_dedicated_reference_kind() {
         .collect::<Vec<_>>();
     assert_eq!(this_refs.len(), 2);
     assert!(this_refs.iter().all(|reference| reference.name == "this"));
+}
+
+#[test]
+fn query_exposes_this_type_inside_function_contexts() {
+    let source = r#"
+            fn int.bump(delta) {
+                this + delta
+            }
+
+            fn show() {
+                this
+            }
+        "#;
+    let parse = parse_valid(source);
+    let hir = lower_file(&parse);
+
+    let typed_offset =
+        TextSize::from(u32::try_from(source.find("this +").expect("expected typed this")).unwrap());
+    let blanket_offset = TextSize::from(
+        u32::try_from(source.rfind("this").expect("expected blanket this")).unwrap(),
+    );
+
+    assert_eq!(hir.this_type_at(typed_offset), Some(TypeRef::Int));
+    assert_eq!(hir.this_type_at(blanket_offset), Some(TypeRef::Unknown));
 }
 
 #[test]
@@ -1869,12 +2078,11 @@ fn body_summaries_track_loop_targets_fallthrough_and_unreachable_ranges() {
 fn document_and_workspace_symbol_apis_expose_indexing_handoff() {
     let parse = parse_valid(
         r#"
-            fn outer() {
-                fn inner() {}
-            }
+            fn outer() {}
 
             const LIMIT = 1;
-            export outer as public_outer;
+            let exported_limit = LIMIT;
+            export exported_limit as public_outer;
         "#,
     );
     let hir = lower_file(&parse);
@@ -1885,10 +2093,9 @@ fn document_and_workspace_symbol_apis_expose_indexing_handoff() {
             .iter()
             .map(|symbol| symbol.name.as_str())
             .collect::<Vec<_>>(),
-        vec!["outer", "LIMIT", "public_outer"]
+        vec!["outer", "LIMIT", "exported_limit", "public_outer"]
     );
-    assert_eq!(document_symbols[0].children.len(), 1);
-    assert_eq!(document_symbols[0].children[0].name, "inner");
+    assert!(document_symbols[0].children.is_empty());
 
     let workspace_symbols = hir.workspace_symbols();
     assert!(
@@ -1900,7 +2107,7 @@ fn document_and_workspace_symbol_apis_expose_indexing_handoff() {
     let handoff = hir.indexing_handoff();
     assert_eq!(handoff.file_symbols.entries.len(), workspace_symbols.len());
     assert_eq!(handoff.workspace_symbols.len(), workspace_symbols.len());
-    assert_eq!(handoff.module_graph.exports.len(), 1);
+    assert_eq!(handoff.module_graph.exports.len(), 2);
 }
 
 #[test]
@@ -2049,6 +2256,132 @@ fn semantic_diagnostics_report_unresolved_imports_and_exports() {
     assert!(unresolved_name_diagnostics.is_empty());
     assert_eq!(hir.imports.len(), 1);
     assert_eq!(hir.exports.len(), 1);
+}
+
+#[test]
+fn semantic_diagnostics_reject_explicit_function_exports() {
+    let parse = parse_valid(
+        r#"
+            fn helper() {}
+            export helper as public_helper;
+        "#,
+    );
+    let hir = lower_file(&parse);
+    let diagnostics = hir.diagnostics();
+
+    let invalid_export_diagnostics = diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.kind == SemanticDiagnosticKind::InvalidExportTarget)
+        .collect::<Vec<_>>();
+
+    assert_eq!(invalid_export_diagnostics.len(), 1);
+    assert_eq!(
+        invalid_export_diagnostics[0].message,
+        "export target `helper` must refer to a global variable or constant"
+    );
+    assert!(invalid_export_diagnostics[0].related_range.is_some());
+}
+
+#[test]
+fn semantic_diagnostics_reject_non_string_import_expressions() {
+    let parse = parse_valid(
+        r#"
+            fn helper() {}
+            let module_name = 1;
+            const valid_module = "crypto";
+            const prefix = "crypt";
+            const suffix = "o";
+            const block_module = { "crypto" };
+            const conditional_module = if true { "crypto" } else { "hash" };
+
+            import helper as bad_helper;
+            import module_name as bad_value;
+            import valid_module as ok_module;
+            import prefix + suffix as ok_concat;
+            import block_module as ok_block;
+            import conditional_module as ok_conditional;
+        "#,
+    );
+    let hir = lower_file(&parse);
+    let diagnostics = hir.diagnostics();
+
+    let invalid_import_diagnostics = diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.kind == SemanticDiagnosticKind::InvalidImportModuleType)
+        .collect::<Vec<_>>();
+
+    assert_eq!(invalid_import_diagnostics.len(), 2);
+    assert!(invalid_import_diagnostics.iter().any(|diagnostic| {
+        diagnostic.message
+            == "import module expression `helper` must evaluate to string, found function"
+    }));
+    assert!(invalid_import_diagnostics.iter().any(|diagnostic| {
+        diagnostic.message
+            == "import module expression `module_name` must evaluate to string, found int"
+    }));
+    assert!(
+        invalid_import_diagnostics
+            .iter()
+            .all(|diagnostic| diagnostic.related_range.is_some())
+    );
+    assert!(!diagnostics.iter().any(|diagnostic| {
+        diagnostic.message.contains("prefix + suffix")
+            || diagnostic.message.contains("block_module")
+            || diagnostic.message.contains("conditional_module")
+    }));
+}
+
+#[test]
+fn semantic_diagnostics_reject_function_access_to_external_scope() {
+    let parse = parse_valid(
+        r#"
+            let value = 42;
+
+            fn helper() {
+                value
+            }
+        "#,
+    );
+    let hir = lower_file(&parse);
+    let diagnostics = hir.diagnostics();
+
+    let unresolved = diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.kind == SemanticDiagnosticKind::UnresolvedName)
+        .collect::<Vec<_>>();
+
+    assert_eq!(unresolved.len(), 1);
+    assert_eq!(unresolved[0].message, "unresolved name `value`");
+}
+
+#[test]
+fn semantic_diagnostics_allow_global_import_aliases_inside_functions() {
+    let parse = parse_valid(
+        r#"
+            import "hello" as hey;
+
+            fn helper(value) {
+                hey::process(value);
+            }
+        "#,
+    );
+    let hir = lower_file(&parse);
+    let diagnostics = hir.diagnostics();
+
+    assert!(!diagnostics.iter().any(|diagnostic| {
+        diagnostic.kind == SemanticDiagnosticKind::UnresolvedName
+            && diagnostic.message == "unresolved name `hey`"
+    }));
+
+    let hey_reference = hir
+        .references
+        .iter()
+        .find(|reference| reference.name == "hey")
+        .expect("expected `hey` reference");
+    let target = hey_reference
+        .target
+        .expect("expected resolved import alias");
+    assert_eq!(hir.symbol(target).kind, SymbolKind::ImportAlias);
 }
 
 #[test]

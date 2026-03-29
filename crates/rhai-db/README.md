@@ -66,6 +66,20 @@ This checklist tracks what `rhai-db` already provides and what still needs to la
 - [x] explicit workspace dependency graph with forward and reverse file edges
 - [x] incremental refresh of workspace indexes after single-file edits
 
+### Rhai Module Semantics Alignment
+
+- [x] workspace import linkage driven by static string module paths such as `import "provider" as tools`
+- [x] import/export indexes aligned with explicit variable exports plus implicit top-level public-function exports
+- [x] diagnostics that keep syntactically valid but unresolved dynamic/bare imports visible to IDE consumers
+- [x] removal of analyzer-specific “import exported symbol by name” workspace behavior
+- [x] static import-expression diagnostics when analysis can prove the module path is not `string`
+- [x] current static import-path reasoning covers literal strings, interpolated strings, simple concatenation, block tail values, and `if` branches with consistent string results
+- [x] module-qualified member/call queries for statically linked imports such as `tools::helper()` and `tools::VALUE`
+- [x] nested module-qualified member/call queries for statically linked sub-modules such as `tools::sub::helper()` and `tools::sub::VALUE`
+- [x] unaliased `import "module";` keeps regular module members out of bare-name visibility while still allowing imported typed methods
+- [ ] richer handling for dynamic `import <expr>` cases that are valid Rhai but cannot be linked statically in the workspace
+- [ ] deeper module-member/query behavior for dynamic sub-modules and other Rhai runtime visibility edge cases
+
 ### Host and Project Semantics
 
 - [x] cached host-provided module/function/type inventory from `rhai-project`
@@ -103,6 +117,8 @@ This checklist tracks what `rhai-db` already provides and what still needs to la
 - [x] expected-type propagation from declarations, parameter annotations, return positions, and selected call signatures into child expressions
 - [x] closure inference that can derive parameter and return types from expected function signatures and higher-order call sites
 - [x] first-class `Fn` / function-pointer inference that tracks referenced local, builtin, and externally indexed callee signatures instead of only the opaque `Fn` type
+- [x] script-defined method-call inference for `this`, typed methods, and blanket-method fallback on local calls such as `value.bump(...)`
+- [x] imported typed-method inference for bare module imports so calls like `value.bump(...)` can resolve through linked workspace modules
 - [ ] generic/applied-type substitution and type-argument inference for host APIs and future analyzer-known abstractions
 - [x] loop binding inference for arrays, strings, and numeric ranges, including optional counter bindings in `for` expressions
 - [ ] broader builtin container/iterator semantics for method-based iterables and collection transforms
@@ -116,6 +132,7 @@ This checklist tracks what `rhai-db` already provides and what still needs to la
 - [x] direct database APIs for `parse(file_id)` and `hir(file_id)`
 - [x] direct database APIs for file diagnostics
 - [x] direct database APIs for project-aware diagnostics that account for workspace imports / exports
+- [x] query helpers for imported global typed-method lookup across linked workspace modules
 - [x] direct database APIs for document symbols and workspace symbols
 - [x] direct database APIs for module graph and import/export linkage
 - [x] direct database APIs for project-aware completion inputs

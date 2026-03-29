@@ -29,6 +29,7 @@ struct Parser<'a> {
     text_len: TextSize,
     errors: Vec<SyntaxError>,
     source: &'a str,
+    statement_depth: usize,
 }
 
 impl<'a> Parser<'a> {
@@ -39,6 +40,7 @@ impl<'a> Parser<'a> {
             text_len,
             errors: Vec::new(),
             source,
+            statement_depth: 0,
         }
     }
 
@@ -154,17 +156,55 @@ impl<'a> Parser<'a> {
         let start = self.current_offset();
         let mut children = vec![self.bump_element("`export` token should be present")];
 
-        if self.is_stmt_terminator() {
-            children.push(self.missing_error("expected export target after `export`"));
-        } else {
-            children.push(node_element(self.parse_expr(0)));
+        if self.statement_depth > 0 {
+            self.record_error(
+                "the `export` statement can only be used at global level",
+                empty_range(start),
+            );
         }
 
-        if self.at(TokenKind::AsKw) {
+        let mut parsed_declaration = false;
+        let mut parsed_plain_target = false;
+        match self.peek_kind() {
+            Some(TokenKind::LetKw) => {
+                children.push(node_element(self.parse_let_stmt()));
+                parsed_declaration = true;
+            }
+            Some(TokenKind::ConstKw) => {
+                children.push(node_element(self.parse_const_stmt()));
+                parsed_declaration = true;
+            }
+            Some(TokenKind::Ident) => {
+                children.push(node_element(self.parse_name_expr()));
+                parsed_plain_target = true;
+            }
+            Some(_) if self.at_expr_start() => {
+                let target = self.parse_expr(0);
+                self.record_error(
+                    "expected exported variable name or `let`/`const` declaration after `export`",
+                    target.range(),
+                );
+                children.push(node_element(target));
+            }
+            _ => {
+                children.push(self.missing_error("expected export target after `export`"));
+            }
+        }
+
+        if parsed_plain_target && self.at(TokenKind::AsKw) {
             children.push(node_element(self.parse_alias_clause()));
+        } else if parsed_declaration && self.at(TokenKind::AsKw) {
+            let alias = self.parse_alias_clause();
+            self.record_error(
+                "exported `let`/`const` declarations cannot be renamed with `as`",
+                alias.range(),
+            );
+            children.push(node_element(alias));
         }
 
-        if let Some(semicolon) = self.eat(TokenKind::Semicolon, "`;` token should be present") {
+        if !parsed_declaration
+            && let Some(semicolon) = self.eat(TokenKind::Semicolon, "`;` token should be present")
+        {
             children.push(semicolon);
         }
 
@@ -175,6 +215,13 @@ impl<'a> Parser<'a> {
         let start = self.current_offset();
         let mut children = Vec::new();
 
+        if self.statement_depth > 0 {
+            self.record_error(
+                "functions can only be defined at global level",
+                empty_range(start),
+            );
+        }
+
         if let Some(private_kw) =
             self.eat(TokenKind::PrivateKw, "`private` token should be present")
         {
@@ -182,11 +229,7 @@ impl<'a> Parser<'a> {
         }
 
         children.push(self.bump_element("`fn` token should be present"));
-
-        children.push(self.expect_ident(
-            "expected function name after `fn`",
-            "function name token should be present",
-        ));
+        children.extend(self.parse_fn_name_parts());
 
         children.push(node_element(self.parse_param_list()));
         children.push(node_element(
@@ -194,6 +237,51 @@ impl<'a> Parser<'a> {
         ));
 
         SyntaxNode::new(SyntaxKind::ItemFn, children, start)
+    }
+
+    fn parse_fn_name_parts(&mut self) -> Vec<crate::SyntaxElement> {
+        let mut children = Vec::new();
+
+        match self.peek_kind() {
+            Some(TokenKind::Ident) => {
+                children
+                    .push(token_element(self.bump().expect(
+                        "function name or typed receiver token should be present",
+                    )));
+
+                if self.at(TokenKind::Dot) {
+                    children.push(self.bump_element("`.` token should be present"));
+                    children.push(self.expect_ident(
+                        "expected method name after `.` in typed method definition",
+                        "typed method name token should be present",
+                    ));
+                }
+            }
+            Some(TokenKind::String) => {
+                children.push(token_element(
+                    self.bump()
+                        .expect("typed receiver string token should be present"),
+                ));
+
+                if self.at(TokenKind::Dot) {
+                    children.push(self.bump_element("`.` token should be present"));
+                    children.push(self.expect_ident(
+                        "expected method name after `.` in typed method definition",
+                        "typed method name token should be present",
+                    ));
+                } else {
+                    children.push(self.missing_error("expected `.` after typed method receiver"));
+                }
+            }
+            _ => {
+                children.push(self.expect_ident(
+                    "expected function name after `fn`",
+                    "function name token should be present",
+                ));
+            }
+        }
+
+        children
     }
 
     fn parse_value_stmt(&mut self, kind: SyntaxKind) -> SyntaxNode {
@@ -300,7 +388,14 @@ impl<'a> Parser<'a> {
 
         loop {
             expr = match self.peek_kind() {
-                Some(TokenKind::OpenParen) => self.parse_call_expr(expr),
+                Some(TokenKind::Bang)
+                    if self
+                        .peek_n(1)
+                        .is_some_and(|token| token.kind() == TokenKind::OpenParen) =>
+                {
+                    self.parse_call_expr(expr, true)
+                }
+                Some(TokenKind::OpenParen) => self.parse_call_expr(expr, false),
                 Some(TokenKind::ColonColon) => self.parse_path_expr(expr),
                 Some(TokenKind::OpenBracket | TokenKind::QuestionOpenBracket) => {
                     self.parse_index_expr(expr)
@@ -319,15 +414,25 @@ impl<'a> Parser<'a> {
         };
 
         match token.kind() {
-            TokenKind::Ident | TokenKind::ThisKw | TokenKind::GlobalKw | TokenKind::FnPtrKw => {
-                SyntaxNode::new(
-                    SyntaxKind::ExprName,
-                    vec![token_element(
-                        self.bump().expect("identifier token should be present"),
-                    )],
-                    token.range().start(),
-                )
-            }
+            TokenKind::Ident
+            | TokenKind::ThisKw
+            | TokenKind::GlobalKw
+            | TokenKind::FnPtrKw
+            | TokenKind::CallKw
+            | TokenKind::CurryKw
+            | TokenKind::IsSharedKw
+            | TokenKind::IsDefFnKw
+            | TokenKind::IsDefVarKw
+            | TokenKind::TypeOfKw
+            | TokenKind::PrintKw
+            | TokenKind::DebugKw
+            | TokenKind::EvalKw => SyntaxNode::new(
+                SyntaxKind::ExprName,
+                vec![token_element(
+                    self.bump().expect("identifier token should be present"),
+                )],
+                token.range().start(),
+            ),
             TokenKind::Int
             | TokenKind::Float
             | TokenKind::String
@@ -355,6 +460,15 @@ impl<'a> Parser<'a> {
             TokenKind::OpenBrace => self.parse_block_expr(),
             _ => self.unexpected_token_error("expected expression"),
         }
+    }
+
+    fn parse_name_expr(&mut self) -> SyntaxNode {
+        let token = self.bump().expect("identifier token should be present");
+        SyntaxNode::new(
+            SyntaxKind::ExprName,
+            vec![token_element(token)],
+            token.range().start(),
+        )
     }
 
     fn parse_switch_expr(&mut self) -> SyntaxNode {
@@ -887,9 +1001,13 @@ impl<'a> Parser<'a> {
         SyntaxNode::new(SyntaxKind::ClosureParamList, children, start)
     }
 
-    fn parse_call_expr(&mut self, callee: SyntaxNode) -> SyntaxNode {
+    fn parse_call_expr(&mut self, callee: SyntaxNode, caller_scope: bool) -> SyntaxNode {
         let start = callee.range().start();
         let mut children = vec![node_element(callee)];
+        if caller_scope {
+            self.validate_caller_scope_callee(&children[0]);
+            children.push(self.bump_element("`!` token should be present"));
+        }
         children.push(self.bump_element("`(` token should be present"));
 
         let mut arg_children = Vec::new();
@@ -918,6 +1036,34 @@ impl<'a> Parser<'a> {
         ));
 
         SyntaxNode::new(SyntaxKind::ExprCall, children, start)
+    }
+
+    fn validate_caller_scope_callee(&mut self, callee: &crate::SyntaxElement) {
+        let Some(callee) = callee.as_node() else {
+            return;
+        };
+
+        match callee.kind() {
+            SyntaxKind::ExprName => {}
+            SyntaxKind::ExprField => {
+                self.record_error(
+                    "caller-scope function calls cannot use method-call style",
+                    callee.range(),
+                );
+            }
+            SyntaxKind::ExprPath => {
+                self.record_error(
+                    "caller-scope function calls cannot use namespace-qualified paths",
+                    callee.range(),
+                );
+            }
+            _ => {
+                self.record_error(
+                    "caller-scope function calls require a bare function name",
+                    callee.range(),
+                );
+            }
+        }
     }
 
     fn parse_path_expr(&mut self, base: SyntaxNode) -> SyntaxNode {
@@ -1085,9 +1231,11 @@ impl<'a> Parser<'a> {
         let start = self.current_offset();
         let mut children = vec![self.bump_element("`{` token should be present")];
 
+        self.statement_depth += 1;
         while !self.is_eof() && !self.at(TokenKind::CloseBrace) {
             children.push(node_element(self.parse_stmt()));
         }
+        self.statement_depth = self.statement_depth.saturating_sub(1);
 
         children.push(self.expect_token(
             TokenKind::CloseBrace,
@@ -1282,6 +1430,15 @@ impl<'a> Parser<'a> {
                     | TokenKind::ThisKw
                     | TokenKind::GlobalKw
                     | TokenKind::FnPtrKw
+                    | TokenKind::CallKw
+                    | TokenKind::CurryKw
+                    | TokenKind::IsSharedKw
+                    | TokenKind::IsDefFnKw
+                    | TokenKind::IsDefVarKw
+                    | TokenKind::TypeOfKw
+                    | TokenKind::PrintKw
+                    | TokenKind::DebugKw
+                    | TokenKind::EvalKw
                     | TokenKind::Int
                     | TokenKind::Float
                     | TokenKind::String

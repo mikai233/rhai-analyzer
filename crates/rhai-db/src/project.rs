@@ -52,6 +52,27 @@ fn builtin_global_functions(external_signatures: &mut ExternalSignatureIndex) ->
             ret: Box::new(TypeRef::FnPtr),
         }),
     );
+    external_signatures.insert(
+        "is_def_var",
+        TypeRef::Function(FunctionTypeRef {
+            params: vec![TypeRef::String],
+            ret: Box::new(TypeRef::Bool),
+        }),
+    );
+    external_signatures.insert(
+        "is_def_fn",
+        TypeRef::Function(FunctionTypeRef {
+            params: vec![TypeRef::String, TypeRef::Int],
+            ret: Box::new(TypeRef::Bool),
+        }),
+    );
+    external_signatures.insert(
+        "type_of",
+        TypeRef::Function(FunctionTypeRef {
+            params: vec![TypeRef::Any],
+            ret: Box::new(TypeRef::String),
+        }),
+    );
 
     vec![
         HostFunction {
@@ -98,6 +119,45 @@ fn builtin_global_functions(external_signatures: &mut ExternalSignatureIndex) ->
                     ret: Box::new(TypeRef::FnPtr),
                 }),
                 docs: Some("Create a function pointer from a function name.".to_owned()),
+            }],
+        },
+        HostFunction {
+            name: "is_def_var".to_owned(),
+            overloads: vec![HostFunctionOverload {
+                signature: Some(FunctionTypeRef {
+                    params: vec![TypeRef::String],
+                    ret: Box::new(TypeRef::Bool),
+                }),
+                docs: Some("Check whether a variable is defined.".to_owned()),
+            }],
+        },
+        HostFunction {
+            name: "is_def_fn".to_owned(),
+            overloads: vec![
+                HostFunctionOverload {
+                    signature: Some(FunctionTypeRef {
+                        params: vec![TypeRef::String, TypeRef::Int],
+                        ret: Box::new(TypeRef::Bool),
+                    }),
+                    docs: Some("Check whether a function is defined.".to_owned()),
+                },
+                HostFunctionOverload {
+                    signature: Some(FunctionTypeRef {
+                        params: vec![TypeRef::String, TypeRef::String, TypeRef::Int],
+                        ret: Box::new(TypeRef::Bool),
+                    }),
+                    docs: Some("Check whether a typed method is defined.".to_owned()),
+                },
+            ],
+        },
+        HostFunction {
+            name: "type_of".to_owned(),
+            overloads: vec![HostFunctionOverload {
+                signature: Some(FunctionTypeRef {
+                    params: vec![TypeRef::Any],
+                    ret: Box::new(TypeRef::String),
+                }),
+                docs: Some("Get the type name of a value.".to_owned()),
             }],
         },
     ]

@@ -1,8 +1,10 @@
 use std::collections::{BTreeSet, HashMap};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use rhai_hir::{FileBackedSymbolIdentity, SymbolKind, WorkspaceSymbol};
 use rhai_vfs::FileId;
+use rhai_vfs::normalize_path;
 
 use crate::types::{
     CachedFileAnalysis, LinkedModuleImport, LocatedModuleExport, LocatedModuleGraph,
@@ -196,24 +198,25 @@ impl WorkspaceIndexes {
             .collect::<HashMap<_, _>>();
 
         self.linked_imports_by_file.clear();
-        for (&file_id, analysis) in analysis {
-            let linked_imports = analysis
+        for (&file_id, file_analysis) in analysis {
+            let linked_imports = file_analysis
                 .hir
                 .imports
                 .iter()
                 .enumerate()
                 .filter_map(|(index, import)| {
-                    let reference = import.module_reference?;
-                    let reference = analysis.hir.reference(reference);
-                    if reference.target.is_some() {
-                        return None;
-                    }
-
-                    let exports = exports_by_name.get(reference.name.as_str())?;
+                    let module_name = static_import_module_path(import.module_text.as_deref()?)?;
+                    let provider_file_id = resolve_workspace_module_file(
+                        &file_analysis.dependencies.normalized_path,
+                        module_name.as_str(),
+                        analysis,
+                    )?;
+                    let exports = self.exports_by_file.get(&provider_file_id)?;
                     Some(LinkedModuleImport {
                         file_id,
+                        provider_file_id,
                         import: index,
-                        module_name: reference.name.clone(),
+                        module_name,
                         exports: Arc::clone(exports),
                     })
                 })
@@ -233,6 +236,48 @@ impl WorkspaceIndexes {
         self.linked_imports = Arc::new(self.linked_imports_by_file.clone());
         self.workspace_dependency_graph = Arc::new(build_dependency_graph(&self.linked_imports));
     }
+}
+
+fn static_import_module_path(module_text: &str) -> Option<String> {
+    if module_text.len() >= 2 && module_text.starts_with('"') && module_text.ends_with('"') {
+        return Some(module_text[1..module_text.len() - 1].to_owned());
+    }
+
+    None
+}
+
+fn resolve_workspace_module_file(
+    importer_path: &Path,
+    module_name: &str,
+    analysis: &HashMap<FileId, Arc<CachedFileAnalysis>>,
+) -> Option<FileId> {
+    candidate_module_paths(importer_path, module_name)
+        .into_iter()
+        .find_map(|candidate| {
+            analysis.iter().find_map(|(&file_id, file_analysis)| {
+                (file_analysis.dependencies.normalized_path == candidate).then_some(file_id)
+            })
+        })
+}
+
+fn candidate_module_paths(importer_path: &Path, module_name: &str) -> Vec<PathBuf> {
+    let relative = module_path_with_extension(module_name);
+    let importer_dir = importer_path.parent().unwrap_or_else(|| Path::new(""));
+
+    let mut candidates = vec![normalize_path(&importer_dir.join(&relative))];
+    let direct = normalize_path(&relative);
+    if !candidates.iter().any(|candidate| candidate == &direct) {
+        candidates.push(direct);
+    }
+    candidates
+}
+
+fn module_path_with_extension(module_name: &str) -> PathBuf {
+    let mut path = PathBuf::from(module_name);
+    if path.extension().is_none() {
+        path.set_extension("rhai");
+    }
+    path
 }
 
 fn build_dependency_graph(

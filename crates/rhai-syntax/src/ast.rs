@@ -369,7 +369,55 @@ impl<'a> FnItem<'a> {
     }
 
     pub fn name_token(self) -> Option<SyntaxToken> {
-        token_by_kind(self.syntax, TokenKind::Ident)
+        let mut last_ident = None;
+        for element in self.syntax.children() {
+            match element {
+                SyntaxElement::Node(node) if node.kind() == SyntaxKind::ParamList => break,
+                SyntaxElement::Token(token) if token.kind() == TokenKind::Ident => {
+                    last_ident = Some(*token);
+                }
+                _ => {}
+            }
+        }
+        last_ident
+    }
+
+    pub fn is_typed_method(self) -> bool {
+        token_by_kind(self.syntax, TokenKind::Dot).is_some()
+    }
+
+    pub fn this_type_token(self) -> Option<SyntaxToken> {
+        if !self.is_typed_method() {
+            return None;
+        }
+
+        let mut saw_fn = false;
+        for element in self.syntax.children() {
+            match element {
+                SyntaxElement::Token(token) if token.kind() == TokenKind::FnKw => {
+                    saw_fn = true;
+                }
+                SyntaxElement::Token(token)
+                    if saw_fn && matches!(token.kind(), TokenKind::Ident | TokenKind::String) =>
+                {
+                    return Some(*token);
+                }
+                SyntaxElement::Node(node) if node.kind() == SyntaxKind::ParamList => break,
+                _ => {}
+            }
+        }
+
+        None
+    }
+
+    pub fn this_type_name(self, source: &str) -> Option<String> {
+        let token = self.this_type_token()?;
+        let text = token.text(source);
+        match token.kind() {
+            TokenKind::Ident => Some(text.to_owned()),
+            TokenKind::String if text.len() >= 2 => Some(text[1..text.len() - 1].to_owned()),
+            _ => None,
+        }
     }
 
     pub fn params(self) -> Option<ParamList<'a>> {
@@ -413,6 +461,10 @@ impl<'a> ImportStmt<'a> {
 
 impl<'a> ExportStmt<'a> {
     pub fn target(self) -> Option<Expr<'a>> {
+        child(self.syntax)
+    }
+
+    pub fn declaration(self) -> Option<Stmt<'a>> {
         child(self.syntax)
     }
 
@@ -702,6 +754,10 @@ impl<'a> CallExpr<'a> {
         nth_child(self.syntax, 0)
     }
 
+    pub fn uses_caller_scope(self) -> bool {
+        token_by_kind(self.syntax, TokenKind::Bang).is_some()
+    }
+
     pub fn args(self) -> Option<ArgList<'a>> {
         child(self.syntax)
     }
@@ -930,6 +986,7 @@ mod tests {
                 .text(parse.text()),
             "add"
         );
+        assert!(!function.is_typed_method());
 
         let params: Vec<_> = function
             .params()
@@ -965,6 +1022,71 @@ mod tests {
                 .text(parse.text()),
             "value"
         );
+    }
+
+    #[test]
+    fn typed_wrappers_expose_typed_method_function_shape() {
+        let parse = parse_text(
+            r#"
+            fn int.do_update(x, y) { this += x + y; }
+            fn "Custom-Type".refresh() { this = 1; }
+        "#,
+        );
+
+        let root = Root::cast(parse.root()).expect("root should cast");
+        let mut items = root.items();
+
+        let Item::Fn(first) = items.next().expect("expected first function item") else {
+            panic!("expected function item");
+        };
+        assert!(first.is_typed_method());
+        assert_eq!(first.this_type_name(parse.text()).as_deref(), Some("int"));
+        assert_eq!(
+            first
+                .name_token()
+                .expect("expected method name")
+                .text(parse.text()),
+            "do_update"
+        );
+
+        let Item::Fn(second) = items.next().expect("expected second function item") else {
+            panic!("expected function item");
+        };
+        assert!(second.is_typed_method());
+        assert_eq!(
+            second.this_type_name(parse.text()).as_deref(),
+            Some("Custom-Type")
+        );
+        assert_eq!(
+            second
+                .name_token()
+                .expect("expected method name")
+                .text(parse.text()),
+            "refresh"
+        );
+    }
+
+    #[test]
+    fn typed_wrappers_expose_caller_scope_call_shape() {
+        let parse = parse_text(r#"let value = helper!(1); let other = call!(worker, 2);"#);
+        let root = Root::cast(parse.root()).expect("root should cast");
+        let mut items = root.items();
+
+        let Item::Stmt(Stmt::Let(first)) = items.next().expect("expected first let") else {
+            panic!("expected let");
+        };
+        let Expr::Call(first_call) = first.initializer().expect("expected initializer") else {
+            panic!("expected call");
+        };
+        assert!(first_call.uses_caller_scope());
+
+        let Item::Stmt(Stmt::Let(second)) = items.next().expect("expected second let") else {
+            panic!("expected let");
+        };
+        let Expr::Call(second_call) = second.initializer().expect("expected initializer") else {
+            panic!("expected call");
+        };
+        assert!(second_call.uses_caller_scope());
     }
 
     #[test]
@@ -1076,7 +1198,8 @@ mod tests {
             r#"
             const ANSWER = 42;
             import "crypto" as secure;
-            export global::crypto::sha256 as exported;
+            export ANSWER as exported;
+            export const TOTAL = 1;
         "#,
         );
         let root = Root::cast(parse.root()).expect("root should cast");
@@ -1134,32 +1257,44 @@ mod tests {
         else {
             panic!("expected export statement");
         };
-        let Expr::Path(path) = export_stmt.target().expect("expected export target") else {
-            panic!("expected export path");
-        };
-        let Expr::Name(base) = path.base().expect("expected path base") else {
-            panic!("expected path base name");
+        let Expr::Name(target) = export_stmt.target().expect("expected export target") else {
+            panic!("expected export name");
         };
         assert_eq!(
-            base.token()
-                .expect("expected path base token")
+            target
+                .token()
+                .expect("expected export target token")
                 .text(parse.text()),
-            "global"
+            "ANSWER"
         );
-        let segments: Vec<_> = path
-            .segments()
-            .map(|token| token.text(parse.text()))
-            .collect();
-        assert_eq!(segments, vec!["crypto", "sha256"]);
+        assert_eq!(export_stmt.declaration(), None);
         assert_eq!(
             export_stmt
                 .alias()
-                .expect("expected export alias")
-                .alias_token()
-                .expect("expected export alias token")
-                .text(parse.text()),
-            "exported"
+                .and_then(|alias| alias.alias_token())
+                .map(|token| token.text(parse.text())),
+            Some("exported")
         );
+
+        let Item::Stmt(Stmt::Export(export_decl_stmt)) =
+            items.next().expect("expected exported declaration")
+        else {
+            panic!("expected exported declaration");
+        };
+        let Stmt::Const(exported_const) = export_decl_stmt
+            .declaration()
+            .expect("expected export declaration")
+        else {
+            panic!("expected const declaration");
+        };
+        assert_eq!(
+            exported_const
+                .name_token()
+                .expect("expected exported const name")
+                .text(parse.text()),
+            "TOTAL"
+        );
+        assert!(export_decl_stmt.alias().is_none());
     }
 
     #[test]

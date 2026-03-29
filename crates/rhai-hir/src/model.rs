@@ -194,6 +194,7 @@ pub struct Scope {
 pub struct Symbol {
     pub name: String,
     pub kind: SymbolKind,
+    pub is_private: bool,
     pub range: TextRange,
     pub scope: ScopeId,
     pub docs: Option<DocBlockId>,
@@ -282,6 +283,12 @@ pub struct ForExprInfo {
     pub iterable: Option<ExprId>,
     pub bindings: Vec<SymbolId>,
     pub body: Option<BodyId>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct FunctionInfo {
+    pub symbol: SymbolId,
+    pub this_type: Option<TypeRef>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -409,6 +416,7 @@ pub struct SymbolMutation {
 pub struct CallSite {
     pub range: TextRange,
     pub scope: ScopeId,
+    pub caller_scope: bool,
     pub callee_range: Option<TextRange>,
     pub callee_reference: Option<ReferenceId>,
     pub resolved_callee: Option<SymbolId>,
@@ -456,6 +464,7 @@ pub struct ExportDirective {
     pub scope: ScopeId,
     pub target_range: Option<TextRange>,
     pub target_text: Option<String>,
+    pub target_symbol: Option<SymbolId>,
     pub target_reference: Option<ReferenceId>,
     pub alias: Option<SymbolId>,
 }
@@ -682,6 +691,8 @@ pub struct RenamePlan {
 pub enum SemanticDiagnosticKind {
     UnresolvedImport,
     UnresolvedExport,
+    InvalidExportTarget,
+    InvalidImportModuleType,
     UnresolvedName,
     DuplicateDefinition,
     InconsistentDocType,
@@ -711,6 +722,7 @@ pub struct FileHir {
     pub switch_exprs: Vec<SwitchExprInfo>,
     pub closure_exprs: Vec<ClosureExprInfo>,
     pub for_exprs: Vec<ForExprInfo>,
+    pub function_infos: Vec<FunctionInfo>,
     pub unary_exprs: Vec<UnaryExprInfo>,
     pub binary_exprs: Vec<BinaryExprInfo>,
     pub assign_exprs: Vec<AssignExprInfo>,

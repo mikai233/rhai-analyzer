@@ -2,12 +2,12 @@ use crate::{
     ArrayExprInfo, AssignExprInfo, AssignmentOperator, BinaryExprInfo, BinaryOperator,
     BlockExprInfo, Body, BodyId, BodyKind, CallSite, CallSiteId, ClosureExprInfo, ControlFlowEvent,
     ControlFlowKind, ControlFlowMergePoint, DocBlock, DocBlockId, DocTag, ExportDirective, ExprId,
-    ExprKind, ExprNode, FileHir, ForExprInfo, FunctionTypeRef, IfExprInfo, ImportDirective,
-    IndexExprInfo, LiteralInfo, LiteralKind, LoweredFile, MemberAccess, MergePointKind,
-    MutationPathSegment, ObjectFieldInfo, Reference, ReferenceId, ReferenceKind, Scope, ScopeId,
-    ScopeKind, SwitchExprInfo, Symbol, SymbolId, SymbolKind, SymbolMutation, SymbolMutationKind,
-    SymbolValueFlow, TypeRef, TypeSlot, TypeSlotId, UnaryExprInfo, UnaryOperator, ValueFlowKind,
-    collect_doc_block,
+    ExprKind, ExprNode, FileHir, ForExprInfo, FunctionInfo, FunctionTypeRef, IfExprInfo,
+    ImportDirective, IndexExprInfo, LiteralInfo, LiteralKind, LoweredFile, MemberAccess,
+    MergePointKind, MutationPathSegment, ObjectFieldInfo, Reference, ReferenceId, ReferenceKind,
+    Scope, ScopeId, ScopeKind, SwitchExprInfo, Symbol, SymbolId, SymbolKind, SymbolMutation,
+    SymbolMutationKind, SymbolValueFlow, TypeRef, TypeSlot, TypeSlotId, UnaryExprInfo,
+    UnaryOperator, ValueFlowKind, collect_doc_block,
 };
 use rhai_syntax::{
     AstNode, BlockExpr, Expr, Item, Parse, Root, Stmt, StringPart, SwitchArm, SwitchPatternList,
@@ -71,6 +71,7 @@ impl<'a> LoweringContext<'a> {
                 switch_exprs: Vec::new(),
                 closure_exprs: Vec::new(),
                 for_exprs: Vec::new(),
+                function_infos: Vec::new(),
                 unary_exprs: Vec::new(),
                 binary_exprs: Vec::new(),
                 assign_exprs: Vec::new(),
@@ -235,10 +236,12 @@ impl<'a> LoweringContext<'a> {
         id
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn new_call(
         &mut self,
         range: TextRange,
         scope: ScopeId,
+        caller_scope: bool,
         callee_range: Option<TextRange>,
         callee_reference: Option<ReferenceId>,
         arg_ranges: Vec<TextRange>,
@@ -248,6 +251,7 @@ impl<'a> LoweringContext<'a> {
         self.file.calls.push(CallSite {
             range,
             scope,
+            caller_scope,
             callee_range,
             callee_reference,
             resolved_callee: None,
@@ -458,13 +462,15 @@ impl<'a> LoweringContext<'a> {
         docs: Option<DocBlockId>,
     ) -> SymbolId {
         let annotation = self.annotation_from_docs(docs);
-        self.alloc_symbol_with_annotation(name, kind, range, scope, docs, annotation)
+        self.alloc_symbol_with_annotation(name, kind, false, range, scope, docs, annotation)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn alloc_symbol_with_annotation(
         &mut self,
         name: String,
         kind: SymbolKind,
+        is_private: bool,
         range: TextRange,
         scope: ScopeId,
         docs: Option<DocBlockId>,
@@ -474,6 +480,7 @@ impl<'a> LoweringContext<'a> {
         self.file.symbols.push(Symbol {
             name,
             kind,
+            is_private,
             range,
             scope,
             docs,
@@ -567,24 +574,41 @@ impl<'a> LoweringContext<'a> {
 
     fn resolve_call_mappings(&mut self) {
         for index in 0..self.file.calls.len() {
-            let (callee_reference, arg_count) = {
+            let (caller_scope, callee_reference, arg_count, first_arg_range, call_start) = {
                 let call = &self.file.calls[index];
-                (call.callee_reference, call.arg_ranges.len())
+                (
+                    call.caller_scope,
+                    call.callee_reference,
+                    call.arg_ranges.len(),
+                    call.arg_ranges.first().copied(),
+                    call.range.start(),
+                )
             };
 
-            let resolved_callee = callee_reference
-                .and_then(|reference| self.file.references[reference.0 as usize].target);
+            let callee_name = callee_reference
+                .map(|reference| self.file.references[reference.0 as usize].name.as_str());
+            let caller_scope_arg_offset = usize::from(caller_scope && callee_name == Some("call"));
+            let resolved_callee = if caller_scope_arg_offset == 1 {
+                first_arg_range
+                    .and_then(|range| self.resolve_caller_scope_target(range, call_start))
+            } else {
+                callee_reference
+                    .and_then(|reference| self.file.references[reference.0 as usize].target)
+            };
 
             let parameter_bindings = resolved_callee
                 .filter(|symbol| self.file.symbols[symbol.0 as usize].kind == SymbolKind::Function)
                 .map(|function| {
-                    self.file
-                        .function_parameters(function)
-                        .into_iter()
-                        .map(Some)
-                        .chain(std::iter::repeat(None))
-                        .take(arg_count)
-                        .collect::<Vec<_>>()
+                    let mut bindings = vec![None; caller_scope_arg_offset.min(arg_count)];
+                    bindings.extend(
+                        self.file
+                            .function_parameters(function)
+                            .into_iter()
+                            .map(Some)
+                            .chain(std::iter::repeat(None))
+                            .take(arg_count.saturating_sub(caller_scope_arg_offset)),
+                    );
+                    bindings
                 })
                 .unwrap_or_else(|| vec![None; arg_count]);
 
@@ -594,17 +618,77 @@ impl<'a> LoweringContext<'a> {
         }
     }
 
+    fn resolve_caller_scope_target(
+        &self,
+        first_arg_range: TextRange,
+        call_start: TextSize,
+    ) -> Option<SymbolId> {
+        if let Some(reference) = self.first_reference_in_range(first_arg_range) {
+            let target = self.file.reference(reference).target?;
+            if self.file.symbols[target.0 as usize].kind == SymbolKind::Function {
+                return Some(target);
+            }
+        }
+
+        let arg_expr = self.expr_id_for_range(first_arg_range)?;
+        if self.file.expr(arg_expr).kind != ExprKind::Call {
+            return None;
+        }
+        let fn_call = self
+            .file
+            .calls
+            .iter()
+            .find(|call| call.range == first_arg_range)?;
+        let fn_name = fn_call
+            .callee_reference
+            .map(|reference| self.file.reference(reference).name.as_str());
+        if fn_name != Some("Fn") {
+            return None;
+        }
+        let name_expr = fn_call.arg_exprs.first().copied()?;
+        let literal = self.file.literal(name_expr)?;
+        let name = literal.text.as_deref()?;
+        self.resolve_name_at(self.file_scope_id()?, name, call_start)
+            .filter(|symbol| self.file.symbols[symbol.0 as usize].kind == SymbolKind::Function)
+    }
+
+    fn first_reference_in_range(&self, range: TextRange) -> Option<ReferenceId> {
+        self.file
+            .references
+            .iter()
+            .enumerate()
+            .find_map(|(index, reference)| {
+                (reference.range.start() >= range.start() && reference.range.end() <= range.end())
+                    .then_some(ReferenceId(index as u32))
+            })
+    }
+
+    fn file_scope_id(&self) -> Option<ScopeId> {
+        self.file
+            .scopes
+            .iter()
+            .enumerate()
+            .find_map(|(index, scope)| {
+                (scope.kind == ScopeKind::File).then_some(ScopeId(index as u32))
+            })
+    }
+
     fn resolve_name_at(
         &self,
         mut scope: ScopeId,
         name: &str,
         reference_start: TextSize,
     ) -> Option<SymbolId> {
+        let mut crossed_function_boundary = false;
         loop {
-            if let Some(symbol) = self.resolve_name_in_scope(scope, name, reference_start) {
+            if let Some(symbol) =
+                self.resolve_name_in_scope(scope, name, reference_start, crossed_function_boundary)
+            {
                 return Some(symbol);
             }
 
+            crossed_function_boundary |=
+                self.file.scopes[scope.0 as usize].kind == ScopeKind::Function;
             scope = self.file.scopes[scope.0 as usize].parent?;
         }
     }
@@ -614,6 +698,7 @@ impl<'a> LoweringContext<'a> {
         scope: ScopeId,
         name: &str,
         reference_start: TextSize,
+        crossed_function_boundary: bool,
     ) -> Option<SymbolId> {
         self.file.scopes[scope.0 as usize]
             .symbols
@@ -622,11 +707,25 @@ impl<'a> LoweringContext<'a> {
             .copied()
             .find(|symbol_id| {
                 let symbol = &self.file.symbols[symbol_id.0 as usize];
-                symbol.name == name && self.symbol_is_visible_at(symbol, reference_start)
+                symbol.name == name
+                    && self.symbol_is_visible_at(symbol, reference_start, crossed_function_boundary)
             })
     }
 
-    fn symbol_is_visible_at(&self, symbol: &Symbol, reference_start: TextSize) -> bool {
+    fn symbol_is_visible_at(
+        &self,
+        symbol: &Symbol,
+        reference_start: TextSize,
+        crossed_function_boundary: bool,
+    ) -> bool {
+        if crossed_function_boundary {
+            let symbol_scope = &self.file.scopes[symbol.scope.0 as usize];
+            return symbol.kind == SymbolKind::Function
+                || (symbol.kind == SymbolKind::ImportAlias
+                    && symbol_scope.kind == ScopeKind::File
+                    && symbol.range.start() <= reference_start);
+        }
+
         matches!(symbol.kind, SymbolKind::Function) || symbol.range.start() <= reference_start
     }
 
@@ -643,7 +742,10 @@ impl<'a> LoweringContext<'a> {
             for symbol_id in symbols {
                 let (name, start) = {
                     let symbol = &self.file.symbols[symbol_id.0 as usize];
-                    (symbol.name.clone(), symbol.range.start())
+                    (
+                        self.symbol_relationship_key(symbol_id),
+                        symbol.range.start(),
+                    )
                 };
 
                 if let Some(previous) = seen.get(&name).copied() {
@@ -658,6 +760,59 @@ impl<'a> LoweringContext<'a> {
                     .and_then(|parent| self.resolve_name_at(parent, &name, start));
                 self.file.symbols[symbol_id.0 as usize].shadowed = shadowed;
             }
+        }
+    }
+
+    fn symbol_relationship_key(&self, symbol: SymbolId) -> String {
+        let symbol_data = &self.file.symbols[symbol.0 as usize];
+        if symbol_data.kind != SymbolKind::Function {
+            return symbol_data.name.clone();
+        }
+
+        match self
+            .file
+            .function_infos
+            .iter()
+            .find(|info| info.symbol == symbol)
+            .and_then(|info| info.this_type.as_ref())
+        {
+            Some(this_type) => {
+                format!("{}#{}", symbol_data.name, self.function_type_key(this_type))
+            }
+            None => symbol_data.name.clone(),
+        }
+    }
+
+    fn function_type_key(&self, this_type: &TypeRef) -> String {
+        match this_type {
+            TypeRef::Unknown => "unknown".to_owned(),
+            TypeRef::Any => "any".to_owned(),
+            TypeRef::Never => "never".to_owned(),
+            TypeRef::Dynamic => "Dynamic".to_owned(),
+            TypeRef::Bool => "bool".to_owned(),
+            TypeRef::Int => "int".to_owned(),
+            TypeRef::Float => "float".to_owned(),
+            TypeRef::Decimal => "decimal".to_owned(),
+            TypeRef::String => "string".to_owned(),
+            TypeRef::Char => "char".to_owned(),
+            TypeRef::Blob => "blob".to_owned(),
+            TypeRef::Timestamp => "timestamp".to_owned(),
+            TypeRef::FnPtr => "Fn".to_owned(),
+            TypeRef::Unit => "()".to_owned(),
+            TypeRef::Range => "range".to_owned(),
+            TypeRef::RangeInclusive => "range=".to_owned(),
+            TypeRef::Named(name) => name.clone(),
+            TypeRef::Applied { name, .. } => name.clone(),
+            TypeRef::Object(_) => "object".to_owned(),
+            TypeRef::Array(_) => "array".to_owned(),
+            TypeRef::Map(_, _) => "map".to_owned(),
+            TypeRef::Nullable(inner) => format!("{}?", self.function_type_key(inner)),
+            TypeRef::Union(items) => items
+                .iter()
+                .map(|item| self.function_type_key(item))
+                .collect::<Vec<_>>()
+                .join("|"),
+            TypeRef::Function(_) => "fun".to_owned(),
         }
     }
 
@@ -697,6 +852,11 @@ impl<'a> LoweringContext<'a> {
         self.function_annotation_from_docs(docs, &names)
     }
 
+    fn function_this_type(&self, function: rhai_syntax::FnItem<'_>) -> Option<TypeRef> {
+        let this_type = function.this_type_name(self.parse.text())?;
+        crate::parse_type_ref(&this_type).or(Some(TypeRef::Named(this_type)))
+    }
+
     fn lower_param_symbols(
         &mut self,
         params: &[(String, TextRange)],
@@ -708,6 +868,7 @@ impl<'a> LoweringContext<'a> {
             self.alloc_symbol_with_annotation(
                 name.clone(),
                 SymbolKind::Parameter,
+                false,
                 *range,
                 scope,
                 None,
@@ -730,17 +891,22 @@ impl<'a> LoweringContext<'a> {
         let docs = self.docs_for_range(function.syntax().range());
         let params = self.function_param_bindings(function);
         let annotation = self.lower_function_signature(docs, &params);
+        let this_type = self.function_this_type(function);
         let Some(name_token) = function.name_token() else {
             return;
         };
         let symbol = self.alloc_symbol_with_annotation(
             name_token.text(self.parse.text()).to_owned(),
             SymbolKind::Function,
+            function.is_private(),
             name_token.range(),
             scope,
             docs,
             annotation,
         );
+        self.file
+            .function_infos
+            .push(FunctionInfo { symbol, this_type });
 
         let function_scope =
             self.new_scope(ScopeKind::Function, function.syntax().range(), Some(scope));
@@ -849,8 +1015,21 @@ impl<'a> LoweringContext<'a> {
             Stmt::Export(export_stmt) => {
                 let mut target_range = None;
                 let mut target_text = None;
+                let mut target_symbol = None;
                 let mut target_reference = None;
-                if let Some(target) = export_stmt.target() {
+                if let Some(declaration) = export_stmt.declaration() {
+                    self.lower_item(Item::Stmt(declaration), scope);
+                    let binding = match declaration {
+                        Stmt::Let(let_stmt) => let_stmt.name_token(),
+                        Stmt::Const(const_stmt) => const_stmt.name_token(),
+                        _ => None,
+                    };
+                    if let Some(binding) = binding {
+                        target_range = Some(binding.range());
+                        target_text = Some(binding.text(self.parse.text()).to_owned());
+                        target_symbol = self.file.symbol_at(binding.range());
+                    }
+                } else if let Some(target) = export_stmt.target() {
                     let reference_start = self.file.references.len();
                     target_range = Some(target.syntax().range());
                     target_text = Some(self.text_for_range(target.syntax().range()));
@@ -874,6 +1053,7 @@ impl<'a> LoweringContext<'a> {
                     scope,
                     target_range,
                     target_text,
+                    target_symbol,
                     target_reference,
                     alias: alias_symbol,
                 });
@@ -1343,6 +1523,7 @@ impl<'a> LoweringContext<'a> {
                 self.new_call(
                     call.syntax().range(),
                     scope,
+                    call.uses_caller_scope(),
                     callee_range,
                     callee_reference,
                     arg_ranges,

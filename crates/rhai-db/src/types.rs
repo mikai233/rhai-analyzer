@@ -138,6 +138,7 @@ pub struct LocatedNavigationTarget {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LinkedModuleImport {
     pub file_id: FileId,
+    pub provider_file_id: FileId,
     pub import: usize,
     pub module_name: String,
     pub exports: Arc<[LocatedModuleExport]>,

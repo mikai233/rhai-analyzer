@@ -14,7 +14,7 @@ use rhai_syntax::{Parse, SyntaxError, TextSize, parse_text};
 use rhai_vfs::{FileId, VirtualFileSystem, normalize_path};
 
 use crate::change::{ChangeSet, FileChange};
-use crate::infer::{infer_file_types, join_types};
+use crate::infer::{ImportedMethodSignature, ImportedModuleMember, infer_file_types};
 use crate::project::build_project_semantics;
 use crate::types::{
     AutoImportCandidate, CachedFileAnalysis, CachedMemberCompletionSet, CachedNavigationTarget,
@@ -315,6 +315,15 @@ impl DatabaseSnapshot {
             .find(|linked_import| linked_import.import == import)
     }
 
+    pub fn imported_global_method_symbols(
+        &self,
+        file_id: FileId,
+        receiver_ty: &TypeRef,
+        method_name: &str,
+    ) -> Vec<LocatedSymbolIdentity> {
+        imported_global_method_symbols(self, file_id, receiver_ty, method_name)
+    }
+
     pub fn stats(&self) -> &PerformanceStats {
         &self.stats
     }
@@ -423,55 +432,8 @@ impl DatabaseSnapshot {
         file_id: FileId,
         name: &str,
     ) -> Vec<AutoImportCandidate> {
-        let Some(analysis) = self.analysis.get(&file_id) else {
-            return Vec::new();
-        };
-        let Some(file_text) = self.file_text(file_id) else {
-            return Vec::new();
-        };
-
-        let insertion_offset = import_insertion_offset(analysis.hir.as_ref(), file_text.as_ref());
-        let insert_text = import_insert_text(
-            analysis.hir.as_ref(),
-            name,
-            insertion_offset,
-            file_text.as_ref(),
-        );
-
-        let mut candidates = self
-            .exports_named(name)
-            .iter()
-            .filter(|export| export.file_id != file_id)
-            .map(|export| AutoImportCandidate {
-                file_id,
-                provider_file_id: export.file_id,
-                provider_path: self
-                    .normalized_path(export.file_id)
-                    .unwrap_or_else(|| Path::new(""))
-                    .to_path_buf(),
-                module_name: export
-                    .export
-                    .exported_name
-                    .clone()
-                    .unwrap_or_else(|| name.to_owned()),
-                alias: name.to_owned(),
-                insertion_offset,
-                insert_text: insert_text.clone(),
-            })
-            .collect::<Vec<_>>();
-
-        candidates.sort_by(|left, right| {
-            left.module_name
-                .cmp(&right.module_name)
-                .then_with(|| left.provider_path.cmp(&right.provider_path))
-                .then_with(|| left.provider_file_id.0.cmp(&right.provider_file_id.0))
-        });
-        candidates.dedup_by(|left, right| {
-            left.provider_file_id == right.provider_file_id
-                && left.module_name == right.module_name
-                && left.alias == right.alias
-        });
-        candidates
+        let _ = (file_id, name);
+        Vec::new()
     }
 
     pub fn goto_definition(
@@ -607,6 +569,16 @@ impl DatabaseSnapshot {
         };
 
         if let Some(reference_id) = analysis.hir.reference_at_offset(offset) {
+            let path_targets = linked_import_targets_for_path_reference(
+                self,
+                file_id,
+                analysis.hir.as_ref(),
+                reference_id,
+            );
+            if !path_targets.is_empty() {
+                return path_targets;
+            }
+
             if let Some(symbol) = analysis.hir.definition_of(reference_id) {
                 return self
                     .locate_symbol(&analysis.hir.file_backed_symbol_identity(symbol))
@@ -628,6 +600,27 @@ impl DatabaseSnapshot {
                         .flat_map(|identity| self.locate_symbol(identity).iter().cloned())
                         .collect(),
                 );
+            }
+
+            if analysis.hir.reference(reference_id).kind == rhai_hir::ReferenceKind::Field
+                && let Some(access) = analysis
+                    .hir
+                    .member_accesses
+                    .iter()
+                    .find(|access| access.field_reference == reference_id)
+                && let Some(receiver_ty) = analysis
+                    .hir
+                    .expr_type(access.receiver, &analysis.type_inference.expr_types)
+            {
+                let imported = imported_global_method_symbols(
+                    self,
+                    file_id,
+                    receiver_ty,
+                    analysis.hir.reference(reference_id).name.as_str(),
+                );
+                if !imported.is_empty() {
+                    return imported;
+                }
             }
 
             return Vec::new();
@@ -665,10 +658,6 @@ impl DatabaseSnapshot {
                     kind: ProjectReferenceKind::Reference,
                 },
             ));
-
-            for export in self.exports_for_identity(&target.symbol) {
-                references.extend(self.linked_import_references_for_export(export));
-            }
         }
 
         references.sort_by(|left, right| {
@@ -695,40 +684,6 @@ impl DatabaseSnapshot {
             .iter()
             .filter(|export| export_matches_identity(export, identity))
             .collect()
-    }
-
-    fn linked_import_references_for_export(
-        &self,
-        export: &LocatedModuleExport,
-    ) -> Vec<LocatedProjectReference> {
-        let mut references = Vec::new();
-
-        for linked_imports in self.linked_imports.values() {
-            for linked_import in linked_imports.iter() {
-                if !linked_import.exports.iter().any(|candidate| {
-                    candidate.file_id == export.file_id
-                        && candidate.export.export == export.export.export
-                }) {
-                    continue;
-                }
-
-                let Some(analysis) = self.analysis.get(&linked_import.file_id) else {
-                    continue;
-                };
-                let Some(reference_id) = analysis.hir.import(linked_import.import).module_reference
-                else {
-                    continue;
-                };
-
-                references.push(LocatedProjectReference {
-                    file_id: linked_import.file_id,
-                    range: analysis.hir.reference(reference_id).range,
-                    kind: ProjectReferenceKind::LinkedImport,
-                });
-            }
-        }
-
-        references
     }
 
     fn project_rename_preflight_issues(
@@ -759,34 +714,6 @@ impl DatabaseSnapshot {
                             ),
                             range: target.symbol.declaration_range,
                             related_symbol: project_identity_for_export(conflict).cloned(),
-                        },
-                    });
-                }
-
-                let linked_imports = self.linked_import_references_for_export(export);
-                if linked_imports.is_empty() {
-                    continue;
-                }
-
-                let has_conflict = self
-                    .exports_named(new_name)
-                    .iter()
-                    .any(|conflict| !same_export_edge(export, conflict));
-                if !has_conflict {
-                    continue;
-                }
-
-                for linked_import in linked_imports {
-                    issues.push(LocatedRenamePreflightIssue {
-                        file_id: linked_import.file_id,
-                        issue: RenamePreflightIssue {
-                            kind: RenamePreflightIssueKind::ReferenceCollision,
-                            message: format!(
-                                "renaming exported symbol `{}` to `{new_name}` would make this linked import ambiguous",
-                                target.symbol.name
-                            ),
-                            range: linked_import.range,
-                            related_symbol: Some(target.symbol.clone()),
                         },
                     });
                 }
@@ -1063,11 +990,15 @@ impl AnalyzerDatabase {
         let document_symbols = Arc::<[DocumentSymbol]>::from(hir.document_symbols());
         let workspace_symbols = Arc::<[WorkspaceSymbol]>::from(hir.workspace_symbols());
         let module_graph = Arc::new(hir.module_graph_index());
+        let imported_methods = self.imported_method_signatures(file_id);
+        let imported_members = self.imported_module_members(file_id);
         let type_inference = Arc::new(infer_file_types(
             &hir,
             &self.project_semantics.external_signatures,
             &self.project_semantics.global_functions,
             &self.project_semantics.types,
+            &imported_methods,
+            &imported_members,
             &HashMap::new(),
         ));
         self.stats.index_rebuilds += 1;
@@ -1141,11 +1072,20 @@ impl AnalyzerDatabase {
                 .sum::<usize>()
             + 1;
         let mut applied_seeds = HashMap::<FileId, HashMap<SymbolId, TypeRef>>::new();
+        let mut force_recompute = true;
 
         for _ in 0..max_iterations.max(1) {
             let next_seeds = self.derive_workspace_type_seeds();
             let mut changed_files = BTreeMap::<FileId, Option<HashMap<SymbolId, TypeRef>>>::new();
 
+            if force_recompute {
+                for &file_id in self.analysis.keys() {
+                    changed_files.insert(
+                        file_id,
+                        Some(applied_seeds.get(&file_id).cloned().unwrap_or_default()),
+                    );
+                }
+            }
             for &file_id in applied_seeds.keys() {
                 changed_files.entry(file_id).or_insert(None);
             }
@@ -1163,11 +1103,15 @@ impl AnalyzerDatabase {
                 let Some(existing) = self.analysis.get(&file_id).cloned() else {
                     continue;
                 };
+                let imported_methods = self.imported_method_signatures(file_id);
+                let imported_members = self.imported_module_members(file_id);
                 let type_inference = Arc::new(infer_file_types(
                     &existing.hir,
                     &self.project_semantics.external_signatures,
                     &self.project_semantics.global_functions,
                     &self.project_semantics.types,
+                    &imported_methods,
+                    &imported_members,
                     &next,
                 ));
 
@@ -1189,310 +1133,143 @@ impl AnalyzerDatabase {
             if !changed {
                 break;
             }
+            force_recompute = false;
         }
     }
 
     fn derive_workspace_type_seeds(&self) -> HashMap<FileId, HashMap<SymbolId, TypeRef>> {
-        let mut seeds = HashMap::<FileId, HashMap<SymbolId, TypeRef>>::new();
-
-        for (&importer_file_id, linked_imports) in self.workspace_indexes.linked_imports.iter() {
-            let Some(importer_analysis) = self.analysis.get(&importer_file_id) else {
-                continue;
-            };
-
-            for linked_import in linked_imports.iter() {
-                if linked_import.exports.len() != 1 {
-                    continue;
-                }
-
-                let Some(import_alias) = importer_analysis.hir.import(linked_import.import).alias
-                else {
-                    continue;
-                };
-                let export = &linked_import.exports[0];
-                let Some((_provider_symbol, exported_ty)) = self.exported_symbol_type(export)
-                else {
-                    continue;
-                };
-
-                merge_seed_type(
-                    &mut seeds,
-                    importer_file_id,
-                    import_alias,
-                    exported_ty.clone(),
-                );
-
-                let Some((provider_file_id, provider_symbol)) =
-                    self.resolve_exported_function_symbol(export, &mut HashSet::new())
-                else {
-                    continue;
-                };
-                let Some(provider_analysis) = self.analysis.get(&provider_file_id) else {
-                    continue;
-                };
-
-                let parameters = provider_analysis.hir.function_parameters(provider_symbol);
-                for call in importer_analysis.hir.calls.iter().filter(|call| {
-                    self.call_targets_import_alias(
-                        importer_file_id,
-                        importer_analysis.hir.as_ref(),
-                        call,
-                        import_alias,
-                    )
-                }) {
-                    for (index, parameter) in parameters.iter().copied().enumerate() {
-                        let Some(arg_expr) = call.arg_exprs.get(index).copied() else {
-                            continue;
-                        };
-                        let Some(arg_ty) = importer_analysis
-                            .type_inference
-                            .expr_types
-                            .get(importer_analysis.hir.expr_result_slot(arg_expr))
-                            .cloned()
-                        else {
-                            continue;
-                        };
-                        merge_seed_type(&mut seeds, provider_file_id, parameter, arg_ty);
-                    }
-                }
-            }
-        }
-
-        seeds
+        HashMap::new()
     }
 
-    fn resolve_exported_function_symbol(
-        &self,
-        export: &LocatedModuleExport,
-        visited: &mut HashSet<(FileId, SymbolId)>,
-    ) -> Option<(FileId, SymbolId)> {
-        let target = export.export.target.as_ref()?;
-        self.resolve_callable_function_symbol(export.file_id, target.symbol, visited)
-    }
-
-    fn resolve_callable_function_symbol(
-        &self,
-        file_id: FileId,
-        symbol: SymbolId,
-        visited: &mut HashSet<(FileId, SymbolId)>,
-    ) -> Option<(FileId, SymbolId)> {
-        if !visited.insert((file_id, symbol)) {
-            return None;
-        }
-
-        let analysis = self.analysis.get(&file_id)?;
-        let result = match analysis.hir.symbol(symbol).kind {
-            rhai_hir::SymbolKind::Function => Some((file_id, symbol)),
-            rhai_hir::SymbolKind::ImportAlias => self
-                .linked_import_for_alias(file_id, analysis.hir.as_ref(), symbol)
-                .filter(|linked_import| linked_import.exports.len() == 1)
-                .and_then(|linked_import| {
-                    self.resolve_exported_function_symbol(&linked_import.exports[0], visited)
-                }),
-            rhai_hir::SymbolKind::Variable | rhai_hir::SymbolKind::Constant => {
-                analysis.hir.value_flows_into(symbol).find_map(|flow| {
-                    self.resolve_callable_function_from_expr(
-                        file_id,
-                        flow.expr,
-                        analysis.hir.expr(flow.expr).range.end(),
-                        visited,
-                    )
-                })
-            }
-            _ => None,
-        };
-
-        visited.remove(&(file_id, symbol));
-        result
-    }
-
-    fn resolve_callable_function_from_expr(
-        &self,
-        file_id: FileId,
-        expr: ExprId,
-        offset: TextSize,
-        visited: &mut HashSet<(FileId, SymbolId)>,
-    ) -> Option<(FileId, SymbolId)> {
-        let analysis = self.analysis.get(&file_id)?;
-        match analysis.hir.expr(expr).kind {
-            ExprKind::Name => self
-                .symbol_for_expr(analysis.hir.as_ref(), expr)
-                .and_then(|symbol| self.resolve_callable_function_symbol(file_id, symbol, visited)),
-            ExprKind::Paren => self
-                .largest_inner_expr(analysis.hir.as_ref(), expr)
-                .and_then(|inner| {
-                    self.resolve_callable_function_from_expr(file_id, inner, offset, visited)
-                }),
-            ExprKind::Call => {
-                let call = analysis
-                    .hir
-                    .calls
-                    .iter()
-                    .find(|call| call.range == analysis.hir.expr(expr).range)?;
-                if !self.is_builtin_fn_call(analysis.hir.as_ref(), call) {
-                    return None;
-                }
-                let name_expr = call.arg_exprs.first().copied()?;
-                let name = self.string_literal_value(analysis.hir.as_ref(), name_expr)?;
-                let symbol = analysis
-                    .hir
-                    .visible_symbols_at(offset)
-                    .into_iter()
-                    .find(|symbol| analysis.hir.symbol(*symbol).name == name)?;
-                self.resolve_callable_function_symbol(file_id, symbol, visited)
-            }
-            _ => None,
-        }
-    }
-
-    fn call_targets_import_alias(
-        &self,
-        file_id: FileId,
-        hir: &FileHir,
-        call: &rhai_hir::CallSite,
-        import_alias: SymbolId,
-    ) -> bool {
-        if call.resolved_callee == Some(import_alias) {
-            return true;
-        }
-
-        let Some(callee_expr) = call.callee_range.and_then(|range| hir.expr_at(range)) else {
-            return false;
-        };
-        self.expr_targets_symbol(
-            file_id,
-            hir,
-            callee_expr,
-            import_alias,
-            call.range.start(),
-            &mut HashSet::new(),
-        )
-    }
-
-    fn expr_targets_symbol(
-        &self,
-        file_id: FileId,
-        hir: &FileHir,
-        expr: ExprId,
-        target: SymbolId,
-        offset: TextSize,
-        visited: &mut HashSet<SymbolId>,
-    ) -> bool {
-        match hir.expr(expr).kind {
-            ExprKind::Name => self.symbol_for_expr(hir, expr).is_some_and(|symbol| {
-                self.symbol_targets_symbol(file_id, hir, symbol, target, offset, visited)
-            }),
-            ExprKind::Paren => self.largest_inner_expr(hir, expr).is_some_and(|inner| {
-                self.expr_targets_symbol(file_id, hir, inner, target, offset, visited)
-            }),
-            _ => false,
-        }
-    }
-
-    fn symbol_targets_symbol(
-        &self,
-        file_id: FileId,
-        hir: &FileHir,
-        symbol: SymbolId,
-        target: SymbolId,
-        offset: TextSize,
-        visited: &mut HashSet<SymbolId>,
-    ) -> bool {
-        if symbol == target {
-            return true;
-        }
-        if !visited.insert(symbol) {
-            return false;
-        }
-
-        let result = match hir.symbol(symbol).kind {
-            rhai_hir::SymbolKind::Variable | rhai_hir::SymbolKind::Constant => hir
-                .value_flows_into(symbol)
-                .filter(|flow| flow.range.start() < offset)
-                .any(|flow| {
-                    self.expr_targets_symbol(
-                        file_id,
-                        hir,
-                        flow.expr,
-                        target,
-                        flow.range.start(),
-                        visited,
-                    )
-                }),
-            rhai_hir::SymbolKind::ImportAlias => symbol == target,
-            _ => false,
-        };
-
-        visited.remove(&symbol);
-        result
-    }
-
-    fn linked_import_for_alias(
-        &self,
-        file_id: FileId,
-        hir: &FileHir,
-        alias: SymbolId,
-    ) -> Option<LinkedModuleImport> {
+    fn imported_method_signatures(&self, file_id: FileId) -> Vec<ImportedMethodSignature> {
         self.workspace_indexes
             .linked_imports
-            .get(&file_id)?
-            .iter()
-            .find(|linked_import| hir.import(linked_import.import).alias == Some(alias))
-            .cloned()
+            .get(&file_id)
+            .into_iter()
+            .flat_map(|imports| imports.iter())
+            .flat_map(|linked_import| linked_import.exports.iter())
+            .filter_map(|export| {
+                let identity = project_identity_for_export(export)?;
+                (identity.kind == rhai_hir::SymbolKind::Function)
+                    .then_some((export.file_id, identity))
+            })
+            .filter_map(|(provider_file_id, identity)| {
+                let provider_hir = self.analysis.get(&provider_file_id)?.hir.clone();
+                let this_type = provider_hir
+                    .function_info(identity.symbol)?
+                    .this_type
+                    .clone()?;
+                let signature = match provider_hir.symbol(identity.symbol).annotation.as_ref()? {
+                    TypeRef::Function(signature) => signature.clone(),
+                    _ => return None,
+                };
+                Some(ImportedMethodSignature {
+                    name: identity.name.clone(),
+                    receiver: this_type,
+                    signature,
+                })
+            })
+            .collect()
     }
 
-    fn symbol_for_expr(&self, hir: &FileHir, expr: ExprId) -> Option<SymbolId> {
-        match hir.expr(expr).kind {
-            ExprKind::Name => hir
-                .reference_at(hir.expr(expr).range)
-                .and_then(|reference| hir.definition_of(reference)),
-            _ => None,
+    fn imported_module_members(&self, file_id: FileId) -> Vec<ImportedModuleMember> {
+        let Some(importer_hir) = self
+            .analysis
+            .get(&file_id)
+            .map(|analysis| analysis.hir.clone())
+        else {
+            return Vec::new();
+        };
+        let mut members = Vec::new();
+        for linked_import in self
+            .workspace_indexes
+            .linked_imports
+            .get(&file_id)
+            .into_iter()
+            .flat_map(|imports| imports.iter())
+        {
+            let Some(alias) = importer_hir.import(linked_import.import).alias else {
+                continue;
+            };
+            let module_path = vec![importer_hir.symbol(alias).name.clone()];
+            self.collect_imported_module_members(
+                linked_import,
+                &module_path,
+                &mut Vec::new(),
+                &mut members,
+            );
         }
+        members
     }
 
-    fn largest_inner_expr(&self, hir: &FileHir, expr: ExprId) -> Option<ExprId> {
-        let range = hir.expr(expr).range;
-        hir.exprs
-            .iter()
-            .enumerate()
-            .filter(|(index, node)| {
-                let candidate = ExprId(*index as u32);
-                candidate != expr
-                    && node.range.start() >= range.start()
-                    && node.range.end() <= range.end()
-                    && node.range != range
-            })
-            .max_by_key(|(_, node)| node.range.len())
-            .map(|(index, _)| ExprId(index as u32))
-    }
+    fn collect_imported_module_members(
+        &self,
+        linked_import: &LinkedModuleImport,
+        module_path: &[String],
+        visited_files: &mut Vec<FileId>,
+        members: &mut Vec<ImportedModuleMember>,
+    ) {
+        let provider_file_id = linked_import.provider_file_id;
+        if visited_files.contains(&provider_file_id) {
+            return;
+        }
+        visited_files.push(provider_file_id);
 
-    fn is_builtin_fn_call(&self, hir: &FileHir, call: &rhai_hir::CallSite) -> bool {
-        call.callee_reference
-            .map(|reference_id| hir.reference(reference_id).name.as_str())
-            == Some("Fn")
-    }
+        for export in linked_import.exports.iter() {
+            let Some(exported_name) = export.export.exported_name.as_ref() else {
+                continue;
+            };
+            let Some(identity) = project_identity_for_export(export) else {
+                continue;
+            };
+            let Some(provider_analysis) = self.analysis.get(&export.file_id) else {
+                continue;
+            };
+            let Some(ty) = provider_analysis
+                .type_inference
+                .symbol_types
+                .get(&identity.symbol)
+                .cloned()
+                .or_else(|| {
+                    provider_analysis
+                        .hir
+                        .declared_symbol_type(identity.symbol)
+                        .cloned()
+                })
+            else {
+                continue;
+            };
+            members.push(ImportedModuleMember {
+                module_path: module_path.to_vec(),
+                name: exported_name.clone(),
+                ty,
+            });
+        }
 
-    fn string_literal_value<'a>(&self, hir: &'a FileHir, expr: ExprId) -> Option<&'a str> {
-        let literal = hir.literal(expr)?;
-        (literal.kind == rhai_hir::LiteralKind::String)
-            .then_some(literal.text.as_deref())
-            .flatten()
-            .and_then(|text| {
-                (text.len() >= 2 && text.starts_with('"') && text.ends_with('"'))
-                    .then_some(&text[1..text.len() - 1])
-            })
-    }
+        let Some(provider_hir) = self
+            .analysis
+            .get(&provider_file_id)
+            .map(|analysis| analysis.hir.clone())
+        else {
+            visited_files.pop();
+            return;
+        };
+        for nested in self
+            .workspace_indexes
+            .linked_imports
+            .get(&provider_file_id)
+            .into_iter()
+            .flat_map(|imports| imports.iter())
+        {
+            let Some(alias) = provider_hir.import(nested.import).alias else {
+                continue;
+            };
+            let mut nested_path = module_path.to_vec();
+            nested_path.push(provider_hir.symbol(alias).name.clone());
+            self.collect_imported_module_members(nested, &nested_path, visited_files, members);
+        }
 
-    fn exported_symbol_type(&self, export: &LocatedModuleExport) -> Option<(SymbolId, TypeRef)> {
-        let target = export.export.target.as_ref()?;
-        let analysis = self.analysis.get(&export.file_id)?;
-        let ty = analysis
-            .type_inference
-            .symbol_types
-            .get(&target.symbol)
-            .cloned()
-            .or_else(|| analysis.hir.declared_symbol_type(target.symbol).cloned())?;
-        Some((target.symbol, ty))
+        visited_files.pop();
     }
 
     fn ensure_query_support(&mut self, file_id: FileId) -> bool {
@@ -1743,6 +1520,22 @@ fn project_identity_for_export(export: &LocatedModuleExport) -> Option<&FileBack
         .or(export.export.target.as_ref())
 }
 
+fn linked_import_targets_for_path_reference(
+    snapshot: &DatabaseSnapshot,
+    file_id: FileId,
+    hir: &FileHir,
+    reference_id: rhai_hir::ReferenceId,
+) -> Vec<LocatedSymbolIdentity> {
+    let Some(path_expr) = enclosing_path_expr(hir, hir.reference(reference_id).range.start())
+    else {
+        return Vec::new();
+    };
+    let Some(path_parts) = linked_import_path_parts(hir, path_expr) else {
+        return Vec::new();
+    };
+    resolve_linked_import_path_targets(snapshot, file_id, &path_parts)
+}
+
 fn export_matches_identity(
     export: &LocatedModuleExport,
     identity: &FileBackedSymbolIdentity,
@@ -1777,6 +1570,111 @@ fn dedupe_symbol_locations(
     });
     locations.dedup_by(|left, right| left.file_id == right.file_id && left.symbol == right.symbol);
     locations
+}
+
+fn enclosing_path_expr(hir: &FileHir, offset: TextSize) -> Option<ExprId> {
+    hir.exprs
+        .iter()
+        .enumerate()
+        .filter(|(_, expr)| expr.kind == ExprKind::Path && expr.range.contains(offset))
+        .min_by_key(|(_, expr)| expr.range.len())
+        .map(|(index, _)| ExprId(index as u32))
+}
+
+fn linked_import_path_parts(hir: &FileHir, expr: ExprId) -> Option<Vec<String>> {
+    let range = hir.expr(expr).range;
+    let mut references = hir
+        .references
+        .iter()
+        .enumerate()
+        .filter(|(_, reference)| {
+            matches!(
+                reference.kind,
+                rhai_hir::ReferenceKind::Name | rhai_hir::ReferenceKind::PathSegment
+            ) && reference.range.start() >= range.start()
+                && reference.range.end() <= range.end()
+        })
+        .collect::<Vec<_>>();
+
+    references.sort_by_key(|(_, reference)| reference.range.start());
+    let (first_index, first_reference) = references.first()?;
+    let alias_symbol = (first_reference.kind == rhai_hir::ReferenceKind::Name)
+        .then(|| hir.definition_of(rhai_hir::ReferenceId(*first_index as u32)))
+        .flatten()?;
+    if hir.symbol(alias_symbol).kind != rhai_hir::SymbolKind::ImportAlias {
+        return None;
+    }
+    Some(
+        references
+            .into_iter()
+            .map(|(_, reference)| reference.name.clone())
+            .collect(),
+    )
+}
+
+fn resolve_linked_import_path_targets(
+    snapshot: &DatabaseSnapshot,
+    file_id: FileId,
+    path_parts: &[String],
+) -> Vec<LocatedSymbolIdentity> {
+    resolve_linked_import_path_targets_inner(snapshot, file_id, path_parts, &mut Vec::new())
+}
+
+fn resolve_linked_import_path_targets_inner(
+    snapshot: &DatabaseSnapshot,
+    file_id: FileId,
+    path_parts: &[String],
+    visited_files: &mut Vec<FileId>,
+) -> Vec<LocatedSymbolIdentity> {
+    let [alias_name, rest @ ..] = path_parts else {
+        return Vec::new();
+    };
+    if rest.is_empty() || visited_files.contains(&file_id) {
+        return Vec::new();
+    }
+    visited_files.push(file_id);
+
+    let Some(linked_import) = linked_import_for_alias_name(snapshot, file_id, alias_name) else {
+        visited_files.pop();
+        return Vec::new();
+    };
+
+    let result = if rest.len() == 1 {
+        let member_name = &rest[0];
+        dedupe_symbol_locations(
+            linked_import
+                .exports
+                .iter()
+                .filter(|export| {
+                    export.export.exported_name.as_deref() == Some(member_name.as_str())
+                })
+                .filter_map(project_identity_for_export)
+                .flat_map(|identity| snapshot.locate_symbol(identity).iter().cloned())
+                .collect(),
+        )
+    } else {
+        let provider_file_id = linked_import.provider_file_id;
+        resolve_linked_import_path_targets_inner(snapshot, provider_file_id, rest, visited_files)
+    };
+
+    visited_files.pop();
+    result
+}
+
+fn linked_import_for_alias_name<'a>(
+    snapshot: &'a DatabaseSnapshot,
+    file_id: FileId,
+    alias_name: &str,
+) -> Option<&'a LinkedModuleImport> {
+    let hir = snapshot.hir(file_id)?;
+    snapshot
+        .linked_imports(file_id)
+        .iter()
+        .find(|linked_import| {
+            hir.import(linked_import.import)
+                .alias
+                .is_some_and(|alias| hir.symbol(alias).name == alias_name)
+        })
 }
 
 fn project_semantic_diagnostics(
@@ -1907,34 +1805,83 @@ fn linked_import_usage_diagnostics(
         .collect()
 }
 
-fn import_insertion_offset(hir: &FileHir, file_text: &str) -> TextSize {
-    let Some(last_import) = hir.imports.iter().map(|import| import.range.end()).max() else {
-        return TextSize::from(0);
-    };
+fn imported_global_method_symbols(
+    snapshot: &DatabaseSnapshot,
+    file_id: FileId,
+    receiver_ty: &TypeRef,
+    method_name: &str,
+) -> Vec<LocatedSymbolIdentity> {
+    let mut matches = snapshot
+        .linked_imports(file_id)
+        .iter()
+        .flat_map(|linked_import| linked_import.exports.iter())
+        .filter_map(|export| {
+            let identity = project_identity_for_export(export)?;
+            (identity.kind == rhai_hir::SymbolKind::Function && identity.name == method_name)
+                .then_some((export.file_id, identity))
+        })
+        .filter_map(|(provider_file_id, identity)| {
+            let provider_hir = snapshot.hir(provider_file_id)?;
+            let this_type = provider_hir
+                .function_info(identity.symbol)?
+                .this_type
+                .as_ref()?;
+            receiver_matches_method_type(receiver_ty, this_type)
+                .then_some(snapshot.locate_symbol(identity).iter().cloned())
+        })
+        .flatten()
+        .collect::<Vec<_>>();
 
-    let mut offset = usize::from(last_import);
-    while offset < file_text.len() && matches!(file_text.as_bytes()[offset], b'\r' | b'\n') {
-        offset += 1;
-    }
-    TextSize::from(offset as u32)
+    matches.sort_by(|left, right| {
+        left.file_id
+            .0
+            .cmp(&right.file_id.0)
+            .then_with(|| {
+                left.symbol
+                    .declaration_range
+                    .start()
+                    .cmp(&right.symbol.declaration_range.start())
+            })
+            .then_with(|| left.symbol.name.cmp(&right.symbol.name))
+    });
+    matches.dedup_by(|left, right| left.file_id == right.file_id && left.symbol == right.symbol);
+    matches
 }
 
-fn import_insert_text(
-    hir: &FileHir,
-    name: &str,
-    insertion_offset: TextSize,
-    file_text: &str,
-) -> String {
-    let import = format!("import {name} as {name};");
-    if hir.imports.is_empty() {
-        return format!("{import}\n");
+fn receiver_matches_method_type(receiver: &TypeRef, expected: &TypeRef) -> bool {
+    if receiver == expected {
+        return true;
     }
 
-    let offset = usize::from(insertion_offset);
-    if offset == 0 || file_text[..offset].ends_with('\n') {
-        format!("{import}\n")
-    } else {
-        format!("\n{import}\n")
+    match (receiver, expected) {
+        (TypeRef::Unknown | TypeRef::Any | TypeRef::Dynamic | TypeRef::Never, _) => true,
+        (TypeRef::Union(items), expected) => items
+            .iter()
+            .any(|item| receiver_matches_method_type(item, expected)),
+        (TypeRef::Nullable(inner), expected) => receiver_matches_method_type(inner, expected),
+        (TypeRef::Applied { name, .. }, TypeRef::Named(expected_name))
+        | (
+            TypeRef::Named(name),
+            TypeRef::Applied {
+                name: expected_name,
+                ..
+            },
+        ) => name == expected_name,
+        (
+            TypeRef::Applied { name, args },
+            TypeRef::Applied {
+                name: expected_name,
+                args: expected_args,
+            },
+        ) => {
+            name == expected_name
+                && args.len() == expected_args.len()
+                && args
+                    .iter()
+                    .zip(expected_args.iter())
+                    .all(|(arg, expected)| receiver_matches_method_type(arg, expected))
+        }
+        _ => false,
     }
 }
 
@@ -2237,20 +2184,6 @@ fn sorted_file_ids(mut file_ids: Vec<FileId>) -> Vec<FileId> {
     file_ids.sort_by_key(|file_id| file_id.0);
     file_ids.dedup_by_key(|file_id| file_id.0);
     file_ids
-}
-
-fn merge_seed_type(
-    seeds: &mut HashMap<FileId, HashMap<SymbolId, TypeRef>>,
-    file_id: FileId,
-    symbol: SymbolId,
-    ty: TypeRef,
-) {
-    let file_seeds = seeds.entry(file_id).or_default();
-    let merged = match file_seeds.get(&symbol) {
-        Some(current) => join_types(current, &ty),
-        None => ty,
-    };
-    file_seeds.insert(symbol, merged);
 }
 
 fn resolved_source_roots(project: &ProjectConfig) -> Vec<PathBuf> {
