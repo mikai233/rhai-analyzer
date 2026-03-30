@@ -1,0 +1,451 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Release mode
+        required: true
+        default: package
+        type: choice
+        options:
+          - package
+          - prerelease
+          - release
+      version_mode:
+        description: Version bump strategy
+        required: true
+        default: none
+        type: choice
+        options:
+          - none
+          - patch
+          - minor
+          - major
+          - exact
+      version:
+        description: Exact version to use when version_mode=exact
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: write
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  validate:
+    name: Validate Release Inputs And Build
+    runs-on: ubuntu-latest
+    outputs:
+      current_version: ${{ steps.current_version.outputs.version }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: clients/vscode/package-lock.json
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Validate release request
+        shell: bash
+        run: |
+          set -euo pipefail
+          mode="${{ inputs.mode }}"
+          version_mode="${{ inputs.version_mode }}"
+          version="${{ inputs.version }}"
+          default_branch="${{ github.event.repository.default_branch }}"
+          current_branch="${{ github.ref_name }}"
+
+          if [[ "$mode" == "package" ]]; then
+            if [[ "$version_mode" != "none" ]]; then
+              echo "Package mode must use version_mode=none." >&2
+              exit 1
+            fi
+
+            if [[ -n "$version" ]]; then
+              echo "Package mode must not set an explicit version." >&2
+              exit 1
+            fi
+          else
+            if [[ "$current_branch" != "$default_branch" ]]; then
+              echo "Release and prerelease runs must start from the default branch ($default_branch)." >&2
+              exit 1
+            fi
+
+            if [[ "$version_mode" == "none" ]]; then
+              echo "Release and prerelease runs must bump to a new version." >&2
+              exit 1
+            fi
+          fi
+
+          if [[ "$version_mode" == "exact" && -z "$version" ]]; then
+            echo "An explicit version is required when version_mode=exact." >&2
+            exit 1
+          fi
+
+          if [[ "$version_mode" != "exact" && -n "$version" ]]; then
+            echo "Only version_mode=exact may provide an explicit version." >&2
+            exit 1
+          fi
+
+          if [[ "$mode" == "release" ]]; then
+            publisher="$(node -p "JSON.parse(require('fs').readFileSync('clients/vscode/package.json','utf8')).publisher")"
+            if [[ "$publisher" == "local" ]]; then
+              echo "Stable release publishing requires clients/vscode/package.json.publisher to be your real Marketplace publisher." >&2
+              exit 1
+            fi
+          fi
+
+      - name: Install VSCode client dependencies
+        working-directory: clients/vscode
+        run: npm ci
+
+      - name: Check formatting
+        run: cargo fmt --all --check
+
+      - name: Run clippy
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+      - name: Run tests
+        run: cargo test --workspace --all-targets
+
+      - name: Build VSCode extension
+        working-directory: clients/vscode
+        run: npm run build
+
+      - name: Read current release version
+        id: current_version
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(node ./scripts/set-version.mjs --mode none)"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  prepare-release:
+    name: Prepare Release Version
+    runs-on: ubuntu-latest
+    needs: validate
+    outputs:
+      checkout_ref: ${{ steps.metadata.outputs.checkout_ref }}
+      release_tag: ${{ steps.metadata.outputs.release_tag }}
+      release_version: ${{ steps.metadata.outputs.release_version }}
+      create_github_release: ${{ steps.metadata.outputs.create_github_release }}
+      publish_marketplace: ${{ steps.metadata.outputs.publish_marketplace }}
+      is_prerelease: ${{ steps.metadata.outputs.is_prerelease }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+
+      - name: Apply version bump
+        id: version
+        if: ${{ inputs.mode != 'package' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          args=(--mode "${{ inputs.version_mode }}" --write --json)
+          if [[ "${{ inputs.version_mode }}" == "exact" ]]; then
+            args+=(--version "${{ inputs.version }}")
+          fi
+
+          json="$(node ./scripts/set-version.mjs "${args[@]}")"
+          printf '%s\n' "$json" > version.json
+          echo "current_version=$(node -pe "JSON.parse(require('fs').readFileSync('version.json','utf8')).currentVersion")" >> "$GITHUB_OUTPUT"
+          echo "new_version=$(node -pe "JSON.parse(require('fs').readFileSync('version.json','utf8')).newVersion")" >> "$GITHUB_OUTPUT"
+          echo "changed=$(node -pe "JSON.parse(require('fs').readFileSync('version.json','utf8')).changed")" >> "$GITHUB_OUTPUT"
+
+      - name: Fail when version did not change
+        if: ${{ inputs.mode != 'package' && steps.version.outputs.changed != 'true' }}
+        run: |
+          echo "The requested release version did not change. Pick a new version." >&2
+          exit 1
+
+      - name: Commit and tag release version
+        if: ${{ inputs.mode != 'package' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${{ steps.version.outputs.new_version }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Cargo.toml clients/vscode/package.json clients/vscode/package-lock.json
+          git commit -m "chore(release): cut v$version"
+          git tag "v$version"
+          git push origin "HEAD:${{ github.ref_name }}"
+          git push origin "v$version"
+
+      - name: Set release metadata
+        id: metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${{ inputs.mode }}" == "package" ]]; then
+            echo "checkout_ref=${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+            echo "release_tag=" >> "$GITHUB_OUTPUT"
+            echo "release_version=${{ needs.validate.outputs.current_version }}" >> "$GITHUB_OUTPUT"
+            echo "create_github_release=false" >> "$GITHUB_OUTPUT"
+            echo "publish_marketplace=false" >> "$GITHUB_OUTPUT"
+            echo "is_prerelease=false" >> "$GITHUB_OUTPUT"
+          else
+            version="${{ steps.version.outputs.new_version }}"
+            echo "checkout_ref=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+            echo "release_tag=v$version" >> "$GITHUB_OUTPUT"
+            echo "release_version=$version" >> "$GITHUB_OUTPUT"
+            if [[ "${{ inputs.mode }}" == "prerelease" ]]; then
+              echo "create_github_release=true" >> "$GITHUB_OUTPUT"
+              echo "publish_marketplace=false" >> "$GITHUB_OUTPUT"
+              echo "is_prerelease=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "create_github_release=true" >> "$GITHUB_OUTPUT"
+              echo "publish_marketplace=true" >> "$GITHUB_OUTPUT"
+              echo "is_prerelease=false" >> "$GITHUB_OUTPUT"
+            fi
+          fi
+
+  build-server:
+    name: Build Rhai LSP (${{ matrix.vscode_target }})
+    runs-on: ${{ matrix.os }}
+    needs: prepare-release
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            vscode_target: linux-x64
+            rust_target: x86_64-unknown-linux-gnu
+            builder: cargo
+            binary_name: rhai-lsp
+            binary_path: target/x86_64-unknown-linux-gnu/release/rhai-lsp
+          - os: ubuntu-24.04-arm
+            vscode_target: linux-arm64
+            rust_target: aarch64-unknown-linux-gnu
+            builder: cargo
+            binary_name: rhai-lsp
+            binary_path: target/aarch64-unknown-linux-gnu/release/rhai-lsp
+          - os: ubuntu-latest
+            vscode_target: linux-armhf
+            rust_target: armv7-unknown-linux-gnueabihf
+            builder: cross
+            binary_name: rhai-lsp
+            binary_path: target/armv7-unknown-linux-gnueabihf/release/rhai-lsp
+          - os: ubuntu-latest
+            vscode_target: alpine-x64
+            rust_target: x86_64-unknown-linux-musl
+            builder: cross
+            binary_name: rhai-lsp
+            binary_path: target/x86_64-unknown-linux-musl/release/rhai-lsp
+          - os: ubuntu-latest
+            vscode_target: alpine-arm64
+            rust_target: aarch64-unknown-linux-musl
+            builder: cross
+            binary_name: rhai-lsp
+            binary_path: target/aarch64-unknown-linux-musl/release/rhai-lsp
+          - os: windows-latest
+            vscode_target: win32-x64
+            rust_target: x86_64-pc-windows-msvc
+            builder: cargo
+            binary_name: rhai-lsp.exe
+            binary_path: target/x86_64-pc-windows-msvc/release/rhai-lsp.exe
+          - os: windows-11-arm
+            vscode_target: win32-arm64
+            rust_target: aarch64-pc-windows-msvc
+            builder: cargo
+            binary_name: rhai-lsp.exe
+            binary_path: target/aarch64-pc-windows-msvc/release/rhai-lsp.exe
+          - os: macos-15-intel
+            vscode_target: darwin-x64
+            rust_target: x86_64-apple-darwin
+            builder: cargo
+            binary_name: rhai-lsp
+            binary_path: target/x86_64-apple-darwin/release/rhai-lsp
+          - os: macos-14
+            vscode_target: darwin-arm64
+            rust_target: aarch64-apple-darwin
+            builder: cargo
+            binary_name: rhai-lsp
+            binary_path: target/aarch64-apple-darwin/release/rhai-lsp
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.prepare-release.outputs.checkout_ref }}
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_target }}
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install cross
+        if: ${{ matrix.builder == 'cross' }}
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cross
+
+      - name: Build Rhai LSP server
+        shell: pwsh
+        run: |
+          if ('${{ matrix.builder }}' -eq 'cross') {
+            cross build --release -p rhai-lsp --target ${{ matrix.rust_target }}
+          }
+          else {
+            cargo build --release -p rhai-lsp --target ${{ matrix.rust_target }}
+          }
+
+      - name: Stage bundled server artifact
+        shell: pwsh
+        run: |
+          $targetDir = Join-Path $PWD 'dist/vscode-server/${{ matrix.vscode_target }}'
+          New-Item -ItemType Directory -Force -Path $targetDir | Out-Null
+          Copy-Item '${{ matrix.binary_path }}' (Join-Path $targetDir '${{ matrix.binary_name }}')
+
+      - name: Upload bundled server artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: rhai-lsp-${{ matrix.vscode_target }}
+          path: dist/vscode-server
+
+  package-vscode-extension:
+    name: Package Universal VSCode Extension
+    runs-on: ubuntu-latest
+    needs:
+      - prepare-release
+      - build-server
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.prepare-release.outputs.checkout_ref }}
+
+      - name: Download bundled server artifacts
+        uses: actions/download-artifact@v8
+        with:
+          pattern: rhai-lsp-*
+          path: clients/vscode/.staging/servers
+          merge-multiple: true
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: clients/vscode/package-lock.json
+
+      - name: Install VSCode client dependencies
+        working-directory: clients/vscode
+        run: npm ci
+
+      - name: Build and package universal VSCode extension
+        working-directory: clients/vscode
+        env:
+          RHAI_SERVER_DIR: ${{ github.workspace }}/clients/vscode/.staging/servers
+        run: npm run package
+
+      - name: Upload universal VSIX artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: rhai-analyzer-vsix
+          path: clients/vscode/.artifacts/rhai-analyzer.vsix
+
+  publish-github-release:
+    name: Publish GitHub Release
+    runs-on: ubuntu-latest
+    needs:
+      - prepare-release
+      - package-vscode-extension
+    if: ${{ needs.prepare-release.outputs.create_github_release == 'true' }}
+
+    steps:
+      - name: Download VSIX artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: rhai-analyzer-vsix
+          path: dist/release
+
+      - name: Create GitHub release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="${{ needs.prepare-release.outputs.release_tag }}"
+          asset="dist/release/rhai-analyzer.vsix"
+
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" "$asset" --clobber
+          else
+            args=(
+              "$tag"
+              "$asset"
+              --title "v${{ needs.prepare-release.outputs.release_version }}"
+              --generate-notes
+            )
+
+            if [[ "${{ needs.prepare-release.outputs.is_prerelease }}" == "true" ]]; then
+              args+=(--prerelease)
+            fi
+
+            gh release create "${args[@]}"
+          fi
+
+  publish-marketplace:
+    name: Publish To VS Code Marketplace
+    runs-on: ubuntu-latest
+    needs:
+      - prepare-release
+      - package-vscode-extension
+    if: ${{ needs.prepare-release.outputs.publish_marketplace == 'true' }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.prepare-release.outputs.checkout_ref }}
+
+      - name: Download VSIX artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: rhai-analyzer-vsix
+          path: clients/vscode/.artifacts
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: clients/vscode/package-lock.json
+
+      - name: Install VSCode client dependencies
+        working-directory: clients/vscode
+        run: npm ci
+
+      - name: Publish stable VSIX to the Marketplace
+        working-directory: clients/vscode
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+        run: npm exec -- vsce publish --packagePath ./.artifacts/rhai-analyzer.vsix --pat "$VSCE_PAT" --skip-duplicate
