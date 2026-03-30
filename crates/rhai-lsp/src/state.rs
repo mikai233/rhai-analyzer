@@ -188,6 +188,52 @@ impl ServerState {
         Ok(self.refresh_preloaded_files()?.updates)
     }
 
+    pub fn rename_workspace_file(
+        &mut self,
+        old_uri: &Uri,
+        new_uri: &Uri,
+    ) -> Result<Vec<DiagnosticUpdate>> {
+        let old_path = path_from_uri(old_uri)?;
+        let new_path = path_from_uri(new_uri)?;
+        let snapshot = self.analysis_host.snapshot();
+        let text = snapshot
+            .file_id_for_path(&old_path)
+            .and_then(|file_id| snapshot.file_text(file_id))
+            .map(|text| text.to_string())
+            .or_else(|| fs::read_to_string(&new_path).ok());
+
+        let Some(text) = text else {
+            return Ok(self.refresh_preloaded_files()?.updates);
+        };
+
+        if let Some(mut document) = self.open_documents.remove(old_uri) {
+            document.uri = new_uri.clone();
+            document.normalized_path = new_path.clone();
+            self.open_documents.insert(new_uri.clone(), document);
+        }
+
+        let version = self
+            .open_documents
+            .get(new_uri)
+            .map(|document| DocumentVersion(document.version))
+            .unwrap_or(DocumentVersion(0));
+
+        let impact = self.analysis_host.apply_change_report(ChangeSet {
+            files: vec![FileChange {
+                path: new_path,
+                text,
+                version,
+            }],
+            removed_files: vec![old_path],
+            project: None,
+        });
+        self.warm_hot_files(&impact);
+
+        let mut updates = self.diagnostic_updates_for_impact(&impact);
+        updates.extend(self.refresh_preloaded_files()?.updates);
+        Ok(dedupe_diagnostic_updates(updates))
+    }
+
     pub(crate) fn upsert_document(
         &mut self,
         uri: Uri,

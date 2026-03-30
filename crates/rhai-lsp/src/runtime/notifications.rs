@@ -2,11 +2,11 @@ use anyhow::{Result, anyhow};
 use lsp_server::{Connection, Notification};
 use lsp_types::notification::{
     DidChangeTextDocument, DidChangeWatchedFiles, DidCloseTextDocument, DidOpenTextDocument,
-    Notification as LspNotification, PublishDiagnostics,
+    DidRenameFiles, Notification as LspNotification, PublishDiagnostics,
 };
 use lsp_types::{
     DidChangeTextDocumentParams, DidChangeWatchedFilesParams, DidCloseTextDocumentParams,
-    DidOpenTextDocumentParams, FileChangeType, PublishDiagnosticsParams,
+    DidOpenTextDocumentParams, FileChangeType, PublishDiagnosticsParams, RenameFilesParams,
 };
 use tracing::debug;
 
@@ -65,6 +65,19 @@ pub(crate) fn handle_notification(
                     _ => Vec::new(),
                 };
                 updates.extend(file_updates);
+            }
+
+            publish_diagnostics_updates(connection, server, dedupe_diagnostic_updates(updates))?;
+        }
+        DidRenameFiles::METHOD => {
+            let params: RenameFilesParams = serde_json::from_value(notification.params)?;
+            let mut updates = Vec::<DiagnosticUpdate>::new();
+
+            for rename in params.files {
+                let old_uri = rename.old_uri.parse()?;
+                let new_uri = rename.new_uri.parse()?;
+                debug!(old_uri = ?old_uri, new_uri = ?new_uri, "workspace file renamed");
+                updates.extend(server.rename_workspace_file(&old_uri, &new_uri)?);
             }
 
             publish_diagnostics_updates(connection, server, dedupe_diagnostic_updates(updates))?;

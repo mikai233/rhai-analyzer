@@ -54,6 +54,15 @@ fn capabilities_expose_signature_help_inlay_hints_workspace_symbols_and_semantic
         capabilities.workspace_symbol_provider,
         Some(OneOf::Left(true))
     ));
+    assert!(
+        capabilities
+            .workspace
+            .as_ref()
+            .and_then(|workspace| workspace.file_operations.as_ref())
+            .and_then(|operations| operations.did_rename.as_ref())
+            .is_some(),
+        "expected didRenameFiles registration in workspace capabilities"
+    );
     assert!(matches!(
         capabilities.semantic_tokens_provider,
         Some(SemanticTokensServerCapabilities::SemanticTokensOptions(_))
@@ -712,6 +721,46 @@ fn rename_on_static_import_module_reference_returns_text_edits_and_file_rename()
                     || rename.new_uri.as_str().ends_with("\\renamed_demo.rhai")
         )),
         "expected file rename in workspace edit, got {document_changes:?}"
+    );
+}
+
+#[test]
+fn static_import_module_can_be_renamed_twice_after_file_rename_notification() {
+    let mut server = Server::new();
+    let provider_uri = file_url("demo.rhai");
+    let renamed_provider_uri = file_url("renamed_demo.rhai");
+    let consumer_uri = file_url("consumer.rhai");
+    let provider_text = "fn hello() {}\n";
+    let consumer_text = "import \"demo\" as d;\n\nfn run() {\n    d::hello();\n}\n";
+    let renamed_consumer_text = "import \"renamed_demo\" as d;\n\nfn run() {\n    d::hello();\n}\n";
+
+    assert_valid_rhai_syntax(provider_text);
+    assert_valid_rhai_syntax(consumer_text);
+    assert_valid_rhai_syntax(renamed_consumer_text);
+    server
+        .open_document(provider_uri.clone(), 1, provider_text)
+        .expect("expected provider open to succeed");
+    server
+        .open_document(consumer_uri.clone(), 1, consumer_text)
+        .expect("expected consumer open to succeed");
+
+    server
+        .rename_workspace_file(&provider_uri, &renamed_provider_uri)
+        .expect("expected file rename notification to succeed");
+    server
+        .change_document(consumer_uri.clone(), 2, renamed_consumer_text)
+        .expect("expected consumer rename edit to succeed");
+
+    let second = server
+        .rename(
+            &consumer_uri,
+            offset_in(renamed_consumer_text, "\"renamed_demo\"") + 1,
+            "demo_again".to_owned(),
+        )
+        .expect("expected second rename query to succeed");
+    assert!(
+        second.is_some(),
+        "expected second static import rename to resolve"
     );
 }
 

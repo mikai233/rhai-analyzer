@@ -1,10 +1,12 @@
 use lsp_types::{
     CallHierarchyServerCapability, CodeActionProviderCapability, CompletionOptions,
-    DocumentFormattingOptions, DocumentRangeFormattingOptions, FoldingRangeProviderCapability,
-    HoverProviderCapability, InitializeResult, InlayHintOptions, InlayHintServerCapabilities,
-    OneOf, SemanticTokensFullOptions, SemanticTokensOptions, SemanticTokensServerCapabilities,
-    ServerCapabilities, ServerInfo, SignatureHelpOptions, TextDocumentSyncCapability,
-    TextDocumentSyncKind,
+    DocumentFormattingOptions, DocumentRangeFormattingOptions, FileOperationFilter,
+    FileOperationPattern, FileOperationPatternKind, FileOperationRegistrationOptions,
+    FoldingRangeProviderCapability, HoverProviderCapability, InitializeResult, InlayHintOptions,
+    InlayHintServerCapabilities, OneOf, SemanticTokensFullOptions, SemanticTokensOptions,
+    SemanticTokensServerCapabilities, ServerCapabilities, ServerInfo, SignatureHelpOptions,
+    TextDocumentSyncCapability, TextDocumentSyncKind, WorkspaceFileOperationsServerCapabilities,
+    WorkspaceServerCapabilities,
 };
 
 use crate::handlers::queries::semantic_token_legend;
@@ -53,6 +55,17 @@ impl ServerState {
                 },
             )),
             code_action_provider: Some(CodeActionProviderCapability::Simple(true)),
+            workspace: Some(WorkspaceServerCapabilities {
+                workspace_folders: None,
+                file_operations: Some(WorkspaceFileOperationsServerCapabilities {
+                    did_create: None,
+                    will_create: None,
+                    did_rename: Some(rhai_file_operation_registration()),
+                    will_rename: None,
+                    did_delete: None,
+                    will_delete: None,
+                }),
+            }),
             ..ServerCapabilities::default()
         }
     }
@@ -84,4 +97,17 @@ fn completion_trigger_characters() -> Vec<String> {
     }
 
     triggers
+}
+
+fn rhai_file_operation_registration() -> FileOperationRegistrationOptions {
+    FileOperationRegistrationOptions {
+        filters: vec![FileOperationFilter {
+            scheme: Some("file".to_owned()),
+            pattern: FileOperationPattern {
+                glob: "**/*.rhai".to_owned(),
+                matches: Some(FileOperationPatternKind::File),
+                options: None,
+            },
+        }],
+    }
 }
