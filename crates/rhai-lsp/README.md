@@ -1,64 +1,107 @@
 # rhai-lsp
 
-`rhai-lsp` is the LSP transport layer for `rhai-analyzer`.
+`rhai-lsp` is the language-server transport crate for `rhai-analyzer`.
 
-It is responsible for turning editor/LSP requests into calls against `rhai-ide`, and for translating semantic results into protocol-shaped responses and notifications.
+Its responsibility is to expose the semantic capabilities implemented in `rhai-ide`
+through the Language Server Protocol, while keeping protocol concerns separate from
+parsing, lowering, inference, and editor policy.
 
-It does not own parsing, semantic lowering, incremental database logic, or editor-facing semantic policy.
+## Scope
 
-## Implemented Features
+The crate owns:
 
-### Server Core
+- process startup and transport selection
+- long-lived server state and document lifecycle
+- LSP request and notification dispatch
+- conversion between `rhai-ide` models and LSP protocol types
+- workspace preload, warm-up, and protocol-facing diagnostics publication
 
-- Long-lived server state built around `rhai-ide::AnalysisHost`
-- Managed open-document tracking with normalized file paths and document versions
-- Full-document sync handling for open/change/close workflows
-- Query-support warming for hot files after rebuilds
+The crate does not own:
 
-### Protocol and Capability Wiring
+- Rhai syntax parsing
+- HIR lowering
+- incremental semantic analysis
+- type inference rules
+- formatter logic
 
-- `initialize` response with server metadata
-- Advertised capabilities for:
-  - full text document sync
-  - goto definition
-  - references
-  - rename
-  - hover
-  - document highlights
-  - call hierarchy
-  - folding ranges
-  - document symbols
-  - workspace symbols
-  - completion
-  - signature help
-  - inlay hints
-  - semantic tokens
-  - document formatting
-  - document range formatting
-  - code actions
+## Architecture
 
-### Handlers
+The current implementation follows a synchronous event-loop model with explicit state
+and protocol layers.
 
-- Diagnostic publication based on semantic and project-aware analysis results
-- Close/update behavior that refreshes diagnostics consistently
-- Code action translation for source fixes and import-related edits
-- Query forwarding for completion, completion resolve, signature help, call hierarchy, document highlights, folding ranges, inlay hints, semantic tokens, workspace symbols, document formatting, and document range formatting
-- Semantic-token legend/encoding for Rhai token categories plus declaration/readonly modifiers
+- `main.rs`
+  - process entry point
+- `runtime.rs` and `runtime/`
+  - transport bootstrap, event loop, request routing, notification routing, logging, and progress reporting
+- `state.rs`
+  - mutable server state, open documents, workspace preload, path/URI handling, and change application
+- `protocol.rs`
+  - conversion between internal IDE models and LSP wire types
 
-### Test Coverage
+This model is intentionally closer to the `rust-analyzer` style of "event loop +
+shared state + immutable analysis snapshots" than to a fully async-first server.
 
-- Focused LSP-layer tests for diagnostics
-- Focused LSP-layer tests for code actions
-- Focused LSP-layer tests for query-style language features
+## Implemented Capabilities
 
-## Current Boundaries
+### Core server behavior
 
-- The crate is intentionally thin and currently exposes only a small set of LSP features.
-- Sync is currently full-document sync, not incremental edit sync.
-- Protocol presentation is still fairly minimal and can grow richer as `rhai-ide` adds more structured metadata.
+- long-lived state built around `rhai-ide::AnalysisHost`
+- normalized path and URI management
+- full-document sync for open, change, and close
+- workspace preload for unopened `.rhai` files
+- static-import graph expansion, including files outside workspace roots
+- query-support warming for hot files after rebuilds
+- support for both `stdio` and TCP transports
+- configurable logging with transport-aware defaults
+- handling of workspace file rename notifications to keep server state in sync
 
-## Next Steps
+### Language features
 
-- Add protocol wiring for more `rhai-ide` queries and richer completion flows
-- Support incremental sync if/when it becomes worthwhile for the editor integration story
-- Expand protocol output richness for diagnostics, code actions, and future semantic features
+- hover
+- goto definition
+- references
+- rename
+- completion and completion resolve
+- signature help
+- inlay hints
+- document highlights
+- document symbols
+- workspace symbols
+- semantic tokens
+- folding ranges
+- call hierarchy
+- document formatting
+- document range formatting
+- code actions
+
+### Protocol integration
+
+- server metadata in `initialize`
+- semantic-token legend and encoding
+- protocol conversion for navigation, rename, diagnostics, formatting, and completion
+- workspace file operation registration for `.rhai` files
+- work-done progress during workspace warm-up
+
+## Operational Characteristics
+
+- synchronization is currently full-document, not incremental text diff sync
+- request handling still runs on the foreground event loop
+- background worker orchestration is not introduced yet
+- TCP transport is intended for local debugging and protocol inspection
+- protocol output is intentionally conservative and can be enriched as `rhai-ide` grows
+
+## Testing
+
+The crate includes focused tests for:
+
+- diagnostics publication
+- query-style language features
+- code action translation
+- workspace preload and cross-file behavior
+- protocol-level rename and file-operation handling
+
+## Future Work
+
+- introduce explicit background task infrastructure for heavier workspace jobs
+- evaluate incremental sync when the editor integration warrants it
+- continue improving protocol richness for diagnostics, code actions, and progress reporting
