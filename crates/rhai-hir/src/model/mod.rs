@@ -8,21 +8,23 @@ mod symbol;
 pub use crate::model::diagnostics::{SemanticDiagnostic, SemanticDiagnosticKind};
 pub use crate::model::expr::{
     ArrayExprInfo, AssignExprInfo, AssignmentOperator, BinaryExprInfo, BinaryOperator,
-    BlockExprInfo, CallSite, CallSiteId, ClosureExprInfo, ExprId, ExprKind, ExprNode,
-    ExternalSignatureIndex, ForExprInfo, FunctionInfo, IfExprInfo, IndexExprInfo, LiteralInfo,
-    LiteralKind, MemberAccess, ObjectFieldInfo, SwitchExprInfo, TypeSlot, TypeSlotAssignments,
-    TypeSlotId, UnaryExprInfo, UnaryOperator,
+    BlockExprInfo, CallSite, CallSiteId, ClosureExprInfo, ExpectedTypeSite, ExpectedTypeSource,
+    ExprId, ExprKind, ExprNode, ExternalSignatureIndex, ForExprInfo, FunctionInfo, IfExprInfo,
+    IndexExprInfo, LiteralInfo, LiteralKind, MemberAccess, ObjectFieldInfo, PathExprInfo,
+    SwitchArmInfo, SwitchExprInfo, TypeSlot, TypeSlotAssignments, TypeSlotId, UnaryExprInfo,
+    UnaryOperator,
 };
 pub use crate::model::flow::{
     ControlFlowEvent, ControlFlowKind, ControlFlowMergePoint, MergePointKind, MutationPathSegment,
-    SymbolMutation, SymbolMutationKind, SymbolValueFlow, ValueFlowKind,
+    SymbolMutation, SymbolMutationKind, SymbolRead, SymbolReadKind, SymbolValueFlow, ValueFlowKind,
 };
 pub use crate::model::module::{
     DocumentSymbol, ExportDirective, FileBackedSymbolIdentity, FileSymbolId, FileSymbolIndex,
-    FileSymbolIndexEntry, ImportDirective, IndexableSymbol, IndexingHandoff, LinkedAlias,
-    LinkedAliasKind, MemberCompletion, MemberCompletionSource, ModuleExportEdge, ModuleGraphIndex,
-    ModuleImportEdge, ModuleSpecifier, NavigationTarget, RenameOccurrence, RenameOccurrenceKind,
-    RenamePlan, RenamePreflightIssue, RenamePreflightIssueKind, StableSymbolKey, WorkspaceSymbol,
+    FileSymbolIndexEntry, ImportDirective, ImportExposureKind, ImportLinkageKind,
+    ImportedModulePath, IndexableSymbol, IndexingHandoff, LinkedAlias, LinkedAliasKind,
+    MemberCompletion, MemberCompletionSource, ModuleExportEdge, ModuleGraphIndex, ModuleImportEdge,
+    ModuleSpecifier, NavigationTarget, RenameOccurrence, RenameOccurrenceKind, RenamePlan,
+    RenamePreflightIssue, RenamePreflightIssueKind, StableSymbolKey, WorkspaceSymbol,
 };
 pub use crate::model::scope::{
     Body, BodyId, BodyKind, Reference, ReferenceId, ReferenceKind, Scope, ScopeId, ScopeKind,

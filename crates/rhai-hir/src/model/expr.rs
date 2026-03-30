@@ -16,6 +16,22 @@ pub struct TypeSlotId(pub u32);
 pub struct CallSiteId(pub u32);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ExpectedTypeSource {
+    Symbol(SymbolId),
+    FunctionReturn(SymbolId),
+    CallArgument {
+        call: CallSiteId,
+        parameter_index: usize,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ExpectedTypeSite {
+    pub expr: ExprId,
+    pub source: ExpectedTypeSource,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ExprKind {
     Name,
     Literal,
@@ -145,9 +161,26 @@ pub struct SwitchExprInfo {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct SwitchArmInfo {
+    pub owner: ExprId,
+    pub scope: ScopeId,
+    pub patterns: Vec<ExprId>,
+    pub wildcard: bool,
+    pub value: Option<ExprId>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ClosureExprInfo {
     pub owner: ExprId,
     pub body: BodyId,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct PathExprInfo {
+    pub owner: ExprId,
+    pub base: Option<ExprId>,
+    pub rooted_global: bool,
+    pub segments: Vec<ReferenceId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]

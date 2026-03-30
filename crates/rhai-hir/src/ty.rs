@@ -25,6 +25,7 @@ pub enum TypeRef {
     Map(Box<TypeRef>, Box<TypeRef>),
     Nullable(Box<TypeRef>),
     Union(Vec<TypeRef>),
+    Ambiguous(Vec<TypeRef>),
     Function(FunctionTypeRef),
 }
 

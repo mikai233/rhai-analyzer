@@ -194,7 +194,8 @@ fn static_import_module_type_from_type_ref(ty: &TypeRef) -> Option<StaticImportM
         | TypeRef::Named(_)
         | TypeRef::Applied { .. }
         | TypeRef::Nullable(_)
-        | TypeRef::Union(_) => None,
+        | TypeRef::Union(_)
+        | TypeRef::Ambiguous(_) => None,
     }
 }
 

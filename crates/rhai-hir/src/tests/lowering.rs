@@ -1,8 +1,8 @@
 use crate::tests::{parse_valid, slice_range};
 use crate::{
     BinaryOperator, BodyKind, ControlFlowKind, ExprKind, LiteralKind, MergePointKind,
-    MutationPathSegment, ReferenceKind, ScopeKind, SymbolKind, SymbolMutationKind, UnaryOperator,
-    ValueFlowKind, lower_file,
+    MutationPathSegment, ReferenceKind, ScopeKind, SymbolKind, SymbolMutationKind, SymbolReadKind,
+    UnaryOperator, ValueFlowKind, lower_file,
 };
 use rhai_syntax::TextSize;
 
@@ -246,6 +246,19 @@ fn expression_metadata_tracks_blocks_branches_indexes_and_members() {
         switch_info.arms[1].map(|expr| hir.expr(expr).kind),
         Some(ExprKind::Field)
     );
+    let switch_arms = hir.switch_arms(switch_expr).collect::<Vec<_>>();
+    assert_eq!(switch_arms.len(), 2);
+    assert_eq!(switch_arms[0].patterns.len(), 1);
+    assert!(!switch_arms[0].wildcard);
+    assert_eq!(
+        switch_arms[0].patterns[0],
+        hir.expr_at_offset(TextSize::from(
+            u32::try_from(source.find("0 =>").expect("expected first switch pattern"))
+                .expect("pattern offset")
+        ))
+        .expect("expected pattern expr"),
+    );
+    assert!(switch_arms[1].wildcard);
 
     let index_info = hir.index_expr(index_expr).expect("expected index info");
     assert_eq!(
@@ -501,6 +514,68 @@ fn lowering_records_mixed_member_and_index_mutation_paths() {
                 ],
             }
             && hir.expr(mutation.value).kind == ExprKind::Assign
+    }));
+}
+
+#[test]
+fn lowering_records_ordered_symbol_reads_for_field_and_index_accesses() {
+    let parse = parse_valid(
+        r#"
+            let root = #{};
+            let slot = 0;
+            let value = root.items[slot].value;
+        "#,
+    );
+    let hir = lower_file(&parse);
+
+    let root_symbol = hir
+        .symbols
+        .iter()
+        .enumerate()
+        .find_map(|(index, symbol)| {
+            (symbol.name == "root" && symbol.kind == SymbolKind::Variable)
+                .then_some(crate::SymbolId(index as u32))
+        })
+        .expect("expected `root` symbol");
+
+    let reads = hir.symbol_reads_into(root_symbol).collect::<Vec<_>>();
+    assert_eq!(reads.len(), 3);
+    assert!(reads.iter().any(|read| {
+        matches!(
+            &read.kind,
+            SymbolReadKind::Path { segments }
+                if matches!(
+                    segments.as_slice(),
+                    [MutationPathSegment::Field { name }] if name == "items"
+                )
+        )
+    }));
+    assert!(reads.iter().any(|read| {
+        matches!(
+            &read.kind,
+            SymbolReadKind::Path { segments }
+                if matches!(
+                    segments.as_slice(),
+                    [
+                        MutationPathSegment::Field { name },
+                        MutationPathSegment::Index { .. }
+                    ] if name == "items"
+                )
+        )
+    }));
+    assert!(reads.iter().any(|read| {
+        matches!(
+            &read.kind,
+            SymbolReadKind::Path { segments }
+                if matches!(
+                    segments.as_slice(),
+                    [
+                        MutationPathSegment::Field { name: first },
+                        MutationPathSegment::Index { .. },
+                        MutationPathSegment::Field { name: last },
+                    ] if first == "items" && last == "value"
+                )
+        )
     }));
 }
 

@@ -14,6 +14,7 @@ pub(crate) struct LoweringContext<'a> {
     pub(crate) loop_stack: Vec<ScopeId>,
     pub(crate) pending_value_flows: Vec<PendingValueFlow>,
     pub(crate) pending_mutations: Vec<PendingMutation>,
+    pub(crate) pending_reads: Vec<PendingRead>,
 }
 
 pub(crate) struct PendingValueFlow {
@@ -34,6 +35,13 @@ pub(crate) enum PendingMutationKind {
     Path { segments: Vec<MutationPathSegment> },
 }
 
+pub(crate) struct PendingRead {
+    pub(crate) owner: ExprId,
+    pub(crate) root_reference: ReferenceId,
+    pub(crate) segments: Vec<MutationPathSegment>,
+    pub(crate) range: TextRange,
+}
+
 impl<'a> LoweringContext<'a> {
     pub(crate) fn new(parse: &'a Parse) -> Self {
         Self {
@@ -50,7 +58,9 @@ impl<'a> LoweringContext<'a> {
                 block_exprs: Vec::new(),
                 if_exprs: Vec::new(),
                 switch_exprs: Vec::new(),
+                switch_arms: Vec::new(),
                 closure_exprs: Vec::new(),
+                path_exprs: Vec::new(),
                 for_exprs: Vec::new(),
                 function_infos: Vec::new(),
                 unary_exprs: Vec::new(),
@@ -60,7 +70,9 @@ impl<'a> LoweringContext<'a> {
                 type_slots: Vec::new(),
                 value_flows: Vec::new(),
                 symbol_mutations: Vec::new(),
+                symbol_reads: Vec::new(),
                 calls: Vec::new(),
+                expected_type_sites: Vec::new(),
                 object_fields: Vec::new(),
                 member_accesses: Vec::new(),
                 imports: Vec::new(),
@@ -71,6 +83,7 @@ impl<'a> LoweringContext<'a> {
             loop_stack: Vec::new(),
             pending_value_flows: Vec::new(),
             pending_mutations: Vec::new(),
+            pending_reads: Vec::new(),
         }
     }
 
@@ -174,6 +187,65 @@ impl<'a> LoweringContext<'a> {
                 .and_then(|inner| self.mutation_target_from_expr(start, inner)),
             _ => None,
         }
+    }
+
+    pub(crate) fn read_target_for_expr(
+        &self,
+        expr: ExprId,
+    ) -> Option<(ReferenceId, Vec<MutationPathSegment>)> {
+        match self.file.expr(expr).kind {
+            ExprKind::Field => {
+                let access = self.file.member_access(expr)?;
+                let (reference, mut segments) = self.read_target_for_receiver(access.receiver)?;
+                segments.push(MutationPathSegment::Field {
+                    name: self.file.reference(access.field_reference).name.clone(),
+                });
+                Some((reference, segments))
+            }
+            ExprKind::Index => {
+                let index = self.file.index_expr(expr)?;
+                let receiver = index.receiver?;
+                let index_expr = index.index?;
+                let (reference, mut segments) = self.read_target_for_receiver(receiver)?;
+                segments.push(MutationPathSegment::Index { index: index_expr });
+                Some((reference, segments))
+            }
+            _ => None,
+        }
+    }
+
+    fn read_target_for_receiver(
+        &self,
+        expr: ExprId,
+    ) -> Option<(ReferenceId, Vec<MutationPathSegment>)> {
+        match self.file.expr(expr).kind {
+            ExprKind::Name => self
+                .file
+                .reference_at(self.file.expr(expr).range)
+                .map(|reference| (reference, Vec::new())),
+            ExprKind::Field | ExprKind::Index => self.read_target_for_expr(expr),
+            ExprKind::Paren => self
+                .largest_inner_expr(expr)
+                .and_then(|inner| self.read_target_for_receiver(inner)),
+            _ => None,
+        }
+    }
+
+    fn largest_inner_expr(&self, expr: ExprId) -> Option<ExprId> {
+        let range = self.file.expr(expr).range;
+        self.file
+            .exprs
+            .iter()
+            .enumerate()
+            .filter(|(index, node)| {
+                let candidate = ExprId(*index as u32);
+                candidate != expr
+                    && node.range.start() >= range.start()
+                    && node.range.end() <= range.end()
+                    && node.range != range
+            })
+            .max_by_key(|(_, node)| node.range.len())
+            .map(|(index, _)| ExprId(index as u32))
     }
 
     pub(crate) fn new_scope(

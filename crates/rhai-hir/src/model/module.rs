@@ -1,17 +1,35 @@
 use rhai_syntax::TextRange;
 
+use crate::model::expr::ExprId;
 use crate::model::scope::{ReferenceId, ScopeId};
 use crate::model::symbol::{SymbolId, SymbolKind};
 use crate::ty::TypeRef;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ImportLinkageKind {
+    StaticText,
+    LocalSymbol,
+    DynamicExpr,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ImportExposureKind {
+    Bare,
+    Aliased,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ImportDirective {
     pub range: TextRange,
     pub scope: ScopeId,
+    pub module_expr: Option<ExprId>,
     pub module_range: Option<TextRange>,
     pub module_text: Option<String>,
     pub module_reference: Option<ReferenceId>,
     pub alias: Option<SymbolId>,
+    pub is_global: bool,
+    pub linkage: ImportLinkageKind,
+    pub exposure: ImportExposureKind,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -107,6 +125,7 @@ pub struct IndexingHandoff {
 pub enum MemberCompletionSource {
     DocumentedField,
     ObjectLiteralField,
+    HostTypeMember,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -160,10 +179,20 @@ pub enum ModuleSpecifier {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImportedModulePath {
+    pub import: usize,
+    pub alias: SymbolId,
+    pub parts: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModuleImportEdge {
     pub import: usize,
     pub module: Option<ModuleSpecifier>,
     pub alias: Option<FileBackedSymbolIdentity>,
+    pub linkage: ImportLinkageKind,
+    pub exposure: ImportExposureKind,
+    pub is_global: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

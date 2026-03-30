@@ -64,7 +64,7 @@ impl FileHir {
             .min_by_key(|access| access.range.len())
     }
 
-    pub(crate) fn member_completions_for_expr(&self, expr: crate::ExprId) -> Vec<MemberCompletion> {
+    pub fn member_completions_for_expr(&self, expr: crate::ExprId) -> Vec<MemberCompletion> {
         let mut members = BTreeMap::<String, MemberCompletion>::new();
 
         for field in self

@@ -1,5 +1,7 @@
 use crate::tests::parse_valid;
-use crate::{ReferenceKind, SymbolKind, lower_file};
+use crate::{
+    ImportExposureKind, ImportLinkageKind, ModuleSpecifier, ReferenceKind, SymbolKind, lower_file,
+};
 
 #[test]
 fn file_symbol_index_exposes_indexable_symbols_with_container_and_export_metadata() {
@@ -146,8 +148,11 @@ fn module_graph_index_preserves_import_and_export_linkage_shapes() {
     let literal_import = &module_index.imports[0];
     assert!(matches!(
         literal_import.module,
-        Some(crate::ModuleSpecifier::Text(ref text)) if text == "\"crypto\""
+        Some(ModuleSpecifier::Text(ref text)) if text == "\"crypto\""
     ));
+    assert_eq!(literal_import.linkage, ImportLinkageKind::StaticText);
+    assert_eq!(literal_import.exposure, ImportExposureKind::Aliased);
+    assert!(literal_import.is_global);
     assert_eq!(
         literal_import
             .alias
@@ -159,8 +164,10 @@ fn module_graph_index_preserves_import_and_export_linkage_shapes() {
     let local_import = &module_index.imports[1];
     assert!(matches!(
         local_import.module,
-        Some(crate::ModuleSpecifier::LocalSymbol(ref symbol)) if symbol.name == "module_name"
+        Some(ModuleSpecifier::LocalSymbol(ref symbol)) if symbol.name == "module_name"
     ));
+    assert_eq!(local_import.linkage, ImportLinkageKind::LocalSymbol);
+    assert_eq!(local_import.exposure, ImportExposureKind::Aliased);
     assert_eq!(
         local_import.alias.as_ref().map(|alias| alias.name.as_str()),
         Some("local_alias")
@@ -256,4 +263,67 @@ fn global_path_root_does_not_create_name_reference() {
         .map(|reference| reference.name.as_str())
         .collect();
     assert_eq!(path_segments, vec!["crypto", "sha256"]);
+}
+
+#[test]
+fn path_queries_preserve_base_and_import_alias_semantics() {
+    let parse = parse_valid(
+        r#"
+            import "provider" as tools;
+
+            fn run() {
+                tools::sub::helper
+            }
+        "#,
+    );
+
+    let hir = lower_file(&parse);
+    let path_expr = hir
+        .exprs
+        .iter()
+        .enumerate()
+        .find_map(|(index, expr)| {
+            (expr.kind == crate::ExprKind::Path).then_some(crate::ExprId(index as u32))
+        })
+        .expect("expected path expr");
+
+    let path = hir.path_expr(path_expr).expect("expected path info");
+    assert!(!path.rooted_global);
+    assert!(path.base.is_some());
+    assert_eq!(
+        hir.qualified_path_parts(path_expr),
+        Some(vec![
+            "tools".to_owned(),
+            "sub".to_owned(),
+            "helper".to_owned()
+        ])
+    );
+
+    let imported = hir
+        .imported_module_path(path_expr)
+        .expect("expected imported module path");
+    assert_eq!(imported.import, 0);
+    assert_eq!(hir.symbol(imported.alias).name, "tools");
+    assert_eq!(
+        imported.parts,
+        vec!["tools".to_owned(), "sub".to_owned(), "helper".to_owned()]
+    );
+}
+
+#[test]
+fn module_graph_index_marks_dynamic_imports_without_static_specifier() {
+    let parse = parse_valid(
+        r#"
+            let module_name = "crypto";
+            import module_name;
+        "#,
+    );
+
+    let hir = lower_file(&parse);
+    let module_index = hir.module_graph_index();
+    let import = &module_index.imports[0];
+
+    assert!(import.module.is_some());
+    assert_eq!(import.linkage, ImportLinkageKind::LocalSymbol);
+    assert_eq!(import.exposure, ImportExposureKind::Bare);
 }

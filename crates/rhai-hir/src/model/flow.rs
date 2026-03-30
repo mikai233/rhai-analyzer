@@ -65,3 +65,16 @@ pub struct SymbolMutation {
     pub kind: SymbolMutationKind,
     pub range: TextRange,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SymbolReadKind {
+    Path { segments: Vec<MutationPathSegment> },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SymbolRead {
+    pub symbol: SymbolId,
+    pub owner: ExprId,
+    pub kind: SymbolReadKind,
+    pub range: TextRange,
+}

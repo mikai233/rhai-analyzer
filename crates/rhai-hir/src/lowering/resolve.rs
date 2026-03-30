@@ -1,7 +1,7 @@
 use crate::lowering::ctx::{LoweringContext, PendingMutationKind};
 use crate::model::{
-    FileHir, ReferenceKind, ScopeId, ScopeKind, Symbol, SymbolId, SymbolKind, SymbolMutation,
-    SymbolMutationKind,
+    CallSiteId, ExpectedTypeSite, ExpectedTypeSource, FileHir, ReferenceKind, ScopeId, ScopeKind,
+    Symbol, SymbolId, SymbolKind, SymbolMutation, SymbolMutationKind, SymbolRead, SymbolReadKind,
 };
 use crate::ty::TypeRef;
 use rhai_syntax::TextSize;
@@ -9,10 +9,13 @@ use rhai_syntax::TextSize;
 impl<'a> LoweringContext<'a> {
     pub(crate) fn finish(mut self) -> FileHir {
         self.resolve_references();
+        self.annotate_imports();
+        self.resolve_reads();
         self.resolve_call_mappings();
         self.resolve_value_flows();
         self.resolve_mutations();
         self.annotate_symbol_relationships();
+        self.annotate_expected_type_sites();
         self.file
     }
 
@@ -71,6 +74,24 @@ impl<'a> LoweringContext<'a> {
                 symbol,
                 value: pending.value,
                 kind,
+                range: pending.range,
+            });
+        }
+    }
+
+    pub(crate) fn resolve_reads(&mut self) {
+        let pending_reads = std::mem::take(&mut self.pending_reads);
+        for pending in pending_reads {
+            let Some(symbol) = self.file.references[pending.root_reference.0 as usize].target
+            else {
+                continue;
+            };
+            self.file.symbol_reads.push(SymbolRead {
+                symbol,
+                owner: pending.owner,
+                kind: SymbolReadKind::Path {
+                    segments: pending.segments,
+                },
                 range: pending.range,
             });
         }
@@ -239,7 +260,84 @@ impl<'a> LoweringContext<'a> {
                 .map(|item| self.function_type_key(item))
                 .collect::<Vec<_>>()
                 .join("|"),
+            TypeRef::Ambiguous(items) => format!(
+                "ambiguous<{}>",
+                items
+                    .iter()
+                    .map(|item| self.function_type_key(item))
+                    .collect::<Vec<_>>()
+                    .join("|")
+            ),
             TypeRef::Function(_) => "fun".to_owned(),
+        }
+    }
+
+    pub(crate) fn annotate_imports(&mut self) {
+        for import in &mut self.file.imports {
+            if import.linkage == crate::ImportLinkageKind::StaticText {
+                continue;
+            }
+            import.linkage = match import
+                .module_reference
+                .and_then(|reference| self.file.references[reference.0 as usize].target)
+            {
+                Some(_) => crate::ImportLinkageKind::LocalSymbol,
+                None => crate::ImportLinkageKind::DynamicExpr,
+            };
+        }
+    }
+
+    pub(crate) fn annotate_expected_type_sites(&mut self) {
+        self.file.expected_type_sites.clear();
+
+        for flow in &self.file.value_flows {
+            self.file.expected_type_sites.push(ExpectedTypeSite {
+                expr: flow.expr,
+                source: ExpectedTypeSource::Symbol(flow.symbol),
+            });
+        }
+
+        for (index, symbol) in self.file.symbols.iter().enumerate() {
+            if symbol.kind != SymbolKind::Function {
+                continue;
+            }
+            let symbol_id = SymbolId(index as u32);
+            let Some(body) = self.file.body_of(symbol_id) else {
+                continue;
+            };
+
+            let return_values = self.file.body_return_values(body).collect::<Vec<_>>();
+            for expr in return_values {
+                self.file.expected_type_sites.push(ExpectedTypeSite {
+                    expr,
+                    source: ExpectedTypeSource::FunctionReturn(symbol_id),
+                });
+            }
+
+            if self.file.body_may_fall_through(body)
+                && let Some(expr) = self.file.body_tail_value(body)
+            {
+                self.file.expected_type_sites.push(ExpectedTypeSite {
+                    expr,
+                    source: ExpectedTypeSource::FunctionReturn(symbol_id),
+                });
+            }
+        }
+
+        for (index, call) in self.file.calls.iter().enumerate() {
+            let call_id = CallSiteId(index as u32);
+            let arg_offset = self.file.caller_scope_arg_offset(call);
+            for (argument_index, expr) in
+                call.arg_exprs.iter().copied().enumerate().skip(arg_offset)
+            {
+                self.file.expected_type_sites.push(ExpectedTypeSite {
+                    expr,
+                    source: ExpectedTypeSource::CallArgument {
+                        call: call_id,
+                        parameter_index: argument_index - arg_offset,
+                    },
+                });
+            }
         }
     }
 }

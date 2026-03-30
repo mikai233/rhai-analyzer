@@ -5,8 +5,8 @@ use crate::model::{
     ArrayExprInfo, AssignExprInfo, BinaryExprInfo, BlockExprInfo, BodyId, ClosureExprInfo,
     ControlFlowEvent, ControlFlowMergePoint, DocumentedField, ExportDirective, ExprId, FileHir,
     FindReferencesResult, IfExprInfo, ImportDirective, IndexExprInfo, LiteralInfo, MemberAccess,
-    NavigationTarget, ReferenceId, ReferenceLocation, SwitchExprInfo, SymbolId, TypeSlotId,
-    UnaryExprInfo,
+    NavigationTarget, PathExprInfo, ReferenceId, ReferenceLocation, SwitchExprInfo, SymbolId,
+    TypeSlotId, UnaryExprInfo,
 };
 use crate::ty::TypeRef;
 
@@ -33,10 +33,20 @@ impl FileHir {
             .find(|switch_expr| switch_expr.owner == expr)
     }
 
+    pub fn switch_arms(&self, expr: ExprId) -> impl Iterator<Item = &crate::SwitchArmInfo> + '_ {
+        self.switch_arms
+            .iter()
+            .filter(move |switch_arm| switch_arm.owner == expr)
+    }
+
     pub fn closure_expr(&self, expr: ExprId) -> Option<&ClosureExprInfo> {
         self.closure_exprs
             .iter()
             .find(|closure| closure.owner == expr)
+    }
+
+    pub fn path_expr(&self, expr: ExprId) -> Option<&PathExprInfo> {
+        self.path_exprs.iter().find(|path| path.owner == expr)
     }
 
     pub fn for_expr(&self, expr: ExprId) -> Option<&crate::ForExprInfo> {

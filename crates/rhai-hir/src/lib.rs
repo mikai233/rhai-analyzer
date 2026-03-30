@@ -15,18 +15,20 @@ pub use model::{
     ArrayExprInfo, AssignExprInfo, AssignmentOperator, BinaryExprInfo, BinaryOperator,
     BlockExprInfo, Body, BodyId, BodyKind, CallSite, CallSiteId, ClosureExprInfo, CompletionSymbol,
     ControlFlowEvent, ControlFlowKind, ControlFlowMergePoint, DocumentSymbol, DocumentedField,
-    ExportDirective, ExprId, ExprKind, ExprNode, ExternalSignatureIndex, FileBackedSymbolIdentity,
-    FileHir, FileSymbolId, FileSymbolIndex, FileSymbolIndexEntry, FindReferencesResult,
-    ForExprInfo, FunctionInfo, IfExprInfo, ImportDirective, IndexExprInfo, IndexableSymbol,
-    IndexingHandoff, LinkedAlias, LinkedAliasKind, LiteralInfo, LiteralKind, MemberAccess,
-    MemberCompletion, MemberCompletionSource, MergePointKind, ModuleExportEdge, ModuleGraphIndex,
-    ModuleImportEdge, ModuleSpecifier, MutationPathSegment, NavigationTarget, ObjectFieldInfo,
-    ParameterHint, ParameterHintParameter, Reference, ReferenceId, ReferenceKind,
-    ReferenceLocation, RenameOccurrence, RenameOccurrenceKind, RenamePlan, RenamePreflightIssue,
-    RenamePreflightIssueKind, Scope, ScopeId, ScopeKind, SemanticDiagnostic,
-    SemanticDiagnosticKind, StableSymbolKey, SwitchExprInfo, Symbol, SymbolId, SymbolKind,
-    SymbolMutation, SymbolMutationKind, SymbolValueFlow, TypeSlot, TypeSlotAssignments, TypeSlotId,
-    UnaryExprInfo, UnaryOperator, ValueFlowKind, WorkspaceSymbol,
+    ExpectedTypeSite, ExpectedTypeSource, ExportDirective, ExprId, ExprKind, ExprNode,
+    ExternalSignatureIndex, FileBackedSymbolIdentity, FileHir, FileSymbolId, FileSymbolIndex,
+    FileSymbolIndexEntry, FindReferencesResult, ForExprInfo, FunctionInfo, IfExprInfo,
+    ImportDirective, ImportExposureKind, ImportLinkageKind, ImportedModulePath, IndexExprInfo,
+    IndexableSymbol, IndexingHandoff, LinkedAlias, LinkedAliasKind, LiteralInfo, LiteralKind,
+    MemberAccess, MemberCompletion, MemberCompletionSource, MergePointKind, ModuleExportEdge,
+    ModuleGraphIndex, ModuleImportEdge, ModuleSpecifier, MutationPathSegment, NavigationTarget,
+    ObjectFieldInfo, ParameterHint, ParameterHintParameter, PathExprInfo, Reference, ReferenceId,
+    ReferenceKind, ReferenceLocation, RenameOccurrence, RenameOccurrenceKind, RenamePlan,
+    RenamePreflightIssue, RenamePreflightIssueKind, Scope, ScopeId, ScopeKind, SemanticDiagnostic,
+    SemanticDiagnosticKind, StableSymbolKey, SwitchArmInfo, SwitchExprInfo, Symbol, SymbolId,
+    SymbolKind, SymbolMutation, SymbolMutationKind, SymbolRead, SymbolReadKind, SymbolValueFlow,
+    TypeSlot, TypeSlotAssignments, TypeSlotId, UnaryExprInfo, UnaryOperator, ValueFlowKind,
+    WorkspaceSymbol,
 };
 pub use ty::{FunctionTypeRef, TypeRef, parse_type_ref};
 
@@ -132,6 +134,16 @@ impl FileHir {
         self.symbol_mutations
             .iter()
             .filter(move |mutation| mutation.symbol == symbol)
+    }
+
+    pub fn symbol_reads_into(&self, symbol: SymbolId) -> impl Iterator<Item = &SymbolRead> + '_ {
+        self.symbol_reads
+            .iter()
+            .filter(move |read| read.symbol == symbol)
+    }
+
+    pub fn symbol_read(&self, expr: ExprId) -> Option<&SymbolRead> {
+        self.symbol_reads.iter().find(|read| read.owner == expr)
     }
 
     pub fn call(&self, id: CallSiteId) -> &CallSite {

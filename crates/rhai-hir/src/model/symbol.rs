@@ -4,10 +4,10 @@ use crate::docs::DocBlock;
 use crate::docs::DocBlockId;
 use crate::model::expr::{
     ArrayExprInfo, AssignExprInfo, BinaryExprInfo, BlockExprInfo, CallSite, ClosureExprInfo,
-    ExprNode, ForExprInfo, FunctionInfo, IfExprInfo, IndexExprInfo, LiteralInfo, ObjectFieldInfo,
-    SwitchExprInfo, TypeSlot, UnaryExprInfo,
+    ExpectedTypeSite, ExprNode, ForExprInfo, FunctionInfo, IfExprInfo, IndexExprInfo, LiteralInfo,
+    ObjectFieldInfo, PathExprInfo, SwitchExprInfo, TypeSlot, UnaryExprInfo,
 };
-use crate::model::flow::{SymbolMutation, SymbolValueFlow};
+use crate::model::flow::{SymbolMutation, SymbolRead, SymbolValueFlow};
 use crate::model::module::{ExportDirective, ImportDirective, NavigationTarget};
 use crate::model::scope::{Body, Reference, ReferenceId, ReferenceKind, Scope, ScopeId};
 use crate::ty::TypeRef;
@@ -52,7 +52,9 @@ pub struct FileHir {
     pub block_exprs: Vec<BlockExprInfo>,
     pub if_exprs: Vec<IfExprInfo>,
     pub switch_exprs: Vec<SwitchExprInfo>,
+    pub switch_arms: Vec<crate::model::expr::SwitchArmInfo>,
     pub closure_exprs: Vec<ClosureExprInfo>,
+    pub path_exprs: Vec<PathExprInfo>,
     pub for_exprs: Vec<ForExprInfo>,
     pub function_infos: Vec<FunctionInfo>,
     pub unary_exprs: Vec<UnaryExprInfo>,
@@ -62,7 +64,9 @@ pub struct FileHir {
     pub type_slots: Vec<TypeSlot>,
     pub value_flows: Vec<SymbolValueFlow>,
     pub symbol_mutations: Vec<SymbolMutation>,
+    pub symbol_reads: Vec<SymbolRead>,
     pub calls: Vec<CallSite>,
+    pub expected_type_sites: Vec<ExpectedTypeSite>,
     pub object_fields: Vec<ObjectFieldInfo>,
     pub member_accesses: Vec<crate::model::expr::MemberAccess>,
     pub imports: Vec<ImportDirective>,

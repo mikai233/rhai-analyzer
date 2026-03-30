@@ -5,8 +5,8 @@ use crate::model::{
     ArrayExprInfo, AssignExprInfo, AssignmentOperator, BinaryExprInfo, BinaryOperator,
     BlockExprInfo, BodyId, BodyKind, ClosureExprInfo, ExprKind, ForExprInfo, IfExprInfo,
     IndexExprInfo, LiteralInfo, LiteralKind, MemberAccess, MergePointKind, ObjectFieldInfo,
-    ReferenceKind, ScopeId, ScopeKind, SwitchExprInfo, SymbolKind, UnaryExprInfo, UnaryOperator,
-    ValueFlowKind,
+    PathExprInfo, ReferenceKind, ScopeId, ScopeKind, SwitchExprInfo, SymbolKind, UnaryExprInfo,
+    UnaryOperator, ValueFlowKind,
 };
 use rhai_syntax::{
     AstNode, BlockExpr, Expr, Item, Stmt, StringPart, SwitchArm, SwitchPatternList, TokenKind,
@@ -94,7 +94,7 @@ impl<'a> LoweringContext<'a> {
                     .map(|scrutinee| self.lower_expr(scrutinee, scope));
                 let mut arms = Vec::new();
                 for arm in switch_expr.arms() {
-                    arms.push(self.lower_switch_arm(arm, scope));
+                    arms.push(self.lower_switch_arm(arm, scope, expr_id));
                 }
                 self.file.switch_exprs.push(SwitchExprInfo {
                     owner: expr_id,
@@ -185,26 +185,37 @@ impl<'a> LoweringContext<'a> {
                 self.record_merge_point(MergePointKind::LoopIteration, do_expr.syntax().range());
             }
             Expr::Path(path) => {
-                if let Some(base) = path.base()
-                    && !matches!(
+                let mut base_expr = None;
+                let mut rooted_global = false;
+                if let Some(base) = path.base() {
+                    if matches!(
                         base,
                         Expr::Name(name)
                             if matches!(
                                 name.token().map(|token| token.kind()),
                                 Some(rhai_syntax::TokenKind::GlobalKw)
                             )
-                    )
-                {
-                    self.lower_expr(base, scope);
+                    ) {
+                        rooted_global = true;
+                    } else {
+                        base_expr = Some(self.lower_expr(base, scope));
+                    }
                 }
+                let mut segment_references = Vec::new();
                 for segment in path.segments() {
-                    self.alloc_reference(
+                    segment_references.push(self.alloc_reference(
                         segment.text(self.parse.text()).to_owned(),
                         ReferenceKind::PathSegment,
                         segment.range(),
                         scope,
-                    );
+                    ));
                 }
+                self.file.path_exprs.push(PathExprInfo {
+                    owner: expr_id,
+                    base: base_expr,
+                    rooted_global,
+                    segments: segment_references,
+                });
             }
             Expr::Closure(closure) => {
                 let closure_scope =
@@ -357,6 +368,14 @@ impl<'a> LoweringContext<'a> {
                     receiver,
                     index,
                 });
+                if let Some((root_reference, segments)) = self.read_target_for_expr(expr_id) {
+                    self.pending_reads.push(crate::lowering::ctx::PendingRead {
+                        owner: expr_id,
+                        root_reference,
+                        segments,
+                        range: self.file.expr(expr_id).range,
+                    });
+                }
             }
             Expr::Field(field) => {
                 if let Some(receiver) = field.receiver() {
@@ -375,6 +394,15 @@ impl<'a> LoweringContext<'a> {
                             receiver: receiver_expr,
                             field_reference,
                         });
+                        if let Some((root_reference, segments)) = self.read_target_for_expr(expr_id)
+                        {
+                            self.pending_reads.push(crate::lowering::ctx::PendingRead {
+                                owner: expr_id,
+                                root_reference,
+                                segments,
+                                range: self.file.expr(expr_id).range,
+                            });
+                        }
                     }
                 }
             }
@@ -420,22 +448,36 @@ impl<'a> LoweringContext<'a> {
         &mut self,
         arm: SwitchArm<'_>,
         scope: ScopeId,
+        owner: crate::ExprId,
     ) -> Option<crate::ExprId> {
         let arm_scope = self.new_scope(ScopeKind::SwitchArm, arm.syntax().range(), Some(scope));
+        let mut lowered_patterns = Vec::new();
+        let mut wildcard = false;
         if let Some(patterns) = arm.patterns() {
-            self.lower_switch_patterns(patterns, arm_scope);
+            wildcard = patterns.wildcard_token().is_some();
+            lowered_patterns = self.lower_switch_patterns(patterns, arm_scope);
         }
-        arm.value().map(|value| self.lower_expr(value, arm_scope))
+        let value = arm.value().map(|value| self.lower_expr(value, arm_scope));
+        self.file.switch_arms.push(crate::SwitchArmInfo {
+            owner,
+            scope: arm_scope,
+            patterns: lowered_patterns,
+            wildcard,
+            value,
+        });
+        value
     }
 
     pub(crate) fn lower_switch_patterns(
         &mut self,
         patterns: SwitchPatternList<'_>,
         scope: ScopeId,
-    ) {
+    ) -> Vec<crate::ExprId> {
+        let mut lowered = Vec::new();
         for expr in patterns.exprs() {
-            self.lower_expr(expr, scope);
+            lowered.push(self.lower_expr(expr, scope));
         }
+        lowered
     }
 
     pub(crate) fn item_may_fall_through(&self, item: Item<'_>) -> bool {

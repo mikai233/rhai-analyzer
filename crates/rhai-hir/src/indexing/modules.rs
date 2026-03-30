@@ -1,6 +1,6 @@
 use crate::model::{
-    ExportDirective, FileHir, ModuleExportEdge, ModuleGraphIndex, ModuleImportEdge,
-    ModuleSpecifier, ScopeKind, SymbolId, SymbolKind,
+    ExportDirective, FileHir, ModuleExportEdge, ModuleGraphIndex, ModuleImportEdge, ScopeKind,
+    SymbolId, SymbolKind,
 };
 
 impl FileHir {
@@ -15,6 +15,9 @@ impl FileHir {
                 alias: import
                     .alias
                     .map(|symbol| self.file_backed_symbol_identity(symbol)),
+                linkage: import.linkage,
+                exposure: import.exposure,
+                is_global: import.is_global,
             })
             .collect();
 
@@ -93,20 +96,5 @@ impl FileHir {
             SymbolKind::Variable | SymbolKind::Constant
         ) && self.scope(symbol_data.scope).kind == ScopeKind::File)
             .then_some(symbol)
-    }
-
-    pub(crate) fn import_module_specifier(
-        &self,
-        import: &crate::ImportDirective,
-    ) -> Option<ModuleSpecifier> {
-        if let Some(reference) = import.module_reference
-            && let Some(target) = self.definition_of(reference)
-        {
-            return Some(ModuleSpecifier::LocalSymbol(
-                self.file_backed_symbol_identity(target),
-            ));
-        }
-
-        import.module_text.clone().map(ModuleSpecifier::Text)
     }
 }

@@ -1,5 +1,8 @@
 use crate::lowering::ctx::LoweringContext;
-use crate::model::{ExportDirective, ImportDirective, ScopeId, SymbolKind};
+use crate::model::{
+    ExportDirective, ImportDirective, ImportExposureKind, ImportLinkageKind, ScopeId, ScopeKind,
+    SymbolKind,
+};
 use rhai_syntax::{AstNode, Item, Stmt};
 
 impl<'a> LoweringContext<'a> {
@@ -8,14 +11,30 @@ impl<'a> LoweringContext<'a> {
         import_stmt: rhai_syntax::ImportStmt<'_>,
         scope: ScopeId,
     ) {
+        let mut module_expr = None;
         let mut module_range = None;
         let mut module_text = None;
         let mut module_reference = None;
+        let mut linkage = ImportLinkageKind::DynamicExpr;
         if let Some(module) = import_stmt.module() {
             let reference_start = self.file.references.len();
             module_range = Some(module.syntax().range());
             module_text = Some(self.text_for_range(module.syntax().range()));
-            self.lower_expr(module, scope);
+            module_expr = Some(self.lower_expr(module, scope));
+            if matches!(
+                module,
+                rhai_syntax::Expr::Literal(literal)
+                    if matches!(
+                        literal.token().map(|token| token.kind()),
+                        Some(
+                            rhai_syntax::TokenKind::String
+                                | rhai_syntax::TokenKind::RawString
+                                | rhai_syntax::TokenKind::BacktickString
+                        )
+                    )
+            ) {
+                linkage = ImportLinkageKind::StaticText;
+            }
             module_reference =
                 self.first_name_reference_from(reference_start, module.syntax().range());
         }
@@ -33,10 +52,18 @@ impl<'a> LoweringContext<'a> {
         self.file.imports.push(ImportDirective {
             range: import_stmt.syntax().range(),
             scope,
+            module_expr,
             module_range,
             module_text,
             module_reference,
             alias: alias_symbol,
+            is_global: self.file.scope(scope).kind == ScopeKind::File,
+            linkage,
+            exposure: if alias_symbol.is_some() {
+                ImportExposureKind::Aliased
+            } else {
+                ImportExposureKind::Bare
+            },
         });
     }
 
