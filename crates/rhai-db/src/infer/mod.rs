@@ -4,12 +4,19 @@ use rhai_hir::{ExternalSignatureIndex, FileHir, FunctionTypeRef, SymbolId, TypeR
 
 use crate::{FileTypeInference, HostFunction, HostType};
 
-mod calls;
+pub(crate) mod calls;
 mod exprs;
+pub(crate) mod generics;
 mod helpers;
 mod loops;
 mod objects;
 mod propagation;
+
+pub(crate) use crate::infer::calls::{
+    join_callable_target_signatures, named_callable_targets_at_offset,
+};
+pub(crate) use crate::infer::helpers::{ReadTargetKey, read_target_key_for_expr};
+pub(crate) use crate::infer::objects::{largest_inner_expr, string_literal_value};
 
 use crate::infer::exprs::infer_expr_types;
 use crate::infer::propagation::{

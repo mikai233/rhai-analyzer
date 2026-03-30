@@ -1,15 +1,15 @@
 use crate::infer::ImportedMethodSignature;
 use crate::infer::calls::{
-    callable_targets_for_call, effective_call_argument_exprs, effective_call_argument_types,
-    expected_call_signature, for_binding_types_from_iterable, inferred_expr_type,
+    callable_targets_for_call, effective_call_argument_types, expected_call_signature,
+    for_binding_types_from_iterable, inferred_expr_type,
 };
 use crate::infer::helpers::{can_refine_with_expected, join_types, nested_mutation_container_type};
 use crate::infer::loops::function_like_body_result_type;
 use crate::infer::objects::{largest_inner_expr, symbol_for_expr};
 use crate::{FileTypeInference, HostFunction, HostType};
 use rhai_hir::{
-    ExprId, ExprKind, ExternalSignatureIndex, FileHir, FunctionTypeRef, SymbolId, SymbolKind,
-    SymbolMutationKind, TypeRef,
+    ExpectedTypeSource, ExprId, ExprKind, ExternalSignatureIndex, FileHir, FunctionTypeRef,
+    SymbolId, SymbolKind, SymbolMutationKind, TypeRef,
 };
 
 pub(crate) fn propagate_call_argument_types(
@@ -75,50 +75,37 @@ pub(crate) fn propagate_expected_types(
 ) -> bool {
     let mut changed = false;
 
-    for flow in &hir.value_flows {
-        let Some(expected) = inference.symbol_types.get(&flow.symbol).cloned() else {
-            continue;
-        };
-        changed |= propagate_expected_type_to_expr(hir, inference, flow.expr, &expected);
-    }
-
-    for (index, symbol) in hir.symbols.iter().enumerate() {
-        if symbol.kind != SymbolKind::Function {
-            continue;
-        }
-
-        let symbol_id = SymbolId(index as u32);
-        let Some(TypeRef::Function(signature)) = inference.symbol_types.get(&symbol_id).cloned()
-        else {
-            continue;
-        };
-        let Some(body) = hir.body_of(symbol_id) else {
-            continue;
-        };
-
-        changed |=
-            propagate_expected_type_to_body_results(hir, inference, body, signature.ret.as_ref());
-    }
-
-    for call in &hir.calls {
-        let Some(signature) = expected_call_signature(
-            hir,
-            inference,
-            call,
-            external,
-            globals,
-            host_types,
-            imported_methods,
-        ) else {
-            continue;
+    for site in &hir.expected_type_sites {
+        let expected = match site.source {
+            ExpectedTypeSource::Symbol(symbol) => inference.symbol_types.get(&symbol).cloned(),
+            ExpectedTypeSource::FunctionReturn(function) => inference
+                .symbol_types
+                .get(&function)
+                .cloned()
+                .and_then(|ty| match ty {
+                    TypeRef::Function(signature) => Some((*signature.ret).clone()),
+                    _ => None,
+                }),
+            ExpectedTypeSource::CallArgument {
+                call,
+                parameter_index,
+            } => {
+                let call = hir.call(call);
+                expected_call_signature(
+                    hir,
+                    inference,
+                    call,
+                    external,
+                    globals,
+                    host_types,
+                    imported_methods,
+                )
+                .and_then(|signature| signature.params.get(parameter_index).cloned())
+            }
         };
 
-        for (arg_expr, expected) in effective_call_argument_exprs(hir, call)
-            .iter()
-            .copied()
-            .zip(signature.params.iter())
-        {
-            changed |= propagate_expected_type_to_expr(hir, inference, arg_expr, expected);
+        if let Some(expected) = expected {
+            changed |= propagate_expected_type_to_expr(hir, inference, site.expr, &expected);
         }
     }
 
@@ -136,10 +123,50 @@ pub(crate) fn propagate_value_flows(hir: &FileHir, inference: &mut FileTypeInfer
         else {
             continue;
         };
-        changed |= merge_symbol_type(inference, flow.symbol, expr_ty);
+        changed |= if should_overwrite_symbol_from_single_flow(hir, flow.symbol, flow.expr) {
+            set_symbol_type(inference, flow.symbol, expr_ty)
+        } else {
+            merge_symbol_type(inference, flow.symbol, expr_ty)
+        };
     }
 
     changed
+}
+
+fn should_overwrite_symbol_from_single_flow(hir: &FileHir, symbol: SymbolId, expr: ExprId) -> bool {
+    if hir.declared_symbol_type(symbol).is_some() {
+        return false;
+    }
+
+    if !matches!(
+        hir.expr(expr).kind,
+        ExprKind::Block
+            | ExprKind::If
+            | ExprKind::Switch
+            | ExprKind::Call
+            | ExprKind::Name
+            | ExprKind::Field
+            | ExprKind::Index
+            | ExprKind::Paren
+    ) {
+        return false;
+    }
+
+    let kind = hir.symbol(symbol).kind;
+    if !matches!(kind, SymbolKind::Variable | SymbolKind::Constant) {
+        return false;
+    }
+
+    if hir.symbol_mutations_into(symbol).next().is_some() {
+        return false;
+    }
+
+    let mut flows = hir.value_flows_into(symbol);
+    let Some(first) = flows.next() else {
+        return false;
+    };
+
+    flows.next().is_none() && first.expr == expr
 }
 
 pub(crate) fn propagate_for_binding_types(
@@ -253,6 +280,21 @@ pub(crate) fn merge_expr_type(
     true
 }
 
+pub(crate) fn set_expr_type(
+    hir: &FileHir,
+    inference: &mut FileTypeInference,
+    expr: ExprId,
+    next: TypeRef,
+) -> bool {
+    let slot = hir.expr_result_slot(expr);
+    if inference.expr_types.get(slot) == Some(&next) {
+        return false;
+    }
+
+    inference.expr_types.set(slot, next);
+    true
+}
+
 pub(crate) fn merge_symbol_type(
     inference: &mut FileTypeInference,
     symbol: SymbolId,
@@ -268,6 +310,19 @@ pub(crate) fn merge_symbol_type(
     }
 
     inference.symbol_types.insert(symbol, merged);
+    true
+}
+
+pub(crate) fn set_symbol_type(
+    inference: &mut FileTypeInference,
+    symbol: SymbolId,
+    next: TypeRef,
+) -> bool {
+    if inference.symbol_types.get(&symbol) == Some(&next) {
+        return false;
+    }
+
+    inference.symbol_types.insert(symbol, next);
     true
 }
 
@@ -321,6 +376,19 @@ pub(crate) fn propagate_expected_type_to_expr(
                 }
             }
         }
+        ExprKind::Object => {
+            for field in hir.object_fields.iter().filter(|field| field.owner == expr) {
+                let Some(value) = field.value else {
+                    continue;
+                };
+                let Some(field_expected) =
+                    expected_object_field_type(expected, field.name.as_str())
+                else {
+                    continue;
+                };
+                changed |= propagate_expected_type_to_expr(hir, inference, value, &field_expected);
+            }
+        }
         ExprKind::Block => {
             if let Some(block) = hir.block_expr(expr)
                 && hir.body_may_fall_through(block.body)
@@ -370,6 +438,26 @@ pub(crate) fn propagate_expected_type_to_expr(
     }
 
     changed | merge_expr_type_if_refinable(hir, inference, expr, expected.clone())
+}
+
+pub(crate) fn expected_object_field_type(expected: &TypeRef, field_name: &str) -> Option<TypeRef> {
+    match expected {
+        TypeRef::Object(fields) => fields.get(field_name).cloned(),
+        TypeRef::Map(key, value)
+            if matches!(
+                key.as_ref(),
+                TypeRef::String | TypeRef::Unknown | TypeRef::Any
+            ) =>
+        {
+            Some((**value).clone())
+        }
+        TypeRef::Nullable(inner) => expected_object_field_type(inner, field_name),
+        TypeRef::Union(items) => items
+            .iter()
+            .filter_map(|item| expected_object_field_type(item, field_name))
+            .reduce(|left, right| join_types(&left, &right)),
+        _ => None,
+    }
 }
 
 pub(crate) fn propagate_expected_type_to_body_results(

@@ -1,3 +1,4 @@
+use crate::builtin::signatures::{builtin_host_types, register_builtin_global_functions};
 use rhai_hir::{ExternalSignatureIndex, FunctionTypeRef, TypeRef, parse_type_ref};
 use rhai_project::{FunctionSpec, ModuleSpec, ProjectConfig, TypeSpec};
 
@@ -7,9 +8,9 @@ use crate::types::{
 
 pub(crate) fn build_project_semantics(project: &ProjectConfig) -> ProjectSemantics {
     let mut external_signatures = ExternalSignatureIndex::default();
-    let global_functions = builtin_global_functions(&mut external_signatures);
+    let global_functions = register_builtin_global_functions(&mut external_signatures);
     let mut modules = Vec::new();
-    let mut types = Vec::new();
+    let mut types = builtin_host_types();
 
     for (name, module) in &project.modules {
         modules.push(build_host_module(name, module, &mut external_signatures));
@@ -27,140 +28,6 @@ pub(crate) fn build_project_semantics(project: &ProjectConfig) -> ProjectSemanti
         disabled_symbols: project.engine.disabled_symbols.clone(),
         custom_syntaxes: project.engine.custom_syntaxes.clone(),
     }
-}
-
-fn builtin_global_functions(external_signatures: &mut ExternalSignatureIndex) -> Vec<HostFunction> {
-    let blob_return = TypeRef::Blob;
-    external_signatures.insert(
-        "blob",
-        TypeRef::Function(FunctionTypeRef {
-            params: vec![TypeRef::Int],
-            ret: Box::new(blob_return.clone()),
-        }),
-    );
-    external_signatures.insert(
-        "timestamp",
-        TypeRef::Function(FunctionTypeRef {
-            params: Vec::new(),
-            ret: Box::new(TypeRef::Timestamp),
-        }),
-    );
-    external_signatures.insert(
-        "Fn",
-        TypeRef::Function(FunctionTypeRef {
-            params: vec![TypeRef::String],
-            ret: Box::new(TypeRef::FnPtr),
-        }),
-    );
-    external_signatures.insert(
-        "is_def_var",
-        TypeRef::Function(FunctionTypeRef {
-            params: vec![TypeRef::String],
-            ret: Box::new(TypeRef::Bool),
-        }),
-    );
-    external_signatures.insert(
-        "is_def_fn",
-        TypeRef::Function(FunctionTypeRef {
-            params: vec![TypeRef::String, TypeRef::Int],
-            ret: Box::new(TypeRef::Bool),
-        }),
-    );
-    external_signatures.insert(
-        "type_of",
-        TypeRef::Function(FunctionTypeRef {
-            params: vec![TypeRef::Any],
-            ret: Box::new(TypeRef::String),
-        }),
-    );
-
-    vec![
-        HostFunction {
-            name: "blob".to_owned(),
-            overloads: vec![
-                HostFunctionOverload {
-                    signature: Some(FunctionTypeRef {
-                        params: Vec::new(),
-                        ret: Box::new(blob_return.clone()),
-                    }),
-                    docs: Some("Create an empty BLOB.".to_owned()),
-                },
-                HostFunctionOverload {
-                    signature: Some(FunctionTypeRef {
-                        params: vec![TypeRef::Int],
-                        ret: Box::new(blob_return.clone()),
-                    }),
-                    docs: Some("Create a BLOB with the given length.".to_owned()),
-                },
-                HostFunctionOverload {
-                    signature: Some(FunctionTypeRef {
-                        params: vec![TypeRef::Int, TypeRef::Int],
-                        ret: Box::new(blob_return),
-                    }),
-                    docs: Some("Create a BLOB filled with the given byte value.".to_owned()),
-                },
-            ],
-        },
-        HostFunction {
-            name: "timestamp".to_owned(),
-            overloads: vec![HostFunctionOverload {
-                signature: Some(FunctionTypeRef {
-                    params: Vec::new(),
-                    ret: Box::new(TypeRef::Timestamp),
-                }),
-                docs: Some("Create a timestamp for the current instant.".to_owned()),
-            }],
-        },
-        HostFunction {
-            name: "Fn".to_owned(),
-            overloads: vec![HostFunctionOverload {
-                signature: Some(FunctionTypeRef {
-                    params: vec![TypeRef::String],
-                    ret: Box::new(TypeRef::FnPtr),
-                }),
-                docs: Some("Create a function pointer from a function name.".to_owned()),
-            }],
-        },
-        HostFunction {
-            name: "is_def_var".to_owned(),
-            overloads: vec![HostFunctionOverload {
-                signature: Some(FunctionTypeRef {
-                    params: vec![TypeRef::String],
-                    ret: Box::new(TypeRef::Bool),
-                }),
-                docs: Some("Check whether a variable is defined.".to_owned()),
-            }],
-        },
-        HostFunction {
-            name: "is_def_fn".to_owned(),
-            overloads: vec![
-                HostFunctionOverload {
-                    signature: Some(FunctionTypeRef {
-                        params: vec![TypeRef::String, TypeRef::Int],
-                        ret: Box::new(TypeRef::Bool),
-                    }),
-                    docs: Some("Check whether a function is defined.".to_owned()),
-                },
-                HostFunctionOverload {
-                    signature: Some(FunctionTypeRef {
-                        params: vec![TypeRef::String, TypeRef::String, TypeRef::Int],
-                        ret: Box::new(TypeRef::Bool),
-                    }),
-                    docs: Some("Check whether a typed method is defined.".to_owned()),
-                },
-            ],
-        },
-        HostFunction {
-            name: "type_of".to_owned(),
-            overloads: vec![HostFunctionOverload {
-                signature: Some(FunctionTypeRef {
-                    params: vec![TypeRef::Any],
-                    ret: Box::new(TypeRef::String),
-                }),
-                docs: Some("Get the type name of a value.".to_owned()),
-            }],
-        },
-    ]
 }
 
 fn build_host_module(
@@ -209,6 +76,7 @@ fn build_host_type(
     ty: &TypeSpec,
     external_signatures: &mut ExternalSignatureIndex,
 ) -> HostType {
+    let (base_name, generic_params) = parse_host_type_declaration(type_name);
     let mut methods = Vec::new();
 
     for (name, specs) in &ty.methods {
@@ -217,16 +85,34 @@ fn build_host_type(
         let parsed = parsed_host_overloads(specs);
         if parsed.len() == 1 {
             external_signatures.insert(
-                format!("{type_name}::{name}"),
+                format!("{base_name}::{name}"),
                 TypeRef::Function(parsed[0].clone()),
             );
         }
     }
 
     HostType {
-        name: type_name.to_owned(),
+        name: base_name,
+        generic_params,
         docs: ty.docs.clone(),
         methods,
+    }
+}
+
+fn parse_host_type_declaration(type_name: &str) -> (String, Vec<String>) {
+    match parse_type_ref(type_name) {
+        Some(TypeRef::Named(name)) => (name, Vec::new()),
+        Some(TypeRef::Applied { name, args }) => {
+            let generic_params = args
+                .into_iter()
+                .filter_map(|arg| match arg {
+                    TypeRef::Named(param) => Some(param),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            (name, generic_params)
+        }
+        _ => (type_name.to_owned(), Vec::new()),
     }
 }
 

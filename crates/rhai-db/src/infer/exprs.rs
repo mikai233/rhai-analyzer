@@ -1,13 +1,17 @@
+use crate::builtin::semantics::{
+    infer_fn_pointer_call_type, is_builtin_fn_call, refine_type_from_type_of_condition_for_target,
+    refine_type_from_type_of_switch_for_target,
+};
+use crate::builtin::signatures::builtin_universal_method_signature;
 use std::collections::BTreeMap;
 
 use crate::infer::calls::{
-    builtin_universal_method_signature, callable_targets_for_call, effective_call_argument_types,
-    imported_method_signature_for_expr, infer_fn_pointer_call_type, inferred_expr_type,
-    is_builtin_fn_call,
+    callable_targets_for_call, effective_call_argument_types, imported_method_signature_for_expr,
+    inferred_expr_type,
 };
 use crate::infer::helpers::{
-    infer_additive_result, infer_numeric_result, join_option_types, join_types,
-    nested_mutation_container_type,
+    ReadTargetKey, infer_additive_result, infer_numeric_result, join_option_types, join_types,
+    make_ambiguous_type, nested_mutation_container_type, symbol_target_key,
 };
 use crate::infer::loops::{
     block_expr_result_type, function_like_body_result_type, infer_loop_like_expr_type,
@@ -15,10 +19,11 @@ use crate::infer::loops::{
 };
 use crate::infer::objects::{
     expr_is_unit_like, host_method_signature_for_expr, imported_module_member_type_for_expr,
-    infer_member_type_from_expr, inferred_object_value_union, largest_inner_expr,
-    qualified_path_name, string_literal_value, symbol_for_condition_expr, symbol_for_expr,
+    infer_member_type_from_expr, infer_symbol_read_type, inferred_object_value_union,
+    largest_inner_expr, qualified_path_name, receiver_supports_field_method_ambiguity,
+    string_literal_value,
 };
-use crate::infer::propagation::merge_expr_type;
+use crate::infer::propagation::{merge_expr_type, set_expr_type};
 use crate::infer::{ImportedMethodSignature, ImportedModuleMember};
 use crate::{FileTypeInference, HostFunction, HostType};
 use rhai_hir::{
@@ -75,7 +80,17 @@ pub(crate) fn infer_expr_types(
         };
 
         if let Some(ty) = inferred {
-            changed |= merge_expr_type(hir, inference, expr_id, ty);
+            changed |= match expr.kind {
+                ExprKind::Block
+                | ExprKind::If
+                | ExprKind::Switch
+                | ExprKind::Call
+                | ExprKind::Name
+                | ExprKind::Field
+                | ExprKind::Index
+                | ExprKind::Paren => set_expr_type(hir, inference, expr_id, ty),
+                _ => merge_expr_type(hir, inference, expr_id, ty),
+            };
         }
     }
 
@@ -234,13 +249,34 @@ pub(crate) fn refined_symbol_type_at_offset(
     symbol: SymbolId,
     offset: rhai_syntax::TextSize,
 ) -> Option<TypeRef> {
-    let mut ty = flow_sensitive_symbol_type_at_offset(hir, inference, symbol, offset)?;
+    let ty = flow_sensitive_symbol_type_at_offset(hir, inference, symbol, offset)?;
+    Some(refined_target_type_at_offset(
+        hir,
+        inference,
+        &ty,
+        &symbol_target_key(symbol),
+        offset,
+    ))
+}
+
+pub(crate) fn refined_target_type_at_offset(
+    hir: &FileHir,
+    inference: &FileTypeInference,
+    current: &TypeRef,
+    target: &ReadTargetKey,
+    offset: rhai_syntax::TextSize,
+) -> TypeRef {
+    let mut ty = current.clone();
 
     for if_expr in enclosing_if_exprs(hir, offset) {
-        ty = refine_type_from_if_condition(hir, inference, &ty, symbol, if_expr, offset);
+        ty = refine_type_from_if_condition_for_target(hir, inference, &ty, target, if_expr, offset);
     }
 
-    Some(ty)
+    for switch_expr in enclosing_switch_exprs(hir, offset) {
+        ty = refine_type_from_type_of_switch_for_target(hir, &ty, switch_expr, target, offset);
+    }
+
+    ty
 }
 
 pub(crate) fn flow_sensitive_symbol_type_at_offset(
@@ -336,11 +372,24 @@ pub(crate) fn enclosing_if_exprs(
     items
 }
 
-pub(crate) fn refine_type_from_if_condition(
+pub(crate) fn enclosing_switch_exprs(
+    hir: &FileHir,
+    offset: rhai_syntax::TextSize,
+) -> Vec<&rhai_hir::SwitchExprInfo> {
+    let mut items = hir
+        .switch_exprs
+        .iter()
+        .filter(|switch_expr| hir.expr(switch_expr.owner).range.contains(offset))
+        .collect::<Vec<_>>();
+    items.sort_by_key(|switch_expr| hir.expr(switch_expr.owner).range.len());
+    items
+}
+
+pub(crate) fn refine_type_from_if_condition_for_target(
     hir: &FileHir,
     inference: &FileTypeInference,
     current: &TypeRef,
-    symbol: SymbolId,
+    target: &ReadTargetKey,
     if_expr: &rhai_hir::IfExprInfo,
     offset: rhai_syntax::TextSize,
 ) -> TypeRef {
@@ -361,13 +410,22 @@ pub(crate) fn refine_type_from_if_condition(
         return current.clone();
     };
 
-    match branch_nullability_refinement(hir, inference, condition, symbol, branch) {
-        Some(NullabilityRefinement::NonNull) => strip_nullable(current),
-        Some(NullabilityRefinement::NullOnly) => {
-            nullish_only_type(current).unwrap_or_else(|| current.clone())
-        }
-        None => current.clone(),
-    }
+    let current =
+        match branch_nullability_refinement_for_target(hir, inference, condition, target, branch) {
+            Some(NullabilityRefinement::NonNull) => strip_nullable(current),
+            Some(NullabilityRefinement::NullOnly) => {
+                nullish_only_type(current).unwrap_or_else(|| current.clone())
+            }
+            None => current.clone(),
+        };
+
+    refine_type_from_type_of_condition_for_target(
+        hir,
+        &current,
+        condition,
+        target,
+        matches!(branch, BranchPolarity::Then),
+    )
 }
 
 #[derive(Clone, Copy)]
@@ -382,29 +440,33 @@ pub(crate) enum NullabilityRefinement {
     NullOnly,
 }
 
-pub(crate) fn branch_nullability_refinement(
+pub(crate) fn branch_nullability_refinement_for_target(
     hir: &FileHir,
     inference: &FileTypeInference,
     condition: ExprId,
-    symbol: SymbolId,
+    target: &ReadTargetKey,
     branch: BranchPolarity,
 ) -> Option<NullabilityRefinement> {
     match hir.expr(condition).kind {
-        ExprKind::Name => (symbol_for_expr(hir, condition) == Some(symbol)
-            && matches!(branch, BranchPolarity::Then))
-        .then_some(NullabilityRefinement::NonNull),
-        ExprKind::Paren => largest_inner_expr(hir, condition)
-            .and_then(|inner| branch_nullability_refinement(hir, inference, inner, symbol, branch)),
+        ExprKind::Name | ExprKind::Field | ExprKind::Index => {
+            (crate::infer::helpers::read_target_key_for_expr(hir, condition).as_ref()
+                == Some(target)
+                && matches!(branch, BranchPolarity::Then))
+            .then_some(NullabilityRefinement::NonNull)
+        }
+        ExprKind::Paren => largest_inner_expr(hir, condition).and_then(|inner| {
+            branch_nullability_refinement_for_target(hir, inference, inner, target, branch)
+        }),
         ExprKind::Unary => hir
             .unary_expr(condition)
             .filter(|unary| unary.operator == UnaryOperator::Not)
             .and_then(|unary| unary.operand)
             .and_then(|operand| {
-                branch_nullability_refinement(
+                branch_nullability_refinement_for_target(
                     hir,
                     inference,
                     operand,
-                    symbol,
+                    target,
                     match branch {
                         BranchPolarity::Then => BranchPolarity::Else,
                         BranchPolarity::Else => BranchPolarity::Then,
@@ -415,25 +477,35 @@ pub(crate) fn branch_nullability_refinement(
             let binary = hir.binary_expr(condition)?;
             match binary.operator {
                 BinaryOperator::EqEq | BinaryOperator::NotEq => {
-                    equality_nullability_refinement(hir, inference, binary, symbol, branch)
+                    equality_nullability_refinement_for_target(
+                        hir, inference, binary, target, branch,
+                    )
                 }
                 BinaryOperator::AndAnd if matches!(branch, BranchPolarity::Then) => {
                     combine_nullability_refinements(
                         binary.lhs.and_then(|lhs| {
-                            branch_nullability_refinement(hir, inference, lhs, symbol, branch)
+                            branch_nullability_refinement_for_target(
+                                hir, inference, lhs, target, branch,
+                            )
                         }),
                         binary.rhs.and_then(|rhs| {
-                            branch_nullability_refinement(hir, inference, rhs, symbol, branch)
+                            branch_nullability_refinement_for_target(
+                                hir, inference, rhs, target, branch,
+                            )
                         }),
                     )
                 }
                 BinaryOperator::OrOr if matches!(branch, BranchPolarity::Else) => {
                     combine_nullability_refinements(
                         binary.lhs.and_then(|lhs| {
-                            branch_nullability_refinement(hir, inference, lhs, symbol, branch)
+                            branch_nullability_refinement_for_target(
+                                hir, inference, lhs, target, branch,
+                            )
                         }),
                         binary.rhs.and_then(|rhs| {
-                            branch_nullability_refinement(hir, inference, rhs, symbol, branch)
+                            branch_nullability_refinement_for_target(
+                                hir, inference, rhs, target, branch,
+                            )
                         }),
                     )
                 }
@@ -503,19 +575,20 @@ pub(crate) fn combine_nullability_refinements(
     }
 }
 
-pub(crate) fn equality_nullability_refinement(
+pub(crate) fn equality_nullability_refinement_for_target(
     hir: &FileHir,
     inference: &FileTypeInference,
     binary: &rhai_hir::BinaryExprInfo,
-    symbol: SymbolId,
+    target: &ReadTargetKey,
     branch: BranchPolarity,
 ) -> Option<NullabilityRefinement> {
     let lhs = binary.lhs?;
     let rhs = binary.rhs?;
-    let compares_symbol_to_unit = (symbol_for_condition_expr(hir, lhs) == Some(symbol)
-        && expr_is_unit_like(hir, inference, rhs))
-        || (symbol_for_condition_expr(hir, rhs) == Some(symbol)
-            && expr_is_unit_like(hir, inference, lhs));
+    let compares_symbol_to_unit =
+        (crate::infer::helpers::read_target_key_for_expr(hir, lhs).as_ref() == Some(target)
+            && expr_is_unit_like(hir, inference, rhs))
+            || (crate::infer::helpers::read_target_key_for_expr(hir, rhs).as_ref() == Some(target)
+                && expr_is_unit_like(hir, inference, lhs));
 
     if !compares_symbol_to_unit {
         return None;
@@ -742,7 +815,7 @@ pub(crate) fn infer_call_expr_type(
         ));
     }
 
-    if let Some(ret) = callable_targets_for_call(
+    let returns = callable_targets_for_call(
         hir,
         inference,
         call,
@@ -754,9 +827,9 @@ pub(crate) fn infer_call_expr_type(
     )
     .into_iter()
     .map(|target| (*target.signature.ret).clone())
-    .reduce(|left, right| join_types(&left, &right))
-    {
-        return Some(ret);
+    .collect::<Vec<_>>();
+    if !returns.is_empty() {
+        return Some(make_ambiguous_type(returns));
     }
     None
 }
@@ -766,6 +839,10 @@ pub(crate) fn infer_index_expr_type(
     inference: &FileTypeInference,
     expr: ExprId,
 ) -> Option<TypeRef> {
+    if let Some(ty) = infer_symbol_read_type(hir, inference, expr) {
+        return Some(ty);
+    }
+
     let index = hir.index_expr(expr)?;
     match inferred_expr_type(hir, inference, index.receiver?)? {
         TypeRef::Array(inner) => Some(*inner),
@@ -790,15 +867,26 @@ pub(crate) fn infer_field_expr_type(
 ) -> Option<TypeRef> {
     let access = hir.member_access(expr)?;
     let field_name = hir.reference(access.field_reference).name.as_str();
-    infer_member_type_from_expr(hir, inference, access.receiver, field_name).or_else(|| {
-        host_method_signature_for_expr(hir, inference, expr, host_types, None)
-            .map(TypeRef::Function)
-            .or_else(|| {
-                imported_method_signature_for_expr(hir, inference, expr, imported_methods, None)
-                    .map(TypeRef::Function)
-            })
-            .or_else(|| builtin_universal_method_signature(field_name).map(TypeRef::Function))
-    })
+    let read_ty = infer_symbol_read_type(hir, inference, expr)
+        .or_else(|| infer_member_type_from_expr(hir, inference, access.receiver, field_name));
+    let method_ty = host_method_signature_for_expr(hir, inference, expr, host_types, None)
+        .map(TypeRef::Function)
+        .or_else(|| {
+            imported_method_signature_for_expr(hir, inference, expr, imported_methods, None)
+                .map(TypeRef::Function)
+        })
+        .or_else(|| builtin_universal_method_signature(field_name).map(TypeRef::Function));
+
+    match (read_ty, method_ty) {
+        (Some(read_ty), Some(method_ty))
+            if receiver_supports_field_method_ambiguity(hir, inference, access.receiver) =>
+        {
+            Some(join_types(&read_ty, &method_ty))
+        }
+        (Some(read_ty), _) => Some(read_ty),
+        (None, Some(method_ty)) => Some(method_ty),
+        (None, None) => None,
+    }
 }
 
 pub(crate) fn infer_closure_expr_type(

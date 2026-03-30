@@ -2,15 +2,16 @@ use std::cmp::Ordering;
 
 use rhai_hir::{FunctionTypeRef, TypeRef};
 
-pub fn best_matching_signature_index<'a, I>(
+pub fn best_matching_signature_indexes<'a, I>(
     signatures: I,
     arg_types: &[Option<TypeRef>],
-) -> Option<usize>
+) -> Vec<usize>
 where
     I: IntoIterator<Item = &'a FunctionTypeRef>,
 {
     let signatures = signatures.into_iter().collect::<Vec<_>>();
-    let mut best = None::<(usize, SignatureScore)>;
+    let mut best_score = None::<SignatureScore>;
+    let mut best_indexes = Vec::new();
 
     for (index, signature) in signatures.iter().enumerate() {
         if signature.params.len() != arg_types.len() {
@@ -18,12 +19,36 @@ where
         }
 
         let score = signature_match_score(signature, arg_types);
-        if best.is_none_or(|(_, current)| score > current) {
-            best = Some((index, score));
+        match best_score {
+            None => {
+                best_score = Some(score);
+                best_indexes.push(index);
+            }
+            Some(current) if score > current => {
+                best_score = Some(score);
+                best_indexes.clear();
+                best_indexes.push(index);
+            }
+            Some(current) if score == current => {
+                best_indexes.push(index);
+            }
+            Some(_) => {}
         }
     }
 
-    best.map(|(index, _)| index)
+    best_indexes
+}
+
+pub fn best_matching_signature_index<'a, I>(
+    signatures: I,
+    arg_types: &[Option<TypeRef>],
+) -> Option<usize>
+where
+    I: IntoIterator<Item = &'a FunctionTypeRef>,
+{
+    best_matching_signature_indexes(signatures, arg_types)
+        .into_iter()
+        .next()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -100,6 +125,11 @@ fn param_match_score(expected: &TypeRef, actual: &TypeRef) -> ParamMatchScore {
         | (_, TypeRef::Unknown | TypeRef::Any | TypeRef::Dynamic | TypeRef::Never) => {
             ParamMatchScore::Unknown
         }
+        (TypeRef::Ambiguous(items), other) | (other, TypeRef::Ambiguous(items)) => items
+            .iter()
+            .map(|item| param_match_score(item, other))
+            .max()
+            .unwrap_or(ParamMatchScore::Mismatch),
         (TypeRef::Union(items), other) | (other, TypeRef::Union(items)) => items
             .iter()
             .map(|item| param_match_score(item, other))
@@ -210,7 +240,7 @@ fn downgrade_nested_match(score: ParamMatchScore) -> ParamMatchScore {
 mod tests {
     use rhai_hir::{FunctionTypeRef, TypeRef};
 
-    use super::best_matching_signature_index;
+    use super::{best_matching_signature_index, best_matching_signature_indexes};
 
     #[test]
     fn prefers_exact_over_same_arity_mismatch() {
@@ -247,6 +277,28 @@ mod tests {
         assert_eq!(
             best_matching_signature_index(signatures.iter(), &[None]),
             Some(0)
+        );
+    }
+
+    #[test]
+    fn keeps_tied_best_signature_indexes_for_ambiguous_overloads() {
+        let signatures = [
+            FunctionTypeRef {
+                params: vec![TypeRef::Int],
+                ret: Box::new(TypeRef::Int),
+            },
+            FunctionTypeRef {
+                params: vec![TypeRef::String],
+                ret: Box::new(TypeRef::String),
+            },
+        ];
+
+        assert_eq!(
+            best_matching_signature_indexes(
+                signatures.iter(),
+                &[Some(TypeRef::Union(vec![TypeRef::Int, TypeRef::String]))]
+            ),
+            vec![0, 1]
         );
     }
 }

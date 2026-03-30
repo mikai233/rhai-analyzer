@@ -3,8 +3,7 @@ use std::collections::HashMap;
 use crate::db::{AnalyzerDatabase, DatabaseSnapshot};
 use crate::infer::{ImportedMethodSignature, ImportedModuleMember};
 use crate::types::{LinkedModuleImport, LocatedModuleExport, LocatedSymbolIdentity};
-use rhai_hir::{ExprId, ExprKind, FileBackedSymbolIdentity, FileHir, SymbolId, TypeRef};
-use rhai_syntax::TextSize;
+use rhai_hir::{FileBackedSymbolIdentity, FileHir, SymbolId, TypeRef};
 use rhai_vfs::FileId;
 
 impl AnalyzerDatabase {
@@ -165,11 +164,13 @@ pub(crate) fn linked_import_targets_for_path_reference(
     hir: &FileHir,
     reference_id: rhai_hir::ReferenceId,
 ) -> Vec<LocatedSymbolIdentity> {
-    let Some(path_expr) = enclosing_path_expr(hir, hir.reference(reference_id).range.start())
+    let Some(path_expr) = hir
+        .expr_at_offset(hir.reference(reference_id).range.start())
+        .filter(|expr| hir.expr(*expr).kind == rhai_hir::ExprKind::Path)
     else {
         return Vec::new();
     };
-    let Some(path_parts) = linked_import_path_parts(hir, path_expr) else {
+    let Some(path_parts) = hir.imported_module_path(path_expr).map(|path| path.parts) else {
         return Vec::new();
     };
     resolve_linked_import_path_targets(snapshot, file_id, &path_parts)
@@ -209,46 +210,6 @@ pub(crate) fn dedupe_symbol_locations(
     });
     locations.dedup_by(|left, right| left.file_id == right.file_id && left.symbol == right.symbol);
     locations
-}
-
-fn enclosing_path_expr(hir: &FileHir, offset: TextSize) -> Option<ExprId> {
-    hir.exprs
-        .iter()
-        .enumerate()
-        .filter(|(_, expr)| expr.kind == ExprKind::Path && expr.range.contains(offset))
-        .min_by_key(|(_, expr)| expr.range.len())
-        .map(|(index, _)| ExprId(index as u32))
-}
-
-fn linked_import_path_parts(hir: &FileHir, expr: ExprId) -> Option<Vec<String>> {
-    let range = hir.expr(expr).range;
-    let mut references = hir
-        .references
-        .iter()
-        .enumerate()
-        .filter(|(_, reference)| {
-            matches!(
-                reference.kind,
-                rhai_hir::ReferenceKind::Name | rhai_hir::ReferenceKind::PathSegment
-            ) && reference.range.start() >= range.start()
-                && reference.range.end() <= range.end()
-        })
-        .collect::<Vec<_>>();
-
-    references.sort_by_key(|(_, reference)| reference.range.start());
-    let (first_index, first_reference) = references.first()?;
-    let alias_symbol = (first_reference.kind == rhai_hir::ReferenceKind::Name)
-        .then(|| hir.definition_of(rhai_hir::ReferenceId(*first_index as u32)))
-        .flatten()?;
-    if hir.symbol(alias_symbol).kind != rhai_hir::SymbolKind::ImportAlias {
-        return None;
-    }
-    Some(
-        references
-            .into_iter()
-            .map(|(_, reference)| reference.name.clone())
-            .collect(),
-    )
 }
 
 fn resolve_linked_import_path_targets(
@@ -366,7 +327,7 @@ pub(crate) fn receiver_matches_method_type(receiver: &TypeRef, expected: &TypeRe
 
     match (receiver, expected) {
         (TypeRef::Unknown | TypeRef::Any | TypeRef::Dynamic | TypeRef::Never, _) => true,
-        (TypeRef::Union(items), expected) => items
+        (TypeRef::Union(items), expected) | (TypeRef::Ambiguous(items), expected) => items
             .iter()
             .any(|item| receiver_matches_method_type(item, expected)),
         (TypeRef::Nullable(inner), expected) => receiver_matches_method_type(inner, expected),

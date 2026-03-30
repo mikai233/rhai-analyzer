@@ -1,9 +1,10 @@
+use crate::infer::infer_file_types;
 use crate::tests::{assert_workspace_files_have_no_syntax_diagnostics, symbol_id_by_name};
 use crate::{AnalyzerDatabase, ChangeSet, FileChange};
-use rhai_hir::{FunctionTypeRef, SymbolKind, TypeRef};
+use rhai_hir::{ExternalSignatureIndex, FunctionTypeRef, SymbolKind, TypeRef, lower_file};
 use rhai_project::ProjectConfig;
 use rhai_vfs::DocumentVersion;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 
 #[test]
@@ -395,6 +396,8 @@ fn snapshot_infers_for_loop_binding_types_for_common_iterables() {
             let array_index = for (item, index) in [1, 2, 3] { break index; };
             let char_item = for ch in "abc" { break ch; };
             let ranged = for value in 0..10 { break value; };
+            let map_value = for entry in #{ name: "Ada" }.values() { break entry; };
+            let split_part = for part in "a,b".split(",") { break part; };
         "#,
         DocumentVersion(1),
     ));
@@ -411,6 +414,8 @@ fn snapshot_infers_for_loop_binding_types_for_common_iterables() {
     let array_index = symbol_id_by_name(&hir, "array_index", SymbolKind::Variable);
     let char_item = symbol_id_by_name(&hir, "char_item", SymbolKind::Variable);
     let ranged = symbol_id_by_name(&hir, "ranged", SymbolKind::Variable);
+    let map_value = symbol_id_by_name(&hir, "map_value", SymbolKind::Variable);
+    let split_part = symbol_id_by_name(&hir, "split_part", SymbolKind::Variable);
     let item = symbol_id_by_name(&hir, "item", SymbolKind::Variable);
     let index = hir
         .symbols
@@ -423,6 +428,8 @@ fn snapshot_infers_for_loop_binding_types_for_common_iterables() {
         .expect("expected `index` loop binding");
     let ch = symbol_id_by_name(&hir, "ch", SymbolKind::Variable);
     let value = symbol_id_by_name(&hir, "value", SymbolKind::Variable);
+    let entry = symbol_id_by_name(&hir, "entry", SymbolKind::Variable);
+    let part = symbol_id_by_name(&hir, "part", SymbolKind::Variable);
 
     assert!(matches!(
         snapshot.inferred_symbol_type(file_id, array_item),
@@ -444,6 +451,16 @@ fn snapshot_infers_for_loop_binding_types_for_common_iterables() {
         Some(TypeRef::Union(items))
             if items.contains(&TypeRef::Unit) && items.contains(&TypeRef::Int)
     ));
+    assert!(matches!(
+        snapshot.inferred_symbol_type(file_id, map_value),
+        Some(TypeRef::Union(items))
+            if items.contains(&TypeRef::Unit) && items.contains(&TypeRef::String)
+    ));
+    assert!(matches!(
+        snapshot.inferred_symbol_type(file_id, split_part),
+        Some(TypeRef::Union(items))
+            if items.contains(&TypeRef::Unit) && items.contains(&TypeRef::String)
+    ));
     assert_eq!(
         snapshot.inferred_symbol_type(file_id, item),
         Some(&TypeRef::Int)
@@ -459,6 +476,14 @@ fn snapshot_infers_for_loop_binding_types_for_common_iterables() {
     assert_eq!(
         snapshot.inferred_symbol_type(file_id, value),
         Some(&TypeRef::Int)
+    );
+    assert_eq!(
+        snapshot.inferred_symbol_type(file_id, entry),
+        Some(&TypeRef::String)
+    );
+    assert_eq!(
+        snapshot.inferred_symbol_type(file_id, part),
+        Some(&TypeRef::String)
     );
 }
 
@@ -764,4 +789,85 @@ fn snapshot_uses_only_fallthrough_branch_values_for_if_and_switch_exprs() {
         Some(&TypeRef::String)
     );
     assert_eq!(snapshot.inferred_symbol_type(file_id, tail), None);
+}
+
+#[test]
+fn infer_file_types_propagates_object_shape_expectations_into_nested_closures() {
+    let parse = rhai_syntax::parse_text(
+        r#"
+            let config = #{
+                nested: #{
+                    callback: |value| value
+                }
+            };
+        "#,
+    );
+    assert!(
+        parse.errors().is_empty(),
+        "expected valid Rhai syntax, got errors: {:?}",
+        parse.errors()
+    );
+    let hir = lower_file(&parse);
+
+    let config = hir
+        .symbols
+        .iter()
+        .enumerate()
+        .find_map(|(index, symbol)| {
+            (symbol.name == "config" && symbol.kind == SymbolKind::Variable)
+                .then_some(rhai_hir::SymbolId(index as u32))
+        })
+        .expect("expected `config` symbol");
+    let callback_param = hir
+        .symbols
+        .iter()
+        .enumerate()
+        .find_map(|(index, symbol)| {
+            (symbol.name == "value" && symbol.kind == SymbolKind::Parameter)
+                .then_some(rhai_hir::SymbolId(index as u32))
+        })
+        .expect("expected closure parameter");
+
+    let mut seeds = HashMap::new();
+    seeds.insert(
+        config,
+        TypeRef::Object(BTreeMap::from([(
+            "nested".to_owned(),
+            TypeRef::Object(BTreeMap::from([(
+                "callback".to_owned(),
+                TypeRef::Function(FunctionTypeRef {
+                    params: vec![TypeRef::Int],
+                    ret: Box::new(TypeRef::Int),
+                }),
+            )])),
+        )])),
+    );
+
+    let inference = infer_file_types(
+        &hir,
+        &ExternalSignatureIndex::default(),
+        &[],
+        &[],
+        &[],
+        &[],
+        &seeds,
+    );
+
+    assert_eq!(
+        inference.symbol_types.get(&callback_param),
+        Some(&TypeRef::Int)
+    );
+    assert_eq!(
+        inference.symbol_types.get(&config),
+        Some(&TypeRef::Object(BTreeMap::from([(
+            "nested".to_owned(),
+            TypeRef::Object(BTreeMap::from([(
+                "callback".to_owned(),
+                TypeRef::Function(FunctionTypeRef {
+                    params: vec![TypeRef::Int],
+                    ret: Box::new(TypeRef::Int),
+                }),
+            )])),
+        )])))
+    );
 }

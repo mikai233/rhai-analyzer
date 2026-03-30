@@ -1,40 +1,53 @@
+use crate::builtin::semantics::is_builtin_fn_call;
+use crate::builtin::signatures::builtin_universal_method_signature;
 use crate::infer::ImportedMethodSignature;
-use crate::infer::helpers::join_types;
+use crate::infer::generics::specialize_signature_with_arg_types;
+use crate::infer::helpers::{join_types, make_ambiguous_type};
 use crate::infer::objects::{
-    host_method_signature_for_expr, join_function_signatures, largest_inner_expr,
-    receiver_dispatch_is_precise, receiver_matches_method_type, string_literal_value,
-    symbol_for_expr,
+    host_method_signature_for_expr, largest_inner_expr, receiver_dispatch_is_precise,
+    receiver_matches_method_type, string_literal_value, symbol_for_expr,
 };
-use crate::{FileTypeInference, HostFunction, HostType, best_matching_signature_index};
+use crate::{FileTypeInference, HostFunction, HostType, best_matching_signature_indexes};
 use rhai_hir::{
     ExprId, ExprKind, ExternalSignatureIndex, FileHir, FunctionTypeRef, SymbolId, SymbolKind,
     TypeRef,
 };
 
-pub(crate) fn global_signature_for_call<'a>(
-    globals: &'a [HostFunction],
+pub(crate) fn global_signatures_for_call(
+    globals: &[HostFunction],
     name: &str,
     arg_types: &[Option<TypeRef>],
-) -> Option<&'a FunctionTypeRef> {
-    let function = globals.iter().find(|function| function.name == name)?;
+    host_types: &[HostType],
+) -> Vec<FunctionTypeRef> {
+    let Some(function) = globals.iter().find(|function| function.name == name) else {
+        return Vec::new();
+    };
     let matching = function
         .overloads
         .iter()
         .filter_map(|overload| overload.signature.as_ref())
+        .map(|signature| {
+            specialize_signature_with_arg_types(signature, Some(arg_types), host_types)
+        })
         .collect::<Vec<_>>();
     if matching.is_empty() {
-        return None;
+        return Vec::new();
     }
 
-    if has_informative_arg_types(arg_types)
-        && let Some(index) = best_matching_signature_index(matching.iter().copied(), arg_types)
-    {
-        return matching.get(index).copied();
+    if has_informative_arg_types(arg_types) {
+        let indexes = best_matching_signature_indexes(matching.iter(), arg_types);
+        if !indexes.is_empty() {
+            return indexes
+                .into_iter()
+                .filter_map(|index| matching.get(index).cloned())
+                .collect();
+        }
     }
 
     matching
         .into_iter()
-        .find(|signature| signature.params.len() == arg_types.len())
+        .filter(|signature| signature.params.len() == arg_types.len())
+        .collect()
 }
 
 #[derive(Clone)]
@@ -51,42 +64,6 @@ pub(crate) fn call_builtin_fn_signature(globals: &[HostFunction]) -> Option<&Fun
         .iter()
         .filter_map(|overload| overload.signature.as_ref())
         .find(|signature| signature.params.len() == 1)
-}
-
-pub(crate) fn is_builtin_fn_call(hir: &FileHir, call: &rhai_hir::CallSite) -> bool {
-    call.callee_reference
-        .map(|reference_id| hir.reference(reference_id).name.as_str())
-        == Some("Fn")
-}
-
-pub(crate) fn infer_fn_pointer_call_type(
-    hir: &FileHir,
-    inference: &FileTypeInference,
-    call: &rhai_hir::CallSite,
-    external: &ExternalSignatureIndex,
-    globals: &[HostFunction],
-) -> TypeRef {
-    let Some(name_expr) = call.arg_exprs.first().copied() else {
-        return TypeRef::FnPtr;
-    };
-    let Some(name) = string_literal_value(hir, name_expr) else {
-        return TypeRef::FnPtr;
-    };
-
-    let targets = named_callable_targets_at_offset(
-        hir,
-        inference,
-        name,
-        call.range.start(),
-        external,
-        globals,
-        None,
-        &mut Vec::new(),
-    );
-
-    join_callable_target_signatures(&targets, None)
-        .map(TypeRef::Function)
-        .unwrap_or(TypeRef::FnPtr)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -113,6 +90,7 @@ pub(crate) fn callable_targets_for_call(
             call.range.start(),
             external,
             globals,
+            host_types,
             imported_methods,
             arg_types.as_deref(),
             &mut Vec::new(),
@@ -128,6 +106,7 @@ pub(crate) fn callable_targets_for_call(
             call.range.start(),
             external,
             globals,
+            host_types,
             imported_methods,
             arg_types.as_deref(),
             &mut Vec::new(),
@@ -155,6 +134,7 @@ pub(crate) fn callable_targets_for_call(
             call.range.start(),
             external,
             globals,
+            host_types,
             imported_methods,
             arg_types.as_deref(),
             &mut Vec::new(),
@@ -173,6 +153,7 @@ pub(crate) fn callable_targets_for_call(
             call.range.start(),
             external,
             globals,
+            host_types,
             arg_types.as_deref(),
             &mut Vec::new(),
         ));
@@ -189,6 +170,7 @@ pub(crate) fn callable_targets_for_expr(
     use_offset: rhai_syntax::TextSize,
     external: &ExternalSignatureIndex,
     globals: &[HostFunction],
+    host_types: &[HostType],
     imported_methods: &[ImportedMethodSignature],
     arg_types: Option<&[Option<TypeRef>]>,
     visited_symbols: &mut Vec<SymbolId>,
@@ -203,6 +185,7 @@ pub(crate) fn callable_targets_for_expr(
                     use_offset,
                     external,
                     globals,
+                    host_types,
                     imported_methods,
                     arg_types,
                     visited_symbols,
@@ -216,6 +199,7 @@ pub(crate) fn callable_targets_for_expr(
             use_offset,
             external,
             globals,
+            host_types,
             imported_methods,
             arg_types,
             visited_symbols,
@@ -229,6 +213,7 @@ pub(crate) fn callable_targets_for_expr(
                     use_offset,
                     external,
                     globals,
+                    host_types,
                     imported_methods,
                     arg_types,
                     visited_symbols,
@@ -236,7 +221,7 @@ pub(crate) fn callable_targets_for_expr(
             })
             .unwrap_or_default(),
         ExprKind::Closure => inferred_expr_type(hir, inference, expr)
-            .and_then(|ty| signature_from_type(&ty))
+            .and_then(|ty| signature_from_type(&ty, arg_types, host_types))
             .map(|signature| {
                 vec![CallableTarget {
                     signature,
@@ -259,13 +244,14 @@ pub(crate) fn callable_targets_for_expr(
                     use_offset,
                     external,
                     globals,
+                    host_types,
                     arg_types,
                     visited_symbols,
                 ))
             })
             .unwrap_or_default(),
         _ => inferred_expr_type(hir, inference, expr)
-            .and_then(|ty| signature_from_type(&ty))
+            .and_then(|ty| signature_from_type(&ty, arg_types, host_types))
             .map(|signature| {
                 vec![CallableTarget {
                     signature,
@@ -284,6 +270,7 @@ pub(crate) fn callable_targets_for_symbol_use(
     use_offset: rhai_syntax::TextSize,
     external: &ExternalSignatureIndex,
     globals: &[HostFunction],
+    host_types: &[HostType],
     imported_methods: &[ImportedMethodSignature],
     arg_types: Option<&[Option<TypeRef>]>,
     visited_symbols: &mut Vec<SymbolId>,
@@ -293,26 +280,30 @@ pub(crate) fn callable_targets_for_symbol_use(
     }
     visited_symbols.push(symbol);
 
-    let mut targets = callable_signature_for_symbol(hir, inference, symbol, external)
-        .map(|signature| {
-            vec![CallableTarget {
-                signature,
-                local_symbol: (hir.symbol(symbol).kind == SymbolKind::Function).then_some(symbol),
-            }]
-        })
-        .unwrap_or_default();
+    let signature_target =
+        callable_signature_for_symbol(hir, inference, symbol, external, arg_types, host_types)
+            .map(|signature| {
+                vec![CallableTarget {
+                    signature,
+                    local_symbol: (hir.symbol(symbol).kind == SymbolKind::Function)
+                        .then_some(symbol),
+                }]
+            })
+            .unwrap_or_default();
+    let mut flow_targets = Vec::new();
 
     for flow in hir
         .value_flows_into(symbol)
         .filter(|flow| flow.range.start() < use_offset)
     {
-        targets.extend(callable_targets_for_expr(
+        flow_targets.extend(callable_targets_for_expr(
             hir,
             inference,
             flow.expr,
             use_offset,
             external,
             globals,
+            host_types,
             imported_methods,
             arg_types,
             visited_symbols,
@@ -320,6 +311,15 @@ pub(crate) fn callable_targets_for_symbol_use(
     }
 
     visited_symbols.pop();
+    let mut targets = if hir.symbol(symbol).kind != SymbolKind::Function && !flow_targets.is_empty()
+    {
+        std::mem::take(&mut flow_targets)
+    } else {
+        signature_target
+    };
+    if hir.symbol(symbol).kind == SymbolKind::Function || targets.is_empty() {
+        targets.extend(flow_targets);
+    }
     dedup_callable_targets(targets)
 }
 
@@ -331,6 +331,7 @@ pub(crate) fn local_method_targets_for_expr(
     use_offset: rhai_syntax::TextSize,
     external: &ExternalSignatureIndex,
     globals: &[HostFunction],
+    host_types: &[HostType],
     imported_methods: &[ImportedMethodSignature],
     arg_types: Option<&[Option<TypeRef>]>,
     visited_symbols: &mut Vec<SymbolId>,
@@ -352,6 +353,7 @@ pub(crate) fn local_method_targets_for_expr(
         use_offset,
         external,
         globals,
+        host_types,
         imported_methods,
         arg_types,
         visited_symbols,
@@ -367,6 +369,7 @@ pub(crate) fn local_method_targets_for_name(
     use_offset: rhai_syntax::TextSize,
     external: &ExternalSignatureIndex,
     globals: &[HostFunction],
+    host_types: &[HostType],
     imported_methods: &[ImportedMethodSignature],
     arg_types: Option<&[Option<TypeRef>]>,
     visited_symbols: &mut Vec<SymbolId>,
@@ -387,6 +390,7 @@ pub(crate) fn local_method_targets_for_name(
             use_offset,
             external,
             globals,
+            host_types,
             imported_methods,
             arg_types,
             visited_symbols,
@@ -482,17 +486,20 @@ pub(crate) fn imported_method_targets_for_name(
 
     if let Some(arg_types) = arg_types
         && has_informative_arg_types(arg_types)
-        && let Some(index) = best_matching_signature_index(
+    {
+        let indexes = best_matching_signature_indexes(
             matching.iter().map(|method| &method.signature),
             arg_types,
-        )
-        && let Some(method) = matching.get(index)
-    {
-        targets.push(CallableTarget {
-            signature: method.signature.clone(),
-            local_symbol: None,
-        });
-        return targets;
+        );
+        if !indexes.is_empty() {
+            targets.extend(indexes.into_iter().filter_map(|index| {
+                matching.get(index).map(|method| CallableTarget {
+                    signature: method.signature.clone(),
+                    local_symbol: None,
+                })
+            }));
+            return targets;
+        }
     }
 
     targets.extend(matching.into_iter().map(|method| CallableTarget {
@@ -522,28 +529,20 @@ pub(crate) fn builtin_universal_method_targets(
     targets
 }
 
-pub(crate) fn builtin_universal_method_signature(method_name: &str) -> Option<FunctionTypeRef> {
-    match method_name {
-        "type_of" => Some(FunctionTypeRef {
-            params: Vec::new(),
-            ret: Box::new(TypeRef::String),
-        }),
-        _ => None,
-    }
-}
-
 pub(crate) fn callable_signature_for_symbol(
     hir: &FileHir,
     inference: &FileTypeInference,
     symbol: SymbolId,
     external: &ExternalSignatureIndex,
+    arg_types: Option<&[Option<TypeRef>]>,
+    host_types: &[HostType],
 ) -> Option<FunctionTypeRef> {
     inference
         .symbol_types
         .get(&symbol)
         .or_else(|| hir.declared_symbol_type(symbol))
         .or_else(|| external.get(hir.symbol(symbol).name.as_str()))
-        .and_then(signature_from_type)
+        .and_then(|ty| signature_from_type(ty, arg_types, host_types))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -554,6 +553,7 @@ pub(crate) fn named_callable_targets_at_offset(
     offset: rhai_syntax::TextSize,
     external: &ExternalSignatureIndex,
     globals: &[HostFunction],
+    host_types: &[HostType],
     arg_types: Option<&[Option<TypeRef>]>,
     visited_symbols: &mut Vec<SymbolId>,
 ) -> Vec<CallableTarget> {
@@ -573,6 +573,7 @@ pub(crate) fn named_callable_targets_at_offset(
                 offset,
                 external,
                 globals,
+                host_types,
                 &[],
                 arg_types,
                 visited_symbols,
@@ -584,9 +585,9 @@ pub(crate) fn named_callable_targets_at_offset(
     let mut targets = Vec::new();
 
     if let Some(arg_types) = arg_types {
-        if let Some(signature) = global_signature_for_call(globals, name, arg_types) {
+        for signature in global_signatures_for_call(globals, name, arg_types, host_types) {
             targets.push(CallableTarget {
-                signature: signature.clone(),
+                signature,
                 local_symbol: None,
             });
         }
@@ -597,9 +598,11 @@ pub(crate) fn named_callable_targets_at_offset(
         });
     }
 
-    if let Some(TypeRef::Function(signature)) = external.get(name) {
+    if let Some(ty) = external.get(name)
+        && let Some(signature) = signature_from_type(ty, arg_types, host_types)
+    {
         targets.push(CallableTarget {
-            signature: signature.clone(),
+            signature,
             local_symbol: None,
         });
     }
@@ -619,14 +622,14 @@ pub(crate) fn global_signature_for_pointer(
         .filter_map(|overload| overload.signature.as_ref().cloned())
         .collect::<Vec<_>>();
 
-    join_function_signatures_if_compatible(signatures, None)
+    merge_function_candidate_signatures(signatures, None)
 }
 
 pub(crate) fn join_callable_target_signatures(
     targets: &[CallableTarget],
     arg_count: Option<usize>,
 ) -> Option<FunctionTypeRef> {
-    join_function_signatures_if_compatible(
+    merge_function_candidate_signatures(
         targets
             .iter()
             .map(|target| target.signature.clone())
@@ -635,15 +638,15 @@ pub(crate) fn join_callable_target_signatures(
     )
 }
 
-pub(crate) fn join_function_signatures_if_compatible(
+pub(crate) fn merge_function_candidate_signatures(
     signatures: Vec<FunctionTypeRef>,
     arg_count: Option<usize>,
 ) -> Option<FunctionTypeRef> {
-    let mut signatures = signatures
+    let signatures = signatures
         .into_iter()
         .filter(|signature| arg_count.is_none_or(|count| signature.params.len() == count))
         .collect::<Vec<_>>();
-    let first = signatures.pop()?;
+    let first = signatures.first()?.clone();
     let param_len = first.params.len();
     if signatures
         .iter()
@@ -652,7 +655,31 @@ pub(crate) fn join_function_signatures_if_compatible(
         return None;
     }
 
-    Some(signatures.into_iter().fold(first, join_function_signatures))
+    if signatures.len() == 1 {
+        return Some(first);
+    }
+
+    let params = (0..param_len)
+        .map(|index| {
+            make_ambiguous_type(
+                signatures
+                    .iter()
+                    .map(|signature| signature.params[index].clone())
+                    .collect(),
+            )
+        })
+        .collect();
+    let ret = make_ambiguous_type(
+        signatures
+            .iter()
+            .map(|signature| signature.ret.as_ref().clone())
+            .collect(),
+    );
+
+    Some(FunctionTypeRef {
+        params,
+        ret: Box::new(ret),
+    })
 }
 
 pub(crate) fn dedup_callable_targets(targets: Vec<CallableTarget>) -> Vec<CallableTarget> {
@@ -695,9 +722,22 @@ pub(crate) fn expected_call_signature(
     join_callable_target_signatures(&targets, Some(arg_types.len()))
 }
 
-pub(crate) fn signature_from_type(ty: &TypeRef) -> Option<FunctionTypeRef> {
+pub(crate) fn signature_from_type(
+    ty: &TypeRef,
+    arg_types: Option<&[Option<TypeRef>]>,
+    host_types: &[HostType],
+) -> Option<FunctionTypeRef> {
     match ty {
-        TypeRef::Function(signature) => Some(signature.clone()),
+        TypeRef::Function(signature) => Some(specialize_signature_with_arg_types(
+            signature, arg_types, host_types,
+        )),
+        TypeRef::Ambiguous(items) => merge_function_candidate_signatures(
+            items
+                .iter()
+                .filter_map(|item| signature_from_type(item, arg_types, host_types))
+                .collect(),
+            None,
+        ),
         _ => None,
     }
 }
@@ -738,15 +778,6 @@ pub(crate) fn caller_scope_dispatches_via_first_arg(
             .callee_reference
             .map(|reference| hir.reference(reference).name.as_str())
             == Some("call")
-}
-
-pub(crate) fn effective_call_argument_exprs<'a>(
-    hir: &FileHir,
-    call: &'a rhai_hir::CallSite,
-) -> &'a [ExprId] {
-    let offset =
-        usize::from(caller_scope_dispatches_via_first_arg(hir, call)).min(call.arg_exprs.len());
-    &call.arg_exprs[offset..]
 }
 
 pub(crate) fn effective_call_argument_types(
@@ -798,6 +829,19 @@ pub(crate) fn for_binding_types_from_iterable(
             TypeRef::Int,
         )),
         TypeRef::Union(items) => {
+            let mut merged = None;
+            for item in items {
+                let Some(next) = for_binding_types_from_iterable(item, binding_count) else {
+                    continue;
+                };
+                merged = Some(match merged {
+                    Some(current) => join_binding_type_sets(current, next),
+                    None => next,
+                });
+            }
+            merged
+        }
+        TypeRef::Ambiguous(items) => {
             let mut merged = None;
             for item in items {
                 let Some(next) = for_binding_types_from_iterable(item, binding_count) else {

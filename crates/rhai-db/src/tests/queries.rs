@@ -128,8 +128,10 @@ fn completion_inputs_collect_visible_member_and_project_symbols() {
                     fn helper() {}
                     fn run() {
                         let user = #{ name: "Ada", id: 42 };
+                        let text = "Ada";
                         let local_value = 1;
                         user.
+                        text.
                         helper();
                     }
                 "#
@@ -204,6 +206,24 @@ fn completion_inputs_collect_visible_member_and_project_symbols() {
                 .member_symbols
                 .iter()
                 .any(|member| member.name == "id")
+    );
+
+    let string_member_offset =
+        offset_in(&main_text, "text.") + rhai_syntax::TextSize::from("text.".len() as u32);
+    let string_member_inputs = snapshot
+        .completion_inputs(main, string_member_offset)
+        .expect("expected string member completion inputs");
+    assert!(
+        string_member_inputs
+            .member_symbols
+            .iter()
+            .any(|member| member.name == "contains")
+    );
+    assert!(
+        string_member_inputs
+            .member_symbols
+            .iter()
+            .any(|member| member.name == "len")
     );
 }
 

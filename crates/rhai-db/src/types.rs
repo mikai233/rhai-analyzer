@@ -308,6 +308,7 @@ pub struct HostModule {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HostType {
     pub name: String,
+    pub generic_params: Vec<String>,
     pub docs: Option<String>,
     pub methods: Vec<HostFunction>,
 }

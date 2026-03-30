@@ -81,6 +81,70 @@ fn snapshot_resolves_imported_typed_methods_as_global_method_targets() {
 }
 
 #[test]
+fn snapshot_tracks_ambiguous_imported_typed_method_results() {
+    let mut db = AnalyzerDatabase::default();
+    db.apply_change(ChangeSet {
+        files: vec![
+            FileChange {
+                path: "provider_a.rhai".into(),
+                text: r#"
+                    /// @param delta int
+                    /// @return int
+                    fn int.bump(delta) {
+                        this + delta
+                    }
+                "#
+                .to_owned(),
+                version: DocumentVersion(1),
+            },
+            FileChange {
+                path: "provider_b.rhai".into(),
+                text: r#"
+                    /// @param delta string
+                    /// @return string
+                    fn int.bump(delta) {
+                        delta
+                    }
+                "#
+                .to_owned(),
+                version: DocumentVersion(1),
+            },
+            FileChange {
+                path: "consumer.rhai".into(),
+                text: r#"
+                    import "provider_a";
+                    import "provider_b";
+
+                    fn run() {
+                        let value = 1;
+                        let seed = if flag { 1 } else { "ok" };
+                        let result = value.bump(seed);
+                    }
+                "#
+                .to_owned(),
+                version: DocumentVersion(1),
+            },
+        ],
+        removed_files: Vec::new(),
+        project: Some(ProjectConfig::default()),
+    });
+
+    let snapshot = db.snapshot();
+    assert_workspace_files_have_no_syntax_diagnostics(&snapshot);
+    let consumer = snapshot
+        .vfs()
+        .file_id(Path::new("consumer.rhai"))
+        .expect("expected consumer.rhai");
+    let consumer_hir = snapshot.hir(consumer).expect("expected consumer hir");
+    let result = symbol_id_by_name(&consumer_hir, "result", SymbolKind::Variable);
+
+    assert_eq!(
+        snapshot.inferred_symbol_type(consumer, result),
+        Some(&TypeRef::Ambiguous(vec![TypeRef::Int, TypeRef::String]))
+    );
+}
+
+#[test]
 fn snapshot_keeps_unaliased_imports_from_exposing_regular_module_members() {
     let mut db = AnalyzerDatabase::default();
     db.apply_change(ChangeSet {

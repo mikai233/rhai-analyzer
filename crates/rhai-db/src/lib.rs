@@ -1,3 +1,4 @@
+mod builtin;
 mod change;
 mod db;
 mod infer;
@@ -8,7 +9,8 @@ mod workspace;
 
 pub use change::{ChangeSet, FileChange};
 pub use db::{AnalyzerDatabase, DatabaseSnapshot};
-pub use overload::best_matching_signature_index;
+pub use infer::generics::specialize_signature_with_receiver_and_arg_types;
+pub use overload::{best_matching_signature_index, best_matching_signature_indexes};
 pub use types::{
     AutoImportCandidate, CachedMemberCompletionSet, CachedNavigationTarget, ChangeImpact,
     CompletionInputs, DatabaseDebugView, DebugFileAnalysis, FileAnalysisDependencies,
