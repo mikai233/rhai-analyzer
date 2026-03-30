@@ -6,7 +6,7 @@ use rhai_hir::{CallSite, FileHir, FunctionTypeRef, ParameterHint, SymbolId, Symb
 use rhai_syntax::TextSize;
 use rhai_vfs::FileId;
 
-use crate::convert::format_type_ref;
+use crate::support::convert::format_type_ref;
 use crate::{SignatureHelp, SignatureInformation, SignatureParameter};
 
 pub(crate) fn signature_help(

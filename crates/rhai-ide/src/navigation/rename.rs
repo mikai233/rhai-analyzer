@@ -2,7 +2,9 @@ use std::collections::BTreeMap;
 
 use rhai_db::{DatabaseSnapshot, ProjectRenamePlan};
 
-use crate::convert::{navigation_target_from_identity, reference_location_from_db, text_size};
+use crate::support::convert::{
+    navigation_target_from_identity, reference_location_from_db, text_size,
+};
 use crate::{FilePosition, FileTextEdit, RenameIssue, RenamePlan, SourceChange, TextEdit};
 
 #[derive(Debug, Clone, PartialEq, Eq)]

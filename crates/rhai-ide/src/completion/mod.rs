@@ -1,15 +1,14 @@
 use rhai_db::DatabaseSnapshot;
 use rhai_hir::{CompletionSymbol, TypeRef};
 
-use crate::convert::format_type_ref;
+use crate::support::convert::{format_type_ref, text_size};
 use crate::{CompletionItem, CompletionItemKind, CompletionItemSource, FilePosition};
 
 pub(crate) fn completions(
     snapshot: &DatabaseSnapshot,
     position: FilePosition,
 ) -> Vec<CompletionItem> {
-    let Some(inputs) =
-        snapshot.completion_inputs(position.file_id, crate::convert::text_size(position.offset))
+    let Some(inputs) = snapshot.completion_inputs(position.file_id, text_size(position.offset))
     else {
         return Vec::new();
     };

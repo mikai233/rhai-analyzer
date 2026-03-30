@@ -20,6 +20,18 @@ pub struct HoverResult {
     pub docs: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum InlayHintKind {
+    Type,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InlayHint {
+    pub offset: u32,
+    pub label: String,
+    pub kind: InlayHintKind,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SignatureHelp {
     pub signatures: Vec<SignatureInformation>,

@@ -8,20 +8,22 @@ use rhai_vfs::FileId;
 use crate::TextEdit;
 use crate::assists::{Assist, DiagnosticWithFixes, assists_for_range, diagnostics_with_fixes};
 use crate::completion::completions;
-use crate::convert::{
-    navigation_target_from_db, navigation_target_from_identity, reference_location_from_db,
-    text_size,
-};
 use crate::diagnostics::{
     diagnostics, document_symbols, workspace_symbols, workspace_symbols_matching,
 };
+use crate::hints::inlay_hints::inlay_hints;
+use crate::hints::signature_help::signature_help;
 use crate::hover::hover;
 use crate::imports::{organize_imports, remove_unused_imports};
-use crate::rename::{PreparedRename, prepare_rename, rename_plan_from_db};
-use crate::signature_help::signature_help;
+use crate::navigation::rename::{PreparedRename, prepare_rename, rename_plan_from_db};
+use crate::support::convert::{
+    navigation_target_from_db, navigation_target_from_identity, reference_location_from_db,
+    text_size,
+};
 use crate::{
     AutoImportAction, CompletionItem, Diagnostic, DocumentSymbol, FilePosition, HoverResult,
-    NavigationTarget, ReferencesResult, RenamePlan, SignatureHelp, SourceChange, WorkspaceSymbol,
+    InlayHint, NavigationTarget, ReferencesResult, RenamePlan, SignatureHelp, SourceChange,
+    WorkspaceSymbol,
 };
 
 #[derive(Debug, Default)]
@@ -85,6 +87,10 @@ impl Analysis {
 
     pub fn signature_help(&self, position: FilePosition) -> Option<SignatureHelp> {
         signature_help(&self.db, position.file_id, text_size(position.offset))
+    }
+
+    pub fn inlay_hints(&self, file_id: FileId) -> Vec<InlayHint> {
+        inlay_hints(&self.db, file_id)
     }
 
     pub fn symbols(&self, file_id: FileId) -> Vec<Symbol> {

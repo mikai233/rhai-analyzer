@@ -1,7 +1,7 @@
 use rhai_db::DatabaseSnapshot;
 use rhai_vfs::FileId;
 
-use crate::convert::{document_symbol_from_db, workspace_symbol_from_db};
+use crate::support::convert::{document_symbol_from_db, workspace_symbol_from_db};
 use crate::{Diagnostic, DocumentSymbol, WorkspaceSymbol};
 
 pub(crate) fn diagnostics(snapshot: &DatabaseSnapshot, file_id: FileId) -> Vec<Diagnostic> {

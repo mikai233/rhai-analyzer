@@ -1,6 +1,6 @@
 use rhai_vfs::FileId;
 
-use crate::convert::{format_symbol_signature, text_size};
+use crate::support::convert::{format_symbol_signature, text_size};
 use crate::{FilePosition, HoverResult};
 
 pub(crate) fn hover(

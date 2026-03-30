@@ -26,6 +26,7 @@ It translates database facts into stable IDE-shaped results without exposing raw
 - Completion
 - Auto-import/source-fix actions
 - Signature help
+- Inlay hints
 
 ### Diagnostics and Source Actions
 
@@ -41,6 +42,7 @@ It translates database facts into stable IDE-shaped results without exposing raw
 - Completion detail backed by inferred types
 - Signature help for local functions, builtin functions, typed methods, imported typed methods, and module-qualified imported functions
 - Builtin and host-type member completion/signature help, including receiver-specialized generic host methods
+- Inlay hints for inferred local variable types, closure parameter types, and function/closure return types
 
 ### Rename and Cross-File Editing
 
@@ -51,14 +53,14 @@ It translates database facts into stable IDE-shaped results without exposing raw
 
 ## Current Boundaries
 
-- No document highlights, folding ranges, semantic tokens, inlay hints, or call hierarchy yet
+- No document highlights, folding ranges, semantic tokens, or call hierarchy yet
 - Completion ranking and lazy completion-item resolve are still basic
 - Hover/diagnostic presentation can still grow richer in related information and explanatory detail
 - Golden-style output tests for larger edit plans are still fairly light
 
 ## Next Steps
 
-- Inlay hints driven by inferred parameter, variable, and return types
+- Broader inlay hints beyond the current inferred variable/closure/function type hints
 - Better completion ranking, resolve payloads, and import-on-accept behavior
 - Richer hover and diagnostic presentation
 - Additional editor-facing semantic queries such as highlights, folding, semantic tokens, and call hierarchy

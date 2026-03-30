@@ -14,5 +14,6 @@ mod completion;
 mod diagnostics;
 mod hover;
 mod imports;
+mod inlay_hints;
 mod rename;
 mod signature_help;
