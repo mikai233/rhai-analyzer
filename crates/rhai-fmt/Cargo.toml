@@ -1,0 +1,8 @@
+[package]
+name = "rhai-fmt"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+rhai-syntax.workspace = true

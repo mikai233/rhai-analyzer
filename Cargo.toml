@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "crates/rhai-db",
+    "crates/rhai-fmt",
     "crates/rhai-hir",
     "crates/rhai-ide",
     "crates/rhai-lsp",
@@ -17,6 +18,7 @@ version = "0.1.0"
 
 [workspace.dependencies]
 rhai-db = { path = "crates/rhai-db" }
+rhai-fmt = { path = "crates/rhai-fmt" }
 rhai-hir = { path = "crates/rhai-hir" }
 rhai-ide = { path = "crates/rhai-ide" }
 rhai-lsp = { path = "crates/rhai-lsp" }

@@ -111,6 +111,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "rhai-fmt"
+version = "0.1.0"
+dependencies = [
+ "rhai-syntax",
+]
+
+[[package]]
 name = "rhai-hir"
 version = "0.1.0"
 dependencies = [
@@ -122,6 +129,7 @@ name = "rhai-ide"
 version = "0.1.0"
 dependencies = [
  "rhai-db",
+ "rhai-fmt",
  "rhai-hir",
  "rhai-project",
  "rhai-syntax",
