@@ -1,0 +1,155 @@
+{
+  "name": "rhai-analyzer",
+  "displayName": "Rhai Analyzer",
+  "description": "Language support for Rhai powered by the rhai-analyzer LSP server.",
+  "version": "0.0.1",
+  "publisher": "local",
+  "license": "MIT OR Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/local/rhai-analyzer.git"
+  },
+  "engines": {
+    "vscode": "^1.96.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Linters",
+    "Formatters"
+  ],
+  "activationEvents": [
+    "onLanguage:rhai",
+    "onCommand:rhai.restartServer"
+  ],
+  "main": "./out/extension.js",
+  "files": [
+    "out/**/*",
+    "language-configuration.json",
+    "LICENSE",
+    "README.md",
+    "package.json",
+    "syntaxes/**/*.json",
+    "snippets/**/*.json"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "rhai",
+        "aliases": [
+          "Rhai",
+          "rhai"
+        ],
+        "extensions": [
+          ".rhai"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "rhai",
+        "scopeName": "source.rhai",
+        "path": "./syntaxes/rhai.tmLanguage.json"
+      },
+      {
+        "scopeName": "markdown.rhai.codeblock",
+        "path": "./syntaxes/rhai.markdown.json",
+        "injectTo": [
+          "text.html.markdown"
+        ],
+        "embeddedLanguages": {
+          "meta.embedded.block.rhai": "rhai"
+        }
+      }
+    ],
+    "snippets": [
+      {
+        "language": "rhai",
+        "path": "./snippets/rhai.json"
+      }
+    ],
+    "configuration": {
+      "title": "Rhai",
+      "properties": {
+        "rhai.server.path": {
+          "type": "string",
+          "default": "",
+          "description": "Absolute path to the rhai-lsp executable. When empty, the extension tries common local development locations."
+        },
+        "rhai.server.transport": {
+          "type": "string",
+          "enum": [
+            "stdio",
+            "tcp"
+          ],
+          "default": "stdio",
+          "description": "How VSCode should talk to the Rhai language server. TCP mode connects to an already-running server for local debugging."
+        },
+        "rhai.server.tcpAddress": {
+          "type": "string",
+          "default": "127.0.0.1:9257",
+          "description": "TCP address to connect to when `rhai.server.transport` is set to `tcp`."
+        },
+        "rhai.server.logLevel": {
+          "type": "string",
+          "enum": [
+            "trace",
+            "debug",
+            "info",
+            "warn",
+            "error",
+            "off"
+          ],
+          "default": "warn",
+          "description": "Log level passed to rhai-lsp when the extension launches it in stdio mode."
+        },
+        "rhai.inlayHints.variables": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show inferred type inlay hints for local variables."
+        },
+        "rhai.inlayHints.parameters": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show inferred type inlay hints for function and closure parameters."
+        },
+        "rhai.inlayHints.returnTypes": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show inferred return type inlay hints for functions and closures."
+        },
+        "rhai.trace.server": {
+          "type": "string",
+          "enum": [
+            "off",
+            "messages",
+            "verbose"
+          ],
+          "default": "off",
+          "description": "Trace communication between VSCode and the Rhai language server."
+        }
+      }
+    },
+    "commands": [
+      {
+        "command": "rhai.restartServer",
+        "title": "Rhai: Restart Language Server"
+      }
+    ]
+  },
+  "scripts": {
+    "build": "npm exec -- tsc -p ./",
+    "watch": "npm exec -- tsc -w -p ./",
+    "vscode:prepublish": "npm run build",
+    "package": "node -e \"require('fs').mkdirSync('.artifacts', { recursive: true })\" && npm exec -- vsce package --out ./.artifacts/rhai-analyzer.vsix"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  },
+  "devDependencies": {
+    "@vscode/vsce": "^3.6.2",
+    "@types/node": "^20.16.10",
+    "@types/vscode": "^1.96.0",
+    "typescript": "^5.6.3"
+  }
+}
