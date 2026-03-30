@@ -6,10 +6,16 @@ license.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+clap = { version = "4.5", features = ["derive"] }
 lsp-server.workspace = true
 lsp-types.workspace = true
+serde.workspace = true
 serde_json.workspace = true
+tracing.workspace = true
+tracing-subscriber = { version = "0.3", features = ["fmt"] }
+url = "2.5"
 rhai-db.workspace = true
+rhai-hir.workspace = true
 rhai-ide.workspace = true
 rhai-project.workspace = true
 rhai-syntax.workspace = true

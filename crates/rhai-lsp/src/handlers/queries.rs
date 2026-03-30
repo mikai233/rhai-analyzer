@@ -4,16 +4,48 @@ use lsp_types::{
     SemanticTokenType, SemanticTokens, SemanticTokensLegend, TextEdit, Uri,
 };
 use rhai_ide::{
-    CallHierarchyItem, CompletionItem, DocumentHighlight, FilePosition,
-    FoldingRange as IdeFoldingRange, IncomingCall, InlayHint, OutgoingCall,
+    CallHierarchyItem, CompletionItem, DocumentHighlight, DocumentSymbol, FilePosition,
+    FoldingRange as IdeFoldingRange, HoverResult, IncomingCall, InlayHint, InlayHintSource,
+    NavigationTarget, OutgoingCall, PreparedRename, ReferencesResult,
     SemanticToken as IdeSemanticToken, SemanticTokenKind,
     SemanticTokenModifier as IdeSemanticTokenModifier, SignatureHelp, SourceChange,
+    WorkspaceSymbol,
 };
 use rhai_vfs::FileId;
 
-use crate::server::{Server, WorkspaceSymbolMatch, uri_from_path};
+use crate::state::{ServerState, WorkspaceSymbolMatch};
 
-impl Server {
+impl ServerState {
+    pub fn hover(&self, uri: &Uri, offset: u32) -> Result<Option<HoverResult>> {
+        let (analysis, file_id) = self.analysis_for_open_document(uri)?;
+        Ok(analysis.hover(FilePosition { file_id, offset }))
+    }
+
+    pub fn goto_definition(&self, uri: &Uri, offset: u32) -> Result<Vec<NavigationTarget>> {
+        let (analysis, file_id) = self.analysis_for_open_document(uri)?;
+        Ok(analysis.goto_definition(FilePosition { file_id, offset }))
+    }
+
+    pub fn find_references(&self, uri: &Uri, offset: u32) -> Result<Option<ReferencesResult>> {
+        let (analysis, file_id) = self.analysis_for_open_document(uri)?;
+        Ok(analysis.find_references(FilePosition { file_id, offset }))
+    }
+
+    pub fn rename(
+        &self,
+        uri: &Uri,
+        offset: u32,
+        new_name: String,
+    ) -> Result<Option<PreparedRename>> {
+        let (analysis, file_id) = self.analysis_for_open_document(uri)?;
+        Ok(analysis.rename(FilePosition { file_id, offset }, new_name))
+    }
+
+    pub fn document_symbols(&self, uri: &Uri) -> Result<Vec<DocumentSymbol>> {
+        let (analysis, file_id) = self.analysis_for_open_document(uri)?;
+        Ok(analysis.document_symbols(file_id))
+    }
+
     pub fn completions(&self, uri: &Uri, offset: u32) -> Result<Vec<CompletionItem>> {
         let (analysis, file_id) = self.analysis_for_open_document(uri)?;
         Ok(analysis.completions(FilePosition { file_id, offset }))
@@ -48,7 +80,11 @@ impl Server {
 
     pub fn inlay_hints(&self, uri: &Uri) -> Result<Vec<InlayHint>> {
         let (analysis, file_id) = self.analysis_for_open_document(uri)?;
-        Ok(analysis.inlay_hints(file_id))
+        Ok(analysis
+            .inlay_hints(file_id)
+            .into_iter()
+            .filter(|hint| self.inlay_hint_source_enabled(hint.source))
+            .collect())
     }
 
     pub fn format_document(&self, uri: &Uri) -> Result<Option<Vec<TextEdit>>> {
@@ -125,11 +161,20 @@ impl Server {
                 })?;
 
                 Ok(WorkspaceSymbolMatch {
-                    uri: uri_from_path(path)?,
+                    uri: self.uri_for_path(path)?,
                     symbol,
                 })
             })
             .collect()
+    }
+
+    pub fn workspace_symbols_raw(&self, query: &str) -> Vec<WorkspaceSymbol> {
+        let analysis = self.analysis_host.snapshot();
+        if query.is_empty() {
+            analysis.workspace_symbols()
+        } else {
+            analysis.workspace_symbols_matching(query)
+        }
     }
 
     fn analysis_for_open_document(&self, uri: &Uri) -> Result<(rhai_ide::Analysis, FileId)> {
@@ -144,6 +189,16 @@ impl Server {
             .ok_or_else(|| anyhow!("document `{uri_text}` is not loaded in the analysis host"))?;
 
         Ok((analysis, file_id))
+    }
+}
+
+impl ServerState {
+    fn inlay_hint_source_enabled(&self, source: InlayHintSource) -> bool {
+        match source {
+            InlayHintSource::Variable => self.settings.inlay_hints.variables,
+            InlayHintSource::Parameter => self.settings.inlay_hints.parameters,
+            InlayHintSource::ReturnType => self.settings.inlay_hints.return_types,
+        }
     }
 }
 

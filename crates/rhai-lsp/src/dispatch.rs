@@ -8,9 +8,9 @@ use lsp_types::{
 };
 
 use crate::handlers::queries::semantic_token_legend;
-use crate::server::Server;
+use crate::state::ServerState;
 
-impl Server {
+impl ServerState {
     pub fn capabilities(&self) -> ServerCapabilities {
         ServerCapabilities {
             text_document_sync: Some(TextDocumentSyncCapability::Kind(TextDocumentSyncKind::FULL)),
@@ -24,7 +24,7 @@ impl Server {
             document_symbol_provider: Some(OneOf::Left(true)),
             workspace_symbol_provider: Some(OneOf::Left(true)),
             completion_provider: Some(CompletionOptions {
-                trigger_characters: Some(vec![".".to_owned()]),
+                trigger_characters: Some(completion_trigger_characters()),
                 resolve_provider: Some(true),
                 ..CompletionOptions::default()
             }),
@@ -66,4 +66,22 @@ impl Server {
             }),
         }
     }
+}
+
+fn completion_trigger_characters() -> Vec<String> {
+    let mut triggers = vec![
+        ".".to_owned(),
+        ":".to_owned(),
+        "@".to_owned(),
+        " ".to_owned(),
+    ];
+
+    for ch in 'a'..='z' {
+        triggers.push(ch.to_string());
+    }
+    for ch in 'A'..='Z' {
+        triggers.push(ch.to_string());
+    }
+
+    triggers
 }

@@ -2,9 +2,9 @@ use anyhow::{Result, anyhow};
 use lsp_types::Uri;
 use rhai_ide::{AutoImportAction, FilePosition};
 
-use crate::server::{CodeActionEdit, Server};
+use crate::state::{CodeActionEdit, ServerState};
 
-impl Server {
+impl ServerState {
     pub fn auto_import_actions(&self, uri: &Uri, offset: u32) -> Result<Vec<CodeActionEdit>> {
         let uri_text = uri.as_str();
         let document = self

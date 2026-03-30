@@ -1,5 +1,6 @@
 use crate::Server;
 use crate::tests::{absolute_test_path, assert_valid_rhai_syntax, file_url};
+use rhai_ide::{DiagnosticSeverity, DiagnosticTag};
 
 #[test]
 fn opening_document_returns_diagnostics_for_that_document() {
@@ -79,4 +80,23 @@ fn closing_document_clears_diagnostics_and_unloads_file() {
             .file_id_for_path(&absolute_test_path("main.rhai"))
             .is_none()
     );
+}
+
+#[test]
+fn unused_diagnostics_are_published_as_warnings() {
+    let mut server = Server::new();
+    let uri = file_url("main.rhai");
+
+    let updates = server
+        .open_document(uri, 1, "import \"shared_tools\" as tools;\nfn run() {}")
+        .expect("expected open_document to succeed");
+
+    let unused = updates
+        .iter()
+        .flat_map(|update| update.diagnostics.iter())
+        .find(|diagnostic| diagnostic.message == "unused symbol `tools`")
+        .expect("expected unused diagnostic");
+
+    assert_eq!(unused.severity, DiagnosticSeverity::Warning);
+    assert_eq!(unused.tags, vec![DiagnosticTag::Unnecessary]);
 }

@@ -4,9 +4,9 @@ use lsp_types::Uri;
 use rhai_db::{ChangeImpact, ChangeSet};
 use rhai_vfs::FileId;
 
-use crate::server::{DiagnosticUpdate, Server};
+use crate::state::{DiagnosticUpdate, ServerState};
 
-impl Server {
+impl ServerState {
     pub fn close_document(&mut self, uri: &Uri) -> Vec<DiagnosticUpdate> {
         let Some(document) = self.open_documents.remove(uri) else {
             return Vec::new();
@@ -15,12 +15,26 @@ impl Server {
         let impact = self
             .analysis_host
             .apply_change_report(ChangeSet::remove_file(document.normalized_path.clone()));
-        let mut updates = vec![DiagnosticUpdate {
-            uri: document.uri,
-            version: None,
-            diagnostics: Vec::new(),
-        }];
-        updates.extend(self.diagnostic_updates_for_impact(&impact));
+        let mut updates = self.diagnostic_updates_for_impact(&impact);
+        let reload_updates = self
+            .refresh_preloaded_files()
+            .map(|result| result.updates)
+            .unwrap_or_default();
+        updates.extend(reload_updates);
+
+        let is_still_loaded = self
+            .analysis_host
+            .snapshot()
+            .file_id_for_path(&document.normalized_path)
+            .is_some();
+        if !is_still_loaded {
+            updates.push(DiagnosticUpdate {
+                uri: document.uri,
+                version: None,
+                diagnostics: Vec::new(),
+            });
+        }
+
         dedupe_diagnostic_updates(updates)
     }
 
@@ -49,13 +63,17 @@ impl Server {
             let Some(path) = analysis.normalized_path(file_id) else {
                 continue;
             };
-            let Some(document) = path_to_document.get(path) else {
-                continue;
+            let (uri, version) = match path_to_document.get(path) {
+                Some(document) => (document.uri.clone(), Some(document.version)),
+                None => match self.uri_for_path(path) {
+                    Ok(uri) => (uri, None),
+                    Err(_) => continue,
+                },
             };
 
             updates.push(DiagnosticUpdate {
-                uri: document.uri.clone(),
-                version: Some(document.version),
+                uri,
+                version,
                 diagnostics: analysis.diagnostics(file_id),
             });
         }

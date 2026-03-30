@@ -3,14 +3,15 @@ use std::path::PathBuf;
 use lsp_types::Uri;
 use rhai_syntax::parse_text;
 
+use crate::state::uri_from_path;
+
 pub(crate) mod code_actions;
 pub(crate) mod diagnostics;
 pub(crate) mod queries;
 
 pub(crate) fn file_url(path: &str) -> Uri {
     let absolute = absolute_test_path(path);
-    let raw = format!("file:///{}", absolute.display()).replace('\\', "/");
-    raw.parse::<Uri>().expect("expected file URI")
+    uri_from_path(&absolute).expect("expected file URI")
 }
 
 pub(crate) fn absolute_test_path(path: &str) -> PathBuf {

@@ -1,11 +1,18 @@
+use std::fs;
+use std::path::PathBuf;
+use std::time::{SystemTime, UNIX_EPOCH};
+
 use lsp_types::{
-    CallHierarchyServerCapability, FoldingRangeKind, OneOf, Position, Range,
-    SemanticTokenModifier, SemanticTokenType, SemanticTokensServerCapabilities,
+    CallHierarchyServerCapability, DocumentChangeOperation, DocumentChanges, FoldingRangeKind,
+    OneOf, Position, Range, ResourceOp, SemanticTokenModifier, SemanticTokenType,
+    SemanticTokensServerCapabilities,
 };
 
-use crate::Server;
 use crate::handlers::queries::semantic_token_legend;
+use crate::protocol::rename_to_workspace_edit;
+use crate::state::uri_from_path;
 use crate::tests::{assert_valid_rhai_syntax, file_url, offset_in};
+use crate::{InlayHintSettings, Server, ServerSettings};
 
 #[test]
 fn capabilities_expose_signature_help_inlay_hints_workspace_symbols_and_semantic_tokens() {
@@ -31,6 +38,13 @@ fn capabilities_expose_signature_help_inlay_hints_workspace_symbols_and_semantic
             .as_ref()
             .and_then(|options| options.resolve_provider),
         Some(true)
+    );
+    assert!(
+        capabilities
+            .completion_provider
+            .as_ref()
+            .and_then(|options| options.trigger_characters.as_ref())
+            .is_some_and(|triggers| triggers.iter().any(|trigger| trigger == ":"))
     );
     assert!(matches!(
         capabilities.inlay_hint_provider,
@@ -255,6 +269,47 @@ fn inlay_hints_queries_flow_through_server() {
     assert!(
         hints.iter().any(|hint| hint.label == ": int"),
         "expected inferred variable hint, got {hints:?}"
+    );
+}
+
+#[test]
+fn inlay_hints_queries_respect_server_settings() {
+    let mut server = Server::new();
+    server.configure_settings(ServerSettings {
+        inlay_hints: InlayHintSettings {
+            variables: false,
+            parameters: true,
+            return_types: false,
+        },
+    });
+
+    let uri = file_url("main.rhai");
+    let text = r#"
+        fn helper(value) {
+            value
+        }
+
+        fn run() {
+            let result = helper(1);
+        }
+    "#;
+
+    assert_valid_rhai_syntax(text);
+    server
+        .open_document(uri.clone(), 1, text)
+        .expect("expected open_document to succeed");
+
+    let hints = server
+        .inlay_hints(&uri)
+        .expect("expected inlay hints query to succeed");
+
+    assert!(
+        hints.iter().any(|hint| hint.label == ": int"),
+        "expected parameter hint, got {hints:?}"
+    );
+    assert!(
+        !hints.iter().any(|hint| hint.label == " -> int"),
+        "did not expect return-type hint, got {hints:?}"
     );
 }
 
@@ -489,4 +544,183 @@ fn document_range_formatting_queries_flow_through_server() {
     assert!(edit.range.end.line <= 2);
     assert!(edit.new_text.contains("fn run"));
     assert!(edit.new_text.contains("let value = 1 + 2;"));
+}
+
+#[test]
+fn workspace_preload_enables_cross_file_references_and_rename_for_unopened_importers() {
+    let workspace = create_temp_workspace("workspace-preload");
+    let provider_path = workspace.join("provider.rhai");
+    let consumer_path = workspace.join("consumer.rhai");
+    let provider_text = "fn hello() {}\n";
+    let consumer_text = "import \"provider\" as d;\n\nfn run() {\n    d::hello();\n}\n";
+
+    fs::write(&provider_path, provider_text).expect("expected provider write to succeed");
+    fs::write(&consumer_path, consumer_text).expect("expected consumer write to succeed");
+
+    let mut server = Server::new();
+    server
+        .load_workspace_roots(std::slice::from_ref(&workspace))
+        .expect("expected workspace preload to succeed");
+
+    let provider_uri = uri_from_path(&provider_path).expect("expected provider uri");
+    server
+        .open_document(provider_uri.clone(), 1, provider_text)
+        .expect("expected provider open to succeed");
+
+    let references = server
+        .find_references(&provider_uri, offset_in(provider_text, "hello") + 1)
+        .expect("expected references query to succeed")
+        .expect("expected references");
+    assert!(
+        references
+            .references
+            .iter()
+            .any(|reference| reference.file_id
+                == server
+                    .analysis_host()
+                    .snapshot()
+                    .file_id_for_path(&consumer_path)
+                    .expect("expected consumer file id")),
+        "expected consumer references, got {references:?}"
+    );
+
+    let prepared = server
+        .rename(
+            &provider_uri,
+            offset_in(provider_text, "hello") + 1,
+            "renamed_hello".to_owned(),
+        )
+        .expect("expected rename query to succeed")
+        .expect("expected prepared rename");
+    let source_change = prepared
+        .source_change
+        .expect("expected rename source change");
+    let consumer_file_id = server
+        .analysis_host()
+        .snapshot()
+        .file_id_for_path(&consumer_path)
+        .expect("expected consumer file id");
+    assert!(
+        source_change
+            .file_edits
+            .iter()
+            .any(|edit| edit.file_id == consumer_file_id),
+        "expected consumer file edits, got {source_change:?}"
+    );
+
+    let _ = fs::remove_dir_all(&workspace);
+}
+
+#[test]
+fn static_imports_can_load_modules_outside_workspace_roots() {
+    let base = create_temp_workspace("external-imports");
+    let workspace = base.join("workspace");
+    let shared = base.join("shared");
+    fs::create_dir_all(&workspace).expect("expected workspace directory");
+    fs::create_dir_all(&shared).expect("expected shared directory");
+
+    let provider_path = shared.join("provider.rhai");
+    let consumer_path = workspace.join("consumer.rhai");
+    let provider_text = "fn hello() {}\n";
+    let consumer_text = "import \"../shared/provider\" as d;\n\nfn run() {\n    d::hello();\n}\n";
+
+    fs::write(&provider_path, provider_text).expect("expected provider write to succeed");
+    fs::write(&consumer_path, consumer_text).expect("expected consumer write to succeed");
+
+    let mut server = Server::new();
+    server
+        .load_workspace_roots(std::slice::from_ref(&workspace))
+        .expect("expected workspace preload to succeed");
+
+    let consumer_uri = uri_from_path(&consumer_path).expect("expected consumer uri");
+    let provider_uri = uri_from_path(&provider_path).expect("expected provider uri");
+    server
+        .open_document(consumer_uri.clone(), 1, consumer_text)
+        .expect("expected consumer open to succeed");
+
+    let definitions = server
+        .goto_definition(&consumer_uri, offset_in(consumer_text, "hello") + 1)
+        .expect("expected goto definition query to succeed");
+    assert!(
+        definitions.iter().any(|target| target.file_id
+            == server
+                .analysis_host()
+                .snapshot()
+                .file_id_for_path(&provider_path)
+                .expect("expected provider file id")),
+        "expected external provider target, got {definitions:?}"
+    );
+
+    let symbols = server
+        .workspace_symbols("hello")
+        .expect("expected workspace symbols query to succeed");
+    assert!(
+        symbols
+            .iter()
+            .any(|symbol| symbol.uri == provider_uri && symbol.symbol.name == "hello"),
+        "expected external provider symbol, got {symbols:?}"
+    );
+
+    let _ = fs::remove_dir_all(&base);
+}
+
+#[test]
+fn rename_on_static_import_module_reference_returns_text_edits_and_file_rename() {
+    let mut server = Server::new();
+    let provider_uri = file_url("demo.rhai");
+    let consumer_uri = file_url("consumer.rhai");
+    let provider_text = "fn hello() {}\n";
+    let consumer_text = "import \"demo\" as d;\n\nfn run() {\n    d::hello();\n}\n";
+
+    assert_valid_rhai_syntax(provider_text);
+    assert_valid_rhai_syntax(consumer_text);
+    server
+        .open_document(provider_uri.clone(), 1, provider_text)
+        .expect("expected provider open to succeed");
+    server
+        .open_document(consumer_uri.clone(), 1, consumer_text)
+        .expect("expected consumer open to succeed");
+
+    let prepared = server
+        .rename(
+            &consumer_uri,
+            offset_in(consumer_text, "\"demo\"") + 1,
+            "renamed_demo".to_owned(),
+        )
+        .expect("expected rename query to succeed")
+        .expect("expected prepared rename");
+    let workspace_edit =
+        rename_to_workspace_edit(&server, prepared).expect("expected workspace edit");
+    let document_changes = workspace_edit
+        .document_changes
+        .expect("expected document changes");
+    let DocumentChanges::Operations(document_changes) = document_changes else {
+        panic!("expected operation-based workspace edit");
+    };
+
+    assert!(
+        document_changes
+            .iter()
+            .any(|change| matches!(change, DocumentChangeOperation::Edit(_))),
+        "expected text edits in workspace edit, got {document_changes:?}"
+    );
+    assert!(
+        document_changes.iter().any(|change| matches!(
+            change,
+            DocumentChangeOperation::Op(ResourceOp::Rename(rename))
+                if rename.new_uri.as_str().ends_with("/renamed_demo.rhai")
+                    || rename.new_uri.as_str().ends_with("\\renamed_demo.rhai")
+        )),
+        "expected file rename in workspace edit, got {document_changes:?}"
+    );
+}
+
+fn create_temp_workspace(prefix: &str) -> PathBuf {
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("expected system time")
+        .as_nanos();
+    let workspace = std::env::temp_dir().join(format!("rhai-analyzer-{prefix}-{unique}"));
+    fs::create_dir_all(&workspace).expect("expected temporary workspace directory");
+    workspace
 }
