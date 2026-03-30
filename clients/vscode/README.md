@@ -16,6 +16,7 @@ Language semantics, diagnostics, formatting, and type inference remain in the Ru
 The current client provides:
 
 - local development discovery for `rhai-lsp` under `target/debug`
+- packaged server discovery under `server/` inside the extension bundle
 - explicit server-path configuration
 - `stdio` transport for normal editor use
 - TCP transport for local protocol debugging
@@ -58,8 +59,46 @@ To build a local `.vsix` package:
 ```powershell
 cd clients/vscode
 npm install
+npm run build
 npm run package
 ```
+
+The packaging step will:
+
+- build the TypeScript client
+- stage one or more `rhai-lsp` binaries into `clients/vscode/server/<target>/`
+- produce a `.vsix` package
+
+For local packaging, the server binary is resolved from:
+
+- `RHAI_SERVER_PATH`, if set
+- `target/release/rhai-lsp`
+- `target/debug/rhai-lsp`
+
+The local package only bundles the current host target. If you want the packaged
+extension to be directly installable on your current machine, make sure one of
+those binaries exists before packaging:
+
+```powershell
+cargo build --release -p rhai-lsp
+cd clients/vscode
+npm run package
+```
+
+The CI packaging workflow builds and bundles all native VS Code targets into one
+universal installable VSIX:
+
+- `win32-x64`
+- `win32-arm64`
+- `linux-x64`
+- `linux-arm64`
+- `linux-armhf`
+- `alpine-x64`
+- `alpine-arm64`
+- `darwin-x64`
+- `darwin-arm64`
+
+At runtime, the extension picks the bundled server that matches the current host.
 
 The packaged extension is written to:
 

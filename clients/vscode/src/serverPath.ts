@@ -2,6 +2,7 @@ import * as path from "node:path";
 import * as net from "node:net";
 import * as fs from "node:fs";
 import * as vscode from "vscode";
+import { familySync, MUSL } from "detect-libc";
 import {
     Executable,
     ServerOptions,
@@ -65,23 +66,90 @@ function resolveServerCommand(
         return repoDevelopmentBuild;
     }
 
-    const packagedServer = path.join(
-        context.extensionPath,
-        "server",
-        executable,
-    );
-    if (fs.existsSync(packagedServer)) {
-        return packagedServer;
+    const packagedCandidates = packagedServerCandidates(context.extensionPath);
+    for (const packagedServer of packagedCandidates) {
+        if (fs.existsSync(packagedServer)) {
+            return packagedServer;
+        }
     }
 
     throw new Error(
         [
             "Could not locate rhai-lsp.",
             `Looked for: ${repoDevelopmentBuild}`,
-            `Looked for: ${packagedServer}`,
+            ...packagedCandidates.map((candidate) => `Looked for: ${candidate}`),
             "Set `rhai.server.path` to the built rhai-lsp executable, or run `cargo build -p rhai-lsp` in the rhai-analyzer repository.",
         ].join(" "),
     );
+}
+
+function packagedServerCandidates(extensionPath: string): string[] {
+    const candidates = preferredBundledTargets().map((target) =>
+        path.join(extensionPath, "server", target, executableNameForTarget(target)),
+    );
+
+    // Preserve compatibility with older locally packaged layouts.
+    candidates.push(path.join(extensionPath, "server", executableName("rhai-lsp")));
+    return candidates;
+}
+
+function preferredBundledTargets(): string[] {
+    const target = currentVsCodeTarget();
+    if (!target) {
+        return [];
+    }
+
+    const fallbacks = [target];
+    if (target.startsWith("alpine-")) {
+        fallbacks.push(target.replace("alpine-", "linux-"));
+    }
+
+    return fallbacks;
+}
+
+function currentVsCodeTarget(): string | undefined {
+    switch (process.platform) {
+        case "win32":
+            switch (process.arch) {
+                case "x64":
+                    return "win32-x64";
+                case "arm64":
+                    return "win32-arm64";
+                default:
+                    return undefined;
+            }
+
+        case "darwin":
+            switch (process.arch) {
+                case "x64":
+                    return "darwin-x64";
+                case "arm64":
+                    return "darwin-arm64";
+                default:
+                    return undefined;
+            }
+
+        case "linux":
+            switch (process.arch) {
+                case "x64":
+                    return familySync() === MUSL ? "alpine-x64" : "linux-x64";
+                case "arm64":
+                    return familySync() === MUSL ? "alpine-arm64" : "linux-arm64";
+                case "arm":
+                    return "linux-armhf";
+                default:
+                    return undefined;
+            }
+
+        default:
+            return undefined;
+    }
+}
+
+function executableNameForTarget(target: string): string {
+    return target.startsWith("win32-")
+        ? executableName("rhai-lsp")
+        : "rhai-lsp";
 }
 
 function executableName(base: string): string {

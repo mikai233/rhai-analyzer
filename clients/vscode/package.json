@@ -24,6 +24,7 @@
   "main": "./out/extension.js",
   "files": [
     "out/**/*",
+    "server/**/*",
     "language-configuration.json",
     "LICENSE",
     "README.md",
@@ -141,9 +142,11 @@
     "build": "npm exec -- tsc -p ./",
     "watch": "npm exec -- tsc -w -p ./",
     "vscode:prepublish": "npm run build",
-    "package": "node -e \"require('fs').mkdirSync('.artifacts', { recursive: true })\" && npm exec -- vsce package --out ./.artifacts/rhai-analyzer.vsix"
+    "prepare-server": "node ./scripts/prepare-server.mjs",
+    "package": "npm run build && npm run prepare-server && node ./scripts/package-extension.mjs"
   },
   "dependencies": {
+    "detect-libc": "^2.1.2",
     "vscode-languageclient": "^9.0.1"
   },
   "devDependencies": {
