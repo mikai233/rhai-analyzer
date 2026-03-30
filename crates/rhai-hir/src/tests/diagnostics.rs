@@ -40,12 +40,7 @@ fn semantic_diagnostics_report_duplicate_definitions_in_same_scope() {
         .filter(|diagnostic| diagnostic.kind == SemanticDiagnosticKind::DuplicateDefinition)
         .collect::<Vec<_>>();
 
-    assert_eq!(diagnostics.len(), 3);
-    assert!(
-        diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.message == "duplicate definition of `value`")
-    );
+    assert_eq!(diagnostics.len(), 1);
     assert!(
         diagnostics
             .iter()
@@ -54,13 +49,29 @@ fn semantic_diagnostics_report_duplicate_definitions_in_same_scope() {
     assert!(
         diagnostics
             .iter()
-            .any(|diagnostic| diagnostic.message == "duplicate definition of `local`")
-    );
-    assert!(
-        diagnostics
-            .iter()
             .all(|diagnostic| diagnostic.related_range.is_some())
     );
+}
+
+#[test]
+fn semantic_diagnostics_allow_variable_and_constant_shadowing() {
+    let parse = parse_valid(
+        r#"
+            let value = 1;
+            let value = "hello";
+
+            const LIMIT = 1;
+            const LIMIT = 2;
+        "#,
+    );
+    let hir = lower_file(&parse);
+    let diagnostics = hir
+        .diagnostics()
+        .into_iter()
+        .filter(|diagnostic| diagnostic.kind == SemanticDiagnosticKind::DuplicateDefinition)
+        .collect::<Vec<_>>();
+
+    assert!(diagnostics.is_empty(), "{diagnostics:?}");
 }
 
 #[test]

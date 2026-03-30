@@ -67,18 +67,49 @@ impl Formatter<'_> {
     fn format_root(&self, root: Root<'_>) -> String {
         let items = root.items().collect::<Vec<_>>();
         let mut out = String::new();
+        let mut cursor = u32::from(root.syntax().range().start()) as usize;
 
         for (index, item) in items.iter().enumerate() {
-            if index > 0 {
-                let previous_is_fn = matches!(items[index - 1], Item::Fn(_));
+            let item_start = u32::from(item.syntax().range().start()) as usize;
+            if let Some(comments) = self.format_comment_region(cursor, item_start, 0) {
+                let previous_is_fn = index > 0 && matches!(items[index - 1], Item::Fn(_));
                 let current_is_fn = matches!(item, Item::Fn(_));
-                out.push_str(if previous_is_fn || current_is_fn {
-                    "\n\n"
-                } else {
-                    "\n"
-                });
+                if !out.is_empty() {
+                    self.push_separator(
+                        &mut out,
+                        if previous_is_fn || current_is_fn {
+                            2
+                        } else {
+                            1
+                        },
+                        cursor,
+                        item_start,
+                    );
+                }
+                out.push_str(&comments);
+                out.push('\n');
+            } else if index > 0 {
+                self.push_separator(
+                    &mut out,
+                    if matches!(items[index - 1], Item::Fn(_)) || matches!(item, Item::Fn(_)) {
+                        2
+                    } else {
+                        1
+                    },
+                    cursor,
+                    item_start,
+                );
             }
             out.push_str(&self.format_item(*item, 0));
+            cursor = u32::from(item.syntax().range().end()) as usize;
+        }
+
+        let root_end = u32::from(root.syntax().range().end()) as usize;
+        if let Some(comments) = self.format_comment_region(cursor, root_end, 0) {
+            if !out.is_empty() && !out.ends_with('\n') {
+                out.push('\n');
+            }
+            out.push_str(&comments);
         }
 
         if !out.is_empty() {
@@ -264,16 +295,49 @@ impl Formatter<'_> {
 
     fn format_block(&self, block: BlockExpr<'_>, indent: usize) -> String {
         let items = block.items().collect::<Vec<_>>();
-        if items.is_empty() {
+        let open_brace_end = self
+            .token_range(block.syntax(), TokenKind::OpenBrace)
+            .map(|range| u32::from(range.end()) as usize)
+            .unwrap_or_else(|| u32::from(block.syntax().range().start()) as usize);
+        let close_brace_start = self
+            .token_range(block.syntax(), TokenKind::CloseBrace)
+            .map(|range| u32::from(range.start()) as usize)
+            .unwrap_or_else(|| u32::from(block.syntax().range().end()) as usize);
+
+        let first_item_start = items
+            .first()
+            .map(|item| u32::from(item.syntax().range().start()) as usize)
+            .unwrap_or(close_brace_start);
+        let leading_comments =
+            self.format_comment_region(open_brace_end, first_item_start, indent + 1);
+        if items.is_empty() && leading_comments.is_none() {
             return "{}".to_owned();
         }
 
         let mut out = String::from("{\n");
+        if let Some(comments) = leading_comments {
+            out.push_str(&comments);
+            out.push('\n');
+        }
+
+        let mut cursor = first_item_start;
         for (index, item) in items.iter().enumerate() {
-            if index > 0 {
+            let item_start = u32::from(item.syntax().range().start()) as usize;
+            if let Some(comments) = self.format_comment_region(cursor, item_start, indent + 1) {
+                if index > 0 || !out.ends_with('\n') {
+                    self.push_separator(&mut out, 1, cursor, item_start);
+                }
+                out.push_str(&comments);
                 out.push('\n');
+            } else if index > 0 {
+                self.push_separator(&mut out, 1, cursor, item_start);
             }
             out.push_str(&self.format_item(*item, indent + 1));
+            cursor = u32::from(item.syntax().range().end()) as usize;
+        }
+        if let Some(comments) = self.format_comment_region(cursor, close_brace_start, indent + 1) {
+            self.push_separator(&mut out, 1, cursor, close_brace_start);
+            out.push_str(&comments);
         }
         out.push('\n');
         out.push_str(&self.indent(indent));
@@ -698,11 +762,101 @@ impl Formatter<'_> {
         alias.alias_token().map(|token| token.text(self.source))
     }
 
+    fn format_comment_region(&self, start: usize, end: usize, indent: usize) -> Option<String> {
+        if start >= end || end > self.source.len() {
+            return None;
+        }
+
+        let slice = &self.source[start..end];
+        let mut lines = Vec::<String>::new();
+        let mut in_block_comment = false;
+        let mut pending_blank = false;
+
+        for raw_line in slice.lines() {
+            let trimmed = raw_line.trim();
+            let trimmed_start = raw_line.trim_start();
+            let is_comment_line = in_block_comment
+                || trimmed_start.starts_with("//")
+                || trimmed_start.starts_with("#!")
+                || trimmed_start.starts_with("/*");
+
+            if is_comment_line {
+                if pending_blank && !lines.is_empty() {
+                    lines.push(String::new());
+                    pending_blank = false;
+                }
+                lines.push(format!(
+                    "{}{}",
+                    self.indent(indent),
+                    trimmed_start.trim_end()
+                ));
+            } else if trimmed.is_empty() && !lines.is_empty() {
+                pending_blank = true;
+            }
+
+            if in_block_comment {
+                if trimmed_start.contains("*/") {
+                    in_block_comment = false;
+                }
+            } else if trimmed_start.starts_with("/*") && !trimmed_start.contains("*/") {
+                in_block_comment = true;
+            }
+        }
+
+        if lines.is_empty() {
+            None
+        } else {
+            Some(lines.join("\n"))
+        }
+    }
+
+    fn token_range(&self, node: &SyntaxNode, kind: TokenKind) -> Option<TextRange> {
+        node.children()
+            .iter()
+            .filter_map(|child| child.as_token())
+            .find(|token| token.kind() == kind)
+            .map(|token| token.range())
+    }
+
     fn indent(&self, level: usize) -> String {
         match self.options.indent_style {
             IndentStyle::Spaces => " ".repeat(level * self.options.indent_width),
             IndentStyle::Tabs => "\t".repeat(level),
         }
+    }
+
+    fn push_separator(&self, out: &mut String, minimum_newlines: usize, start: usize, end: usize) {
+        let desired = minimum_newlines.max(self.extra_blank_line_count(start, end) + 1);
+        let existing = out.chars().rev().take_while(|ch| *ch == '\n').count();
+        if existing >= desired {
+            return;
+        }
+
+        for _ in 0..(desired - existing) {
+            out.push('\n');
+        }
+    }
+
+    fn extra_blank_line_count(&self, start: usize, end: usize) -> usize {
+        if start >= end || end > self.source.len() {
+            return 0;
+        }
+
+        let slice = &self.source[start..end];
+        let mut lines = slice.lines().collect::<Vec<_>>();
+        if lines.is_empty() {
+            return 0;
+        }
+
+        lines.remove(0);
+        if !slice.ends_with('\n') && lines.last().is_some_and(|line| line.trim().is_empty()) {
+            lines.pop();
+        }
+
+        lines
+            .into_iter()
+            .filter(|line| line.trim().is_empty())
+            .count()
     }
 }
 
@@ -715,7 +869,10 @@ fn contains_token(node: &SyntaxNode, kind: TokenKind) -> bool {
     })
 }
 
-fn minimal_changed_region<'a>(original: &'a str, formatted: &'a str) -> Option<(usize, usize, &'a str)> {
+fn minimal_changed_region<'a>(
+    original: &'a str,
+    formatted: &'a str,
+) -> Option<(usize, usize, &'a str)> {
     if original == formatted {
         return None;
     }

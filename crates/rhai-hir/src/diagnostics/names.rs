@@ -41,6 +41,12 @@ impl FileHir {
         self.symbols
             .iter()
             .filter_map(|symbol| {
+                if matches!(
+                    symbol.kind,
+                    crate::SymbolKind::Variable | crate::SymbolKind::Constant
+                ) {
+                    return None;
+                }
                 let previous = symbol.duplicate_of?;
                 Some(SemanticDiagnostic {
                     kind: SemanticDiagnosticKind::DuplicateDefinition,

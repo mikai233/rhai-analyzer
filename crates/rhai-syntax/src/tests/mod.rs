@@ -2,6 +2,7 @@ use crate::{Parse, SyntaxKind, SyntaxNode, TokenKind};
 
 pub(crate) mod recovery;
 pub(crate) mod rhai_alignment;
+pub(crate) mod semicolons;
 pub(crate) mod valid;
 
 pub(crate) fn first_stmt_expr(parse: &Parse) -> &SyntaxNode {

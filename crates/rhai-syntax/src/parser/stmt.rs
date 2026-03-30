@@ -2,6 +2,33 @@ use crate::parser::Parser;
 use crate::syntax::{SyntaxKind, SyntaxNode, TokenKind, empty_range, node_element};
 
 impl<'a> Parser<'a> {
+    fn finish_statement(
+        &mut self,
+        children: &mut Vec<crate::SyntaxElement>,
+        can_omit_semicolon_before_next: bool,
+    ) {
+        if let Some(semicolon) = self.eat(TokenKind::Semicolon, "`;` token should be present") {
+            children.push(semicolon);
+            return;
+        }
+
+        if !self.is_eof() && !self.at(TokenKind::CloseBrace) && !can_omit_semicolon_before_next {
+            children.push(self.missing_error("expected `;` to terminate statement"));
+        }
+    }
+
+    fn expr_stmt_can_omit_semicolon_before_next(expr: &SyntaxNode) -> bool {
+        matches!(
+            expr.kind(),
+            SyntaxKind::ExprIf
+                | SyntaxKind::ExprWhile
+                | SyntaxKind::ExprLoop
+                | SyntaxKind::ExprFor
+                | SyntaxKind::ExprSwitch
+                | SyntaxKind::Block
+        )
+    }
+
     pub(crate) fn parse_stmt(&mut self) -> SyntaxNode {
         if self.at_fn_item_start() {
             return self.parse_fn_item();
@@ -36,9 +63,7 @@ impl<'a> Parser<'a> {
             children.push(node_element(self.parse_expr(0)));
         }
 
-        if let Some(semicolon) = self.eat(TokenKind::Semicolon, "`;` token should be present") {
-            children.push(semicolon);
-        }
+        self.finish_statement(&mut children, false);
 
         SyntaxNode::new(SyntaxKind::StmtLet, children, start)
     }
@@ -64,9 +89,7 @@ impl<'a> Parser<'a> {
             children.push(node_element(self.parse_expr(0)));
         }
 
-        if let Some(semicolon) = self.eat(TokenKind::Semicolon, "`;` token should be present") {
-            children.push(semicolon);
-        }
+        self.finish_statement(&mut children, false);
 
         SyntaxNode::new(SyntaxKind::StmtConst, children, start)
     }
@@ -85,9 +108,7 @@ impl<'a> Parser<'a> {
             children.push(node_element(self.parse_alias_clause()));
         }
 
-        if let Some(semicolon) = self.eat(TokenKind::Semicolon, "`;` token should be present") {
-            children.push(semicolon);
-        }
+        self.finish_statement(&mut children, false);
 
         SyntaxNode::new(SyntaxKind::StmtImport, children, start)
     }
@@ -142,10 +163,8 @@ impl<'a> Parser<'a> {
             children.push(node_element(alias));
         }
 
-        if !parsed_declaration
-            && let Some(semicolon) = self.eat(TokenKind::Semicolon, "`;` token should be present")
-        {
-            children.push(semicolon);
+        if !parsed_declaration {
+            self.finish_statement(&mut children, false);
         }
 
         SyntaxNode::new(SyntaxKind::StmtExport, children, start)
@@ -159,9 +178,7 @@ impl<'a> Parser<'a> {
             children.push(node_element(self.parse_expr(0)));
         }
 
-        if let Some(semicolon) = self.eat(TokenKind::Semicolon, "`;` token should be present") {
-            children.push(semicolon);
-        }
+        self.finish_statement(&mut children, false);
 
         SyntaxNode::new(kind, children, start)
     }
@@ -170,9 +187,7 @@ impl<'a> Parser<'a> {
         let start = self.current_offset();
         let mut children = vec![self.bump_element("`continue` token should be present")];
 
-        if let Some(semicolon) = self.eat(TokenKind::Semicolon, "`;` token should be present") {
-            children.push(semicolon);
-        }
+        self.finish_statement(&mut children, false);
 
         SyntaxNode::new(SyntaxKind::StmtContinue, children, start)
     }
@@ -195,11 +210,11 @@ impl<'a> Parser<'a> {
 
     pub(crate) fn parse_expr_stmt(&mut self) -> SyntaxNode {
         let start = self.current_offset();
-        let mut children = vec![node_element(self.parse_expr(0))];
+        let expr = self.parse_expr(0);
+        let can_omit_semicolon_before_next = Self::expr_stmt_can_omit_semicolon_before_next(&expr);
+        let mut children = vec![node_element(expr)];
 
-        if let Some(semicolon) = self.eat(TokenKind::Semicolon, "`;` token should be present") {
-            children.push(semicolon);
-        }
+        self.finish_statement(&mut children, can_omit_semicolon_before_next);
 
         SyntaxNode::new(SyntaxKind::StmtExpr, children, start)
     }

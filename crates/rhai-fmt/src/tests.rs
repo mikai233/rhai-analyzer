@@ -112,6 +112,133 @@ do { mapper(items[0]) } while items.len()<3;
 }
 
 #[test]
+fn formatter_preserves_top_level_doc_comments() {
+    let source = r#"
+/// Adds one to the value.
+fn add_one(value){
+value+1
+}
+"#;
+
+    let result = format_text(source, &FormatOptions::default());
+    let expected = r#"/// Adds one to the value.
+fn add_one(value) {
+    value + 1
+}
+"#;
+
+    assert_eq!(result.text, expected);
+    assert!(parse_text(&result.text).errors().is_empty());
+}
+
+#[test]
+fn formatter_keeps_blank_line_between_functions_and_following_doc_comments() {
+    let source = r#"
+fn first(){
+1
+}
+/// second docs
+fn second(){
+2
+}
+"#;
+
+    let result = format_text(source, &FormatOptions::default());
+    let expected = r#"fn first() {
+    1
+}
+
+/// second docs
+fn second() {
+    2
+}
+"#;
+
+    assert_eq!(result.text, expected);
+    assert!(parse_text(&result.text).errors().is_empty());
+}
+
+#[test]
+fn formatter_preserves_extra_blank_lines_between_top_level_items() {
+    let source = r#"
+fn first(){
+1
+}
+
+
+fn second(){
+2
+}
+"#;
+
+    let result = format_text(source, &FormatOptions::default());
+    let expected = r#"fn first() {
+    1
+}
+
+
+fn second() {
+    2
+}
+"#;
+
+    assert_eq!(result.text, expected);
+    assert!(parse_text(&result.text).errors().is_empty());
+}
+
+#[test]
+fn formatter_preserves_comments_inside_blocks() {
+    let source = r#"
+fn run(){
+// before
+let value=1;
+// after
+value
+/* trailing */
+}
+"#;
+
+    let result = format_text(source, &FormatOptions::default());
+    let expected = r#"fn run() {
+    // before
+    let value = 1;
+    // after
+    value
+    /* trailing */
+}
+"#;
+
+    assert_eq!(result.text, expected);
+    assert!(parse_text(&result.text).errors().is_empty());
+}
+
+#[test]
+fn formatter_preserves_extra_blank_lines_inside_blocks() {
+    let source = r#"
+fn run(){
+let first=1;
+
+
+let second=2;
+second
+}
+"#;
+
+    let result = format_text(source, &FormatOptions::default());
+    let expected = r#"fn run() {
+    let first = 1;
+
+
+    let second = 2;
+    second
+}
+"#;
+
+    assert_eq!(result.text, expected);
+    assert!(parse_text(&result.text).errors().is_empty());
+}
+
+#[test]
 fn formatter_options_default_to_document_spaces_and_trailing_commas() {
     let options = FormatOptions::default();
 
