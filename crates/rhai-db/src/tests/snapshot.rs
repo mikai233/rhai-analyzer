@@ -1,5 +1,7 @@
 use crate::tests::{
-    assert_workspace_files_have_no_syntax_diagnostics, offset_in, symbol_id_by_name,
+    assert_global_function_has_signature, assert_global_functions_include,
+    assert_workspace_files_have_no_syntax_diagnostics, global_function_by_name, offset_in,
+    symbol_id_by_name,
 };
 use crate::{AnalyzerDatabase, ChangeSet, FileChange};
 use rhai_hir::{FunctionTypeRef, SymbolKind, TypeRef};
@@ -195,14 +197,81 @@ fn snapshot_exposes_project_semantics() {
             ret: Box::new(rhai_hir::TypeRef::String),
         }))
     );
-    assert_eq!(snapshot.global_functions().len(), 6);
-    assert_eq!(snapshot.global_functions()[0].name, "blob");
-    assert_eq!(snapshot.global_functions()[1].name, "timestamp");
-    assert_eq!(snapshot.global_functions()[2].name, "Fn");
-    assert_eq!(snapshot.global_functions()[3].name, "is_def_var");
-    assert_eq!(snapshot.global_functions()[4].name, "is_def_fn");
-    assert_eq!(snapshot.global_functions()[5].name, "type_of");
-    assert_eq!(snapshot.global_functions()[0].overloads.len(), 3);
+    assert_eq!(
+        snapshot.external_signatures().get("print"),
+        Some(&rhai_hir::TypeRef::Function(rhai_hir::FunctionTypeRef {
+            params: vec![rhai_hir::TypeRef::Any],
+            ret: Box::new(rhai_hir::TypeRef::Unit),
+        }))
+    );
+    assert_eq!(
+        snapshot.external_signatures().get("debug"),
+        Some(&rhai_hir::TypeRef::Function(rhai_hir::FunctionTypeRef {
+            params: vec![rhai_hir::TypeRef::Any],
+            ret: Box::new(rhai_hir::TypeRef::Unit),
+        }))
+    );
+    assert_eq!(
+        snapshot.external_signatures().get("parse_int"),
+        Some(&rhai_hir::TypeRef::Function(rhai_hir::FunctionTypeRef {
+            params: vec![rhai_hir::TypeRef::String],
+            ret: Box::new(rhai_hir::TypeRef::Int),
+        }))
+    );
+    assert_eq!(
+        snapshot.external_signatures().get("parse_float"),
+        Some(&rhai_hir::TypeRef::Function(rhai_hir::FunctionTypeRef {
+            params: vec![rhai_hir::TypeRef::String],
+            ret: Box::new(rhai_hir::TypeRef::Float),
+        }))
+    );
+    assert_eq!(
+        snapshot.external_signatures().get("eval"),
+        Some(&rhai_hir::TypeRef::Function(rhai_hir::FunctionTypeRef {
+            params: vec![rhai_hir::TypeRef::String],
+            ret: Box::new(rhai_hir::TypeRef::Dynamic),
+        }))
+    );
+    assert_global_functions_include(
+        &snapshot,
+        &[
+            "blob",
+            "timestamp",
+            "Fn",
+            "is_def_var",
+            "is_def_fn",
+            "type_of",
+            "print",
+            "debug",
+            "parse_int",
+            "parse_float",
+            "eval",
+        ],
+    );
+    assert_eq!(
+        global_function_by_name(&snapshot, "blob").overloads.len(),
+        3
+    );
+    assert_global_function_has_signature(
+        &snapshot,
+        "is_def_fn",
+        &rhai_hir::FunctionTypeRef {
+            params: vec![
+                rhai_hir::TypeRef::String,
+                rhai_hir::TypeRef::String,
+                rhai_hir::TypeRef::Int,
+            ],
+            ret: Box::new(rhai_hir::TypeRef::Bool),
+        },
+    );
+    assert_global_function_has_signature(
+        &snapshot,
+        "parse_int",
+        &rhai_hir::FunctionTypeRef {
+            params: vec![rhai_hir::TypeRef::String, rhai_hir::TypeRef::Int],
+            ret: Box::new(rhai_hir::TypeRef::Int),
+        },
+    );
     assert_eq!(snapshot.external_signatures().get("math::parse"), None);
 }
 
