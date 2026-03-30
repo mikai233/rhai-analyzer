@@ -24,8 +24,17 @@ It does not own parsing, semantic lowering, incremental database logic, or edito
   - references
   - rename
   - hover
+  - document highlights
+  - call hierarchy
+  - folding ranges
   - document symbols
+  - workspace symbols
   - completion
+  - signature help
+  - inlay hints
+  - semantic tokens
+  - document formatting
+  - document range formatting
   - code actions
 
 ### Handlers
@@ -33,21 +42,23 @@ It does not own parsing, semantic lowering, incremental database logic, or edito
 - Diagnostic publication based on semantic and project-aware analysis results
 - Close/update behavior that refreshes diagnostics consistently
 - Code action translation for source fixes and import-related edits
+- Query forwarding for completion, completion resolve, signature help, call hierarchy, document highlights, folding ranges, inlay hints, semantic tokens, workspace symbols, document formatting, and document range formatting
+- Semantic-token legend/encoding for Rhai token categories plus declaration/readonly modifiers
 
 ### Test Coverage
 
 - Focused LSP-layer tests for diagnostics
 - Focused LSP-layer tests for code actions
+- Focused LSP-layer tests for query-style language features
 
 ## Current Boundaries
 
 - The crate is intentionally thin and currently exposes only a small set of LSP features.
-- Completion resolve, signature help, semantic tokens, inlay hints, folding ranges, and call hierarchy are not yet wired at the protocol layer.
 - Sync is currently full-document sync, not incremental edit sync.
 - Protocol presentation is still fairly minimal and can grow richer as `rhai-ide` adds more structured metadata.
 
 ## Next Steps
 
-- Add protocol wiring for more `rhai-ide` queries such as signature help and richer completion flows
+- Add protocol wiring for more `rhai-ide` queries and richer completion flows
 - Support incremental sync if/when it becomes worthwhile for the editor integration story
 - Expand protocol output richness for diagnostics, code actions, and future semantic features

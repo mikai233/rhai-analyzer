@@ -15,10 +15,13 @@ pub use crate::assists::{Assist, AssistId, AssistKind, DiagnosticWithFixes};
 pub use crate::change::{AutoImportAction, FileTextEdit, SourceChange, TextEdit};
 pub use crate::navigation::rename::PreparedRename;
 pub use crate::types::{
-    CompletionItem, CompletionItemKind, CompletionItemSource, Diagnostic, DocumentSymbol,
-    FilePosition, HoverResult, InlayHint, InlayHintKind, NavigationTarget, ReferenceKind,
-    ReferenceLocation, ReferencesResult, RenameIssue, RenamePlan, SignatureHelp,
-    SignatureInformation, SignatureParameter, WorkspaceSymbol,
+    CallHierarchyItem, CompletionItem, CompletionItemKind, CompletionItemSource,
+    CompletionResolveData, Diagnostic, DocumentHighlight, DocumentHighlightKind, DocumentSymbol,
+    FilePosition, FoldingRange, FoldingRangeKind, HoverResult, HoverSignatureSource, IncomingCall,
+    InlayHint, InlayHintKind, NavigationTarget, OutgoingCall, ReferenceKind, ReferenceLocation,
+    ReferencesResult, RenameIssue, RenamePlan, SemanticToken, SemanticTokenKind,
+    SemanticTokenModifier, SignatureHelp, SignatureInformation, SignatureParameter,
+    WorkspaceSymbol,
 };
 
 #[cfg(test)]

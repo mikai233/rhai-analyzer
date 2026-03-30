@@ -16,12 +16,12 @@ pub use types::{
     CompletionInputs, DatabaseDebugView, DebugFileAnalysis, FileAnalysisDependencies,
     FilePerformanceStats, FileTypeInference, HirInputSlot, HostConstant, HostFunction,
     HostFunctionOverload, HostModule, HostType, IndexInputSlot, InvalidationReason,
-    LinkedModuleImport, LocatedModuleExport, LocatedModuleGraph, LocatedNavigationTarget,
-    LocatedProjectReference, LocatedRenamePreflightIssue, LocatedSymbolIdentity,
-    LocatedWorkspaceSymbol, ParseInputSlot, PerFileQuerySupport, PerformanceStats,
-    ProjectDiagnostic, ProjectDiagnosticKind, ProjectReferenceKind, ProjectReferences,
-    ProjectRenamePlan, RemovedFileImpact, WorkspaceDependencyEdge, WorkspaceDependencyGraph,
-    WorkspaceFileInfo,
+    LinkedModuleImport, LocatedCallHierarchyItem, LocatedIncomingCall, LocatedModuleExport,
+    LocatedModuleGraph, LocatedNavigationTarget, LocatedOutgoingCall, LocatedProjectReference,
+    LocatedRenamePreflightIssue, LocatedSymbolIdentity, LocatedWorkspaceSymbol, ParseInputSlot,
+    PerFileQuerySupport, PerformanceStats, ProjectDiagnostic, ProjectDiagnosticKind,
+    ProjectReferenceKind, ProjectReferences, ProjectRenamePlan, RemovedFileImpact,
+    WorkspaceDependencyEdge, WorkspaceDependencyGraph, WorkspaceFileInfo,
 };
 
 #[cfg(test)]

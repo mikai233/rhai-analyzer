@@ -5,4 +5,6 @@ mod server;
 #[cfg(test)]
 mod tests;
 
-pub use crate::server::{CodeActionEdit, DiagnosticUpdate, ManagedDocument, Server};
+pub use crate::server::{
+    CodeActionEdit, DiagnosticUpdate, ManagedDocument, Server, WorkspaceSymbolMatch,
+};

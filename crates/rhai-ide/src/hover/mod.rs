@@ -1,7 +1,9 @@
 use rhai_vfs::FileId;
 
+use rhai_hir::TypeRef;
+
 use crate::support::convert::{format_symbol_signature, text_size};
-use crate::{FilePosition, HoverResult};
+use crate::{FilePosition, HoverResult, HoverSignatureSource};
 
 pub(crate) fn hover(
     snapshot: &rhai_db::DatabaseSnapshot,
@@ -32,12 +34,52 @@ pub(crate) fn hover_for_symbol(
     let hir = snapshot.hir(file_id)?;
     let symbol = hir.symbol(symbol_id);
     let docs = symbol.docs.map(|docs| hir.doc_block(docs).text.clone());
-    let annotation = snapshot
+    let declared_signature = symbol
+        .annotation
+        .as_ref()
+        .filter(|annotation| !matches!(annotation, TypeRef::Unknown))
+        .map(|annotation| {
+            format_symbol_signature(symbol.name.as_str(), symbol.kind, Some(annotation))
+        });
+    let inferred_annotation = snapshot
         .inferred_symbol_type(file_id, symbol_id)
-        .or(symbol.annotation.as_ref());
+        .filter(|annotation| !matches!(annotation, TypeRef::Unknown));
+    let inferred_signature = inferred_annotation.map(|annotation| {
+        format_symbol_signature(symbol.name.as_str(), symbol.kind, Some(annotation))
+    });
+
+    let (signature, source) = if let Some(signature) = declared_signature.as_ref() {
+        (signature.clone(), HoverSignatureSource::Declared)
+    } else if let Some(signature) = inferred_signature.as_ref() {
+        (signature.clone(), HoverSignatureSource::Inferred)
+    } else {
+        (
+            format_symbol_signature(symbol.name.as_str(), symbol.kind, None),
+            HoverSignatureSource::Structural,
+        )
+    };
+
+    let mut notes = Vec::new();
+    if declared_signature.is_none() && inferred_signature.is_some() {
+        notes
+            .push("Signature shown is inferred from local flow and call-site analysis.".to_owned());
+    }
+    if let (Some(declared), Some(inferred)) =
+        (declared_signature.as_ref(), inferred_signature.as_ref())
+        && declared != inferred
+    {
+        notes.push(format!("Inferred type: {inferred}"));
+    }
+    if matches!(inferred_annotation, Some(TypeRef::Ambiguous(_))) {
+        notes.push("Multiple call candidates remain viable at this location.".to_owned());
+    }
 
     Some(HoverResult {
-        signature: format_symbol_signature(symbol.name.as_str(), symbol.kind, annotation),
+        signature,
         docs,
+        source,
+        declared_signature,
+        inferred_signature,
+        notes,
     })
 }

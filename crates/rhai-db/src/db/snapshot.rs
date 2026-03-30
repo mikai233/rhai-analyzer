@@ -7,9 +7,10 @@ use crate::db::navigation::workspace_symbol_match_rank;
 use crate::db::rebuild::{resolved_source_roots, source_root_index_for_path};
 use crate::types::{
     FileAnalysisDependencies, FilePerformanceStats, FileTypeInference, HostModule, HostType,
-    LinkedModuleImport, LocatedModuleExport, LocatedModuleGraph, LocatedSymbolIdentity,
-    LocatedWorkspaceSymbol, PerFileQuerySupport, PerformanceStats, SymbolIdentityKey,
-    WorkspaceDependencyGraph, WorkspaceFileInfo,
+    LinkedModuleImport, LocatedCallHierarchyItem, LocatedIncomingCall, LocatedModuleExport,
+    LocatedModuleGraph, LocatedOutgoingCall, LocatedSymbolIdentity, LocatedWorkspaceSymbol,
+    PerFileQuerySupport, PerformanceStats, SymbolIdentityKey, WorkspaceDependencyGraph,
+    WorkspaceFileInfo,
 };
 use rhai_hir::{
     DocumentSymbol, ExternalSignatureIndex, FileBackedSymbolIdentity, FileHir, FileSymbolIndex,
@@ -272,6 +273,22 @@ impl DatabaseSnapshot {
         self.symbol_locations
             .get(&SymbolIdentityKey::from(identity))
             .map_or(&[], Arc::as_ref)
+    }
+
+    pub fn prepare_call_hierarchy(
+        &self,
+        file_id: FileId,
+        offset: TextSize,
+    ) -> Vec<LocatedCallHierarchyItem> {
+        self.call_hierarchy_items_at(file_id, offset)
+    }
+
+    pub fn incoming_calls(&self, item: &FileBackedSymbolIdentity) -> Vec<LocatedIncomingCall> {
+        self.call_hierarchy_incoming_calls(item)
+    }
+
+    pub fn outgoing_calls(&self, item: &FileBackedSymbolIdentity) -> Vec<LocatedOutgoingCall> {
+        self.call_hierarchy_outgoing_calls(item)
     }
 
     pub fn symbol_owner(&self, identity: &FileBackedSymbolIdentity) -> Option<FileId> {

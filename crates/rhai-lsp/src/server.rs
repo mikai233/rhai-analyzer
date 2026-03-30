@@ -1,5 +1,5 @@
 use std::collections::{BTreeSet, HashMap};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Result, anyhow};
 use lsp_types::Uri;
@@ -30,6 +30,12 @@ pub struct CodeActionEdit {
     pub version: Option<i32>,
     pub insert_offset: u32,
     pub insert_text: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkspaceSymbolMatch {
+    pub uri: Uri,
+    pub symbol: rhai_ide::WorkspaceSymbol,
 }
 
 #[derive(Debug)]
@@ -144,4 +150,21 @@ pub(crate) fn path_from_uri(uri: &Uri) -> Result<PathBuf> {
     let path = PathBuf::from(format!("/{decoded_path}"));
 
     Ok(normalize_path(&path))
+}
+
+pub(crate) fn uri_from_path(path: &Path) -> Result<Uri> {
+    let normalized = normalize_path(path);
+    let path_text = normalized.to_string_lossy().replace('\\', "/");
+
+    #[cfg(windows)]
+    let raw = format!("file:///{}", path_text.replace(' ', "%20"));
+    #[cfg(not(windows))]
+    let raw = format!("file://{}", path_text.replace(' ', "%20"));
+
+    raw.parse::<Uri>().map_err(|error| {
+        anyhow!(
+            "failed to build file:// URI from `{}`: {error}",
+            normalized.display()
+        )
+    })
 }

@@ -5,6 +5,7 @@ use rhai_syntax::parse_text;
 
 pub(crate) mod code_actions;
 pub(crate) mod diagnostics;
+pub(crate) mod queries;
 
 pub(crate) fn file_url(path: &str) -> Uri {
     let absolute = absolute_test_path(path);

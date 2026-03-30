@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 rhai-db.workspace = true
+rhai-fmt.workspace = true
 rhai-hir.workspace = true
 rhai-project.workspace = true
 rhai-syntax.workspace = true

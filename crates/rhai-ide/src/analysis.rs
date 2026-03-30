@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::sync::Arc;
 
 use rhai_db::{AnalyzerDatabase, ChangeImpact, ChangeSet, DatabaseSnapshot};
 use rhai_hir::Symbol;
@@ -7,7 +8,7 @@ use rhai_vfs::FileId;
 
 use crate::TextEdit;
 use crate::assists::{Assist, DiagnosticWithFixes, assists_for_range, diagnostics_with_fixes};
-use crate::completion::completions;
+use crate::completion::{completions, resolve_completion};
 use crate::diagnostics::{
     diagnostics, document_symbols, workspace_symbols, workspace_symbols_matching,
 };
@@ -15,15 +16,20 @@ use crate::hints::inlay_hints::inlay_hints;
 use crate::hints::signature_help::signature_help;
 use crate::hover::hover;
 use crate::imports::{organize_imports, remove_unused_imports};
+use crate::navigation::call_hierarchy::{incoming_calls, outgoing_calls, prepare_call_hierarchy};
+use crate::navigation::folding_ranges::folding_ranges;
+use crate::navigation::highlights::document_highlights;
 use crate::navigation::rename::{PreparedRename, prepare_rename, rename_plan_from_db};
+use crate::navigation::semantic_tokens::semantic_tokens;
 use crate::support::convert::{
     navigation_target_from_db, navigation_target_from_identity, reference_location_from_db,
     text_size,
 };
+use crate::support::formatting::{format_document, format_range};
 use crate::{
-    AutoImportAction, CompletionItem, Diagnostic, DocumentSymbol, FilePosition, HoverResult,
-    InlayHint, NavigationTarget, ReferencesResult, RenamePlan, SignatureHelp, SourceChange,
-    WorkspaceSymbol,
+    AutoImportAction, CallHierarchyItem, CompletionItem, Diagnostic, DocumentSymbol, FilePosition,
+    FoldingRange, HoverResult, IncomingCall, InlayHint, NavigationTarget, OutgoingCall,
+    ReferencesResult, RenamePlan, SemanticToken, SignatureHelp, SourceChange, WorkspaceSymbol,
 };
 
 #[derive(Debug, Default)]
@@ -69,6 +75,10 @@ impl Analysis {
         self.db.normalized_path(file_id)
     }
 
+    pub fn file_text(&self, file_id: FileId) -> Option<Arc<str>> {
+        self.db.file_text(file_id)
+    }
+
     pub fn has_query_support(&self, file_id: FileId) -> bool {
         self.db.query_support(file_id).is_some()
     }
@@ -83,6 +93,30 @@ impl Analysis {
 
     pub fn hover(&self, position: FilePosition) -> Option<HoverResult> {
         hover(&self.db, position)
+    }
+
+    pub fn document_highlights(&self, position: FilePosition) -> Vec<crate::DocumentHighlight> {
+        document_highlights(&self.db, position)
+    }
+
+    pub fn prepare_call_hierarchy(&self, position: FilePosition) -> Vec<CallHierarchyItem> {
+        prepare_call_hierarchy(&self.db, position)
+    }
+
+    pub fn incoming_calls(&self, item: &CallHierarchyItem) -> Vec<IncomingCall> {
+        incoming_calls(&self.db, item)
+    }
+
+    pub fn outgoing_calls(&self, item: &CallHierarchyItem) -> Vec<OutgoingCall> {
+        outgoing_calls(&self.db, item)
+    }
+
+    pub fn folding_ranges(&self, file_id: FileId) -> Vec<FoldingRange> {
+        folding_ranges(&self.db, file_id)
+    }
+
+    pub fn semantic_tokens(&self, file_id: FileId) -> Vec<SemanticToken> {
+        semantic_tokens(&self.db, file_id)
     }
 
     pub fn signature_help(&self, position: FilePosition) -> Option<SignatureHelp> {
@@ -162,6 +196,10 @@ impl Analysis {
         completions(&self.db, position)
     }
 
+    pub fn resolve_completion(&self, item: CompletionItem) -> CompletionItem {
+        resolve_completion(&self.db, item)
+    }
+
     pub fn auto_import_actions(&self, position: FilePosition) -> Vec<AutoImportAction> {
         self.db
             .auto_import_candidates(position.file_id, text_size(position.offset))
@@ -192,5 +230,13 @@ impl Analysis {
 
     pub fn organize_imports(&self, file_id: FileId) -> Option<SourceChange> {
         organize_imports(&self.db, file_id)
+    }
+
+    pub fn format_document(&self, file_id: FileId) -> Option<SourceChange> {
+        format_document(&self.db, file_id)
+    }
+
+    pub fn format_range(&self, file_id: FileId, range: TextRange) -> Option<SourceChange> {
+        format_range(&self.db, file_id, range)
     }
 }

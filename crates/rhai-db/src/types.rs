@@ -136,6 +136,25 @@ pub struct LocatedNavigationTarget {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocatedCallHierarchyItem {
+    pub file_id: FileId,
+    pub symbol: FileBackedSymbolIdentity,
+    pub target: NavigationTarget,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocatedIncomingCall {
+    pub from: LocatedCallHierarchyItem,
+    pub from_ranges: Arc<[TextRange]>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocatedOutgoingCall {
+    pub to: LocatedCallHierarchyItem,
+    pub from_ranges: Arc<[TextRange]>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LinkedModuleImport {
     pub file_id: FileId,
     pub provider_file_id: FileId,

@@ -10,10 +10,15 @@ pub(crate) fn assert_no_syntax_diagnostics(analysis: &crate::Analysis, file_id: 
     );
 }
 
+mod call_hierarchy;
 mod completion;
 mod diagnostics;
+mod folding_ranges;
+mod formatting;
+mod highlights;
 mod hover;
 mod imports;
 mod inlay_hints;
 mod rename;
+mod semantic_tokens;
 mod signature_help;

@@ -30,7 +30,7 @@ fn completions_merge_visible_project_and_member_results() {
             },
             rhai_db::FileChange {
                 path: "support.rhai".into(),
-                text: "fn shared_helper() {}".to_owned(),
+                text: "/// shared helper docs\nfn shared_helper() {}".to_owned(),
                 version: DocumentVersion(1),
             },
         ],
@@ -67,6 +67,17 @@ fn completions_merge_visible_project_and_member_results() {
     assert!(helper_completions.iter().any(|item| {
         item.label == "shared_helper" && item.source == CompletionItemSource::Project
     }));
+    let shared_helper = helper_completions
+        .iter()
+        .find(|item| item.label == "shared_helper" && item.source == CompletionItemSource::Project)
+        .cloned()
+        .expect("expected shared_helper completion");
+    assert!(shared_helper.docs.is_none());
+    let resolved_shared_helper = analysis.resolve_completion(shared_helper);
+    assert_eq!(
+        resolved_shared_helper.docs.as_deref(),
+        Some("shared helper docs")
+    );
 
     let member_offset = u32::try_from(main_text.find("user.").expect("expected member access"))
         .expect("expected offset to fit");
@@ -380,4 +391,107 @@ fn completions_fall_back_to_inferred_local_symbol_types() {
 
     assert_eq!(result.detail.as_deref(), Some("blob"));
     assert_eq!(echo.detail.as_deref(), Some("fun(blob) -> blob"));
+    assert!(
+        completions
+            .iter()
+            .position(|item| item.label == "result")
+            .expect("expected result completion position")
+            < completions
+                .iter()
+                .position(|item| item.label == "echo")
+                .expect("expected echo completion position"),
+        "expected variable prefix match to outrank function completion: {completions:?}"
+    );
+}
+
+#[test]
+fn completions_prioritize_visible_prefix_matches_over_project_symbols() {
+    let mut host = AnalysisHost::default();
+    host.apply_change(ChangeSet {
+        files: vec![
+            rhai_db::FileChange {
+                path: "main.rhai".into(),
+                text: r#"
+                    fn helper() {}
+
+                    fn run() {
+                        hel
+                    }
+                "#
+                .to_owned(),
+                version: DocumentVersion(1),
+            },
+            rhai_db::FileChange {
+                path: "support.rhai".into(),
+                text: "fn helpful_tool() {}".to_owned(),
+                version: DocumentVersion(1),
+            },
+        ],
+        removed_files: Vec::new(),
+        project: None,
+    });
+
+    let analysis = host.snapshot();
+    let file_id = analysis
+        .db
+        .vfs()
+        .file_id(Path::new("main.rhai"))
+        .expect("expected main.rhai");
+    assert_no_syntax_diagnostics(&analysis, file_id);
+    let text = analysis.db.file_text(file_id).expect("expected text");
+    let offset = u32::try_from(text.find("hel").expect("expected completion prefix") + "hel".len())
+        .expect("offset");
+
+    let completions = analysis.completions(FilePosition { file_id, offset });
+    let helper_index = completions
+        .iter()
+        .position(|item| item.label == "helper")
+        .expect("expected helper completion");
+    let helpful_tool_index = completions
+        .iter()
+        .position(|item| item.label == "helpful_tool")
+        .expect("expected helpful_tool completion");
+
+    assert!(
+        helper_index < helpful_tool_index,
+        "expected visible prefix match to outrank project symbol: {completions:?}"
+    );
+}
+
+#[test]
+fn completion_resolve_populates_visible_symbol_docs() {
+    let mut host = AnalysisHost::default();
+    host.apply_change(ChangeSet::single_file(
+        "main.rhai",
+        r#"
+            /// local helper docs
+            fn helper() {}
+
+            fn run() {
+                hel
+            }
+        "#,
+        DocumentVersion(1),
+    ));
+
+    let analysis = host.snapshot();
+    let file_id = analysis
+        .db
+        .vfs()
+        .file_id(Path::new("main.rhai"))
+        .expect("expected main.rhai");
+    assert_no_syntax_diagnostics(&analysis, file_id);
+    let text = analysis.db.file_text(file_id).expect("expected text");
+    let offset = u32::try_from(text.find("hel").expect("expected completion prefix") + "hel".len())
+        .expect("offset");
+
+    let helper = analysis
+        .completions(FilePosition { file_id, offset })
+        .into_iter()
+        .find(|item| item.label == "helper" && item.source == CompletionItemSource::Visible)
+        .expect("expected helper completion");
+    assert!(helper.docs.is_none());
+
+    let resolved = analysis.resolve_completion(helper);
+    assert_eq!(resolved.docs.as_deref(), Some("local helper docs"));
 }

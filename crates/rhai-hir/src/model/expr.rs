@@ -283,6 +283,10 @@ impl ExternalSignatureIndex {
     pub fn get(&self, name: &str) -> Option<&TypeRef> {
         self.symbols.get(name)
     }
+
+    pub fn iter(&self) -> impl Iterator<Item = (&str, &TypeRef)> {
+        self.symbols.iter().map(|(name, ty)| (name.as_str(), ty))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

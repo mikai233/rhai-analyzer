@@ -18,6 +18,17 @@ pub struct Diagnostic {
 pub struct HoverResult {
     pub signature: String,
     pub docs: Option<String>,
+    pub source: HoverSignatureSource,
+    pub declared_signature: Option<String>,
+    pub inferred_signature: Option<String>,
+    pub notes: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum HoverSignatureSource {
+    Declared,
+    Inferred,
+    Structural,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -60,6 +71,83 @@ pub struct DocumentSymbol {
     pub full_range: TextRange,
     pub focus_range: TextRange,
     pub children: Vec<DocumentSymbol>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum DocumentHighlightKind {
+    Read,
+    Write,
+    Text,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DocumentHighlight {
+    pub range: TextRange,
+    pub kind: DocumentHighlightKind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CallHierarchyItem {
+    pub file_id: FileId,
+    pub name: String,
+    pub kind: SymbolKind,
+    pub full_range: TextRange,
+    pub focus_range: TextRange,
+    pub container_name: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IncomingCall {
+    pub from: CallHierarchyItem,
+    pub from_ranges: Vec<TextRange>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OutgoingCall {
+    pub to: CallHierarchyItem,
+    pub from_ranges: Vec<TextRange>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum FoldingRangeKind {
+    Comment,
+    Region,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FoldingRange {
+    pub range: TextRange,
+    pub kind: FoldingRangeKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SemanticTokenKind {
+    Keyword,
+    Comment,
+    String,
+    Number,
+    Type,
+    Function,
+    Method,
+    Parameter,
+    Variable,
+    Property,
+    Namespace,
+    Operator,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SemanticTokenModifier {
+    Declaration,
+    Readonly,
+    DefaultLibrary,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SemanticToken {
+    pub range: TextRange,
+    pub kind: SemanticTokenKind,
+    pub modifiers: Vec<SemanticTokenModifier>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -134,8 +222,16 @@ pub struct CompletionItem {
     pub label: String,
     pub kind: CompletionItemKind,
     pub source: CompletionItemSource,
+    pub sort_text: String,
     pub detail: Option<String>,
     pub docs: Option<String>,
     pub file_id: Option<FileId>,
     pub exported: bool,
+    pub resolve_data: Option<CompletionResolveData>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompletionResolveData {
+    pub file_id: FileId,
+    pub offset: u32,
 }

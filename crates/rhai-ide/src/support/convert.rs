@@ -1,7 +1,10 @@
 use rhai_hir::{SymbolKind, TypeRef};
 use rhai_syntax::TextSize;
 
-use crate::{DocumentSymbol, NavigationTarget, ReferenceKind, ReferenceLocation, WorkspaceSymbol};
+use crate::{
+    CallHierarchyItem, DocumentSymbol, NavigationTarget, ReferenceKind, ReferenceLocation,
+    WorkspaceSymbol,
+};
 
 pub(crate) fn document_symbol_from_db(symbol: &rhai_hir::DocumentSymbol) -> DocumentSymbol {
     DocumentSymbol {
@@ -50,6 +53,19 @@ pub(crate) fn navigation_target_from_identity(
         kind: target.symbol.kind,
         full_range: target.symbol.declaration_range,
         focus_range: target.symbol.declaration_range,
+    }
+}
+
+pub(crate) fn call_hierarchy_item_from_db(
+    item: &rhai_db::LocatedCallHierarchyItem,
+) -> CallHierarchyItem {
+    CallHierarchyItem {
+        file_id: item.file_id,
+        name: item.symbol.name.clone(),
+        kind: item.target.kind,
+        full_range: item.target.full_range,
+        focus_range: item.target.focus_range,
+        container_name: item.symbol.stable_key.container_path.last().cloned(),
     }
 }
 
