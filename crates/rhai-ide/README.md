@@ -1,130 +1,64 @@
 # rhai-ide
 
-`rhai-ide` is the IDE-facing semantic layer for `rhai-analyzer`.
+`rhai-ide` is the editor-facing semantic layer for `rhai-analyzer`.
 
-Its job is to sit between:
+It translates database facts into stable IDE-shaped results without exposing raw storage details or LSP protocol types.
 
-- `rhai-db`, which owns incremental analysis state and cross-file indexes,
-- editor / LSP features, which need stable, user-facing semantic queries and edit plans.
+## Implemented Features
 
-It should be the crate that turns database facts into IDE-shaped results:
+### Core API and Edit Model
 
-- diagnostics suitable for publication,
-- hover and navigation results,
-- completion items and future completion resolves,
-- rename / code action / assist planning,
-- source-change planning that higher layers can translate into protocol-specific edits.
+- `AnalysisHost` for applying changes to the long-lived database
+- Immutable `Analysis` snapshots for read queries
+- IDE-specific result types for diagnostics, hover, completion, navigation, rename, and source changes
+- Shared `TextEdit` and `SourceChange` models for semantic edits
+- Assist/fix identifiers and grouped action metadata
 
-It should not own parsing rules, file-local lowering, cache invalidation policy, or LSP protocol types.
+### Read Queries
 
-## IDE Layer Checklist
+- Diagnostics
+- Hover
+- Document symbols
+- Workspace symbols and fuzzy workspace-symbol matching
+- Goto definition
+- Project-wide references
+- Rename planning
+- Completion
+- Auto-import/source-fix actions
+- Signature help
 
-This checklist tracks what `rhai-ide` already provides and what still needs to land before it becomes a strong semantic facade in the style of `rust-analyzer`'s IDE layer.
+### Diagnostics and Source Actions
 
-### Layer Boundary and Core API
-
-- [x] `AnalysisHost` wrapper over the long-lived database
-- [x] cheap immutable `Analysis` snapshot for read queries
-- [x] IDE-facing result types that hide raw database internals
-- [x] clean separation from LSP protocol types such as `Uri`, `Position`, and `CodeAction`
-- [x] thin translation of `rhai-db` facts into user-facing semantic query results
-- [x] unified `TextEdit` model for semantic edits
-- [x] unified `SourceChange` model for single-file and multi-file edits
-- [ ] explicit `FileSystemEdit` model if assists later need file creation / rename support
-- [x] stable assist / fix identifiers and grouping metadata
-
-### Read Queries for Downstream Consumers
-
-- [x] file diagnostics query
-- [x] hover query
-- [x] document symbol query
-- [x] workspace symbol query
-- [x] workspace symbol fuzzy matching query
-- [x] goto-definition query
-- [x] project-wide references query
-- [x] rename planning query
-- [x] completion query
-- [x] auto-import action query
-- [x] signature help query
-- [ ] document highlight query
-- [ ] folding range query
-- [ ] semantic tokens query
-- [ ] inlay hints query
-- [ ] call hierarchy query
-
-### Diagnostics and Fixes
-
-- [x] project-aware diagnostics surfaced through an IDE-friendly type
-- [x] cross-file import/export breakage surfaced through normal diagnostics publishing
-- [x] diagnostic results paired with quick-fix candidates
-- [x] structured fix metadata per diagnostic
-- [ ] fix-all style aggregation where multiple diagnostics share one operation
-- [ ] severity / tags / related-information shaping beyond plain message and range
-
-### Source Changes and Assists
-
-- [x] auto-import planning for unresolved workspace exports
-- [x] generic assist framework that can return multiple semantic actions at a position / range
-- [x] source changes returned independently from LSP-specific `CodeAction` shapes
-- [x] rename plan materialized into concrete edits
-- [x] unresolved-import quick fix built on the shared assist framework
-- [x] broken-import quick fix after export visibility changes
-- [x] organize-imports planning
-- [x] remove-unused-imports planning
-- [x] merge duplicate imports / normalize import style planning
-
-### Completion Experience
-
-- [x] merge visible symbols, project symbols, and member completions
-- [x] propagate basic detail / docs where already available
-- [x] mark project-symbol completions with origin metadata
-- [ ] completion ranking policy beyond current basic ordering
-- [ ] completion item resolve for lazy docs / detail loading
-- [ ] completion additional text edits such as auto-import on accept
-- [ ] snippet / call-argument completion support where appropriate
+- Project-aware diagnostics built on database and workspace state
+- Diagnostic-associated quick fixes
+- Auto-import planning
+- Broken-import fixes after export visibility changes
+- Organize-imports, remove-unused-imports, and import normalization planning
 
 ### Type-Aware UX
 
-- [x] signature help backed by local, workspace-exported, and builtin function signatures
-- [x] signature help for imported global typed methods exposed by linked Rhai modules
-- [x] signature help for module-qualified imported functions such as `tools::helper(...)`
-- [x] signature help for nested module-qualified imported functions such as `tools::sub::helper(...)`
-- [x] hover fallback to inferred symbol/function types when declarations lack explicit annotations
-- [x] completion detail backed by inferred local symbol types when declared annotations are absent
-- [ ] inlay hints driven by inferred parameter / variable / return types
-- [ ] richer hover output that can explain inferred return types and origin flows
+- Hover fallback to inferred local/function types when explicit annotations are absent
+- Completion detail backed by inferred types
+- Signature help for local functions, builtin functions, typed methods, imported typed methods, and module-qualified imported functions
+- Builtin and host-type member completion/signature help, including receiver-specialized generic host methods
 
 ### Rename and Cross-File Editing
 
-- [x] cross-file rename planning
-- [x] rename issue reporting before edit application
-- [x] concrete workspace edit generation from rename plans
-- [ ] conflict grouping and richer rename diagnostics for UI presentation
-- [x] preview-friendly change grouping for downstream clients
+- Cross-file rename planning
+- Rename preflight issue reporting
+- Concrete edit generation from rename plans
+- Preview-friendly grouping of source changes
 
-### LSP Service Readiness
+## Current Boundaries
 
-- [x] query outputs that can be mapped into LSP without exposing database internals
-- [x] stable position-based query entry points for open-document workflows
-- [x] host methods to apply file changes and inspect hot-query support
-- [x] range-based code action collection API
-- [x] code action grouping by intent (`quickfix`, `refactor`, `source`)
-- [ ] completion resolve payload support
-- [ ] richer hover / diagnostic related information for protocol translation
+- No document highlights, folding ranges, semantic tokens, inlay hints, or call hierarchy yet
+- Completion ranking and lazy completion-item resolve are still basic
+- Hover/diagnostic presentation can still grow richer in related information and explanatory detail
+- Golden-style output tests for larger edit plans are still fairly light
 
-### Reliability and Test Coverage
+## Next Steps
 
-- [x] unit tests for diagnostics, navigation, references, rename planning, completion, and auto-import planning
-- [ ] golden tests for multi-edit source changes
-- [ ] golden tests for future assist / code action output
-- [ ] regression tests for ranking and tie-breaking behavior
-
-## Notes
-
-- `rhai-db` should answer "what is true about the workspace?"
-- `rhai-ide` should answer "what should the editor show or do with those facts?"
-- `rhai-lsp` should answer "how do those results map onto the LSP protocol?"
-
-- The next major milestone for `rhai-ide` is establishing a shared edit model:
-  `TextEdit -> SourceChange -> Assist / DiagnosticFix`.
-  Once that exists, auto-import, broken-import fixes, organize imports, and rename edits can all converge on one path instead of each feature inventing its own return shape.
+- Inlay hints driven by inferred parameter, variable, and return types
+- Better completion ranking, resolve payloads, and import-on-accept behavior
+- Richer hover and diagnostic presentation
+- Additional editor-facing semantic queries such as highlights, folding, semantic tokens, and call hierarchy
