@@ -143,6 +143,14 @@ pub(crate) fn format_type_ref(ty: &TypeRef) -> String {
             .map(format_type_ref)
             .collect::<Vec<_>>()
             .join(" | "),
+        TypeRef::Ambiguous(members) => format!(
+            "ambiguous<{}>",
+            members
+                .iter()
+                .map(format_type_ref)
+                .collect::<Vec<_>>()
+                .join(" | ")
+        ),
         TypeRef::Function(signature) => format!(
             "fun({}) -> {}",
             signature

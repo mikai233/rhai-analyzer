@@ -1,4 +1,7 @@
-use rhai_db::{DatabaseSnapshot, LocatedNavigationTarget, best_matching_signature_index};
+use rhai_db::{
+    DatabaseSnapshot, LocatedNavigationTarget, best_matching_signature_index,
+    specialize_signature_with_receiver_and_arg_types,
+};
 use rhai_hir::{CallSite, FileHir, FunctionTypeRef, ParameterHint, SymbolId, SymbolKind, TypeRef};
 use rhai_syntax::TextSize;
 use rhai_vfs::FileId;
@@ -164,8 +167,12 @@ fn signature_help_from_host_method(
     let inference = snapshot.type_inference(file_id)?;
     let receiver_ty = hir.expr_type(access.receiver, &inference.expr_types)?;
     let arg_types = call_argument_types(snapshot, file_id, hir, call);
-    let candidates =
-        host_method_candidates_for_type(snapshot.host_types(), receiver_ty, method_name);
+    let candidates = host_method_candidates_for_type(
+        snapshot.host_types(),
+        receiver_ty,
+        method_name,
+        &arg_types,
+    );
 
     if candidates.is_empty() {
         return None;
@@ -426,9 +433,10 @@ fn host_method_candidates_for_type(
     host_types: &[rhai_db::HostType],
     ty: &TypeRef,
     method_name: &str,
+    arg_types: &[Option<TypeRef>],
 ) -> Vec<HostMethodCandidate> {
     let mut candidates = Vec::new();
-    collect_host_method_candidates(&mut candidates, host_types, ty, method_name);
+    collect_host_method_candidates(&mut candidates, host_types, ty, method_name, arg_types);
     candidates
 }
 
@@ -437,11 +445,54 @@ fn collect_host_method_candidates(
     host_types: &[rhai_db::HostType],
     ty: &TypeRef,
     method_name: &str,
+    arg_types: &[Option<TypeRef>],
 ) {
     match ty {
-        TypeRef::Union(items) => {
+        TypeRef::Union(items) | TypeRef::Ambiguous(items) => {
             for item in items {
-                collect_host_method_candidates(candidates, host_types, item, method_name);
+                collect_host_method_candidates(
+                    candidates,
+                    host_types,
+                    item,
+                    method_name,
+                    arg_types,
+                );
+            }
+        }
+        _ if builtin_host_type_name(ty).is_some() => {
+            let Some(host_type_name) = builtin_host_type_name(ty) else {
+                return;
+            };
+            let Some(host_type) = host_types.iter().find(|ty| ty.name == host_type_name) else {
+                return;
+            };
+            let Some(method) = host_type
+                .methods
+                .iter()
+                .find(|method| method.name == method_name)
+            else {
+                return;
+            };
+
+            for overload in &method.overloads {
+                let Some(signature) = overload.signature.as_ref() else {
+                    continue;
+                };
+                let candidate = HostMethodCandidate {
+                    signature: specialize_signature_with_receiver_and_arg_types(
+                        signature,
+                        Some(ty),
+                        host_type.generic_params.as_slice(),
+                        Some(arg_types),
+                        host_types,
+                    ),
+                    docs: overload.docs.clone(),
+                };
+                if !candidates.iter().any(|existing| {
+                    existing.signature == candidate.signature && existing.docs == candidate.docs
+                }) {
+                    candidates.push(candidate);
+                }
             }
         }
         TypeRef::Named(name) | TypeRef::Applied { name, .. } => {
@@ -457,11 +508,17 @@ fn collect_host_method_candidates(
             };
 
             for overload in &method.overloads {
-                let Some(signature) = overload.signature.clone() else {
+                let Some(signature) = overload.signature.as_ref() else {
                     continue;
                 };
                 let candidate = HostMethodCandidate {
-                    signature,
+                    signature: specialize_signature_with_receiver_and_arg_types(
+                        signature,
+                        Some(ty),
+                        host_type.generic_params.as_slice(),
+                        Some(arg_types),
+                        host_types,
+                    ),
                     docs: overload.docs.clone(),
                 };
                 if !candidates.iter().any(|existing| {
@@ -472,6 +529,22 @@ fn collect_host_method_candidates(
             }
         }
         _ => {}
+    }
+}
+
+fn builtin_host_type_name(ty: &TypeRef) -> Option<&'static str> {
+    match ty {
+        TypeRef::Int => Some("int"),
+        TypeRef::Float => Some("float"),
+        TypeRef::Char => Some("char"),
+        TypeRef::String => Some("string"),
+        TypeRef::Array(_) => Some("array"),
+        TypeRef::Map(_, _) | TypeRef::Object(_) => Some("map"),
+        TypeRef::Blob => Some("blob"),
+        TypeRef::Timestamp => Some("timestamp"),
+        TypeRef::Range => Some("range"),
+        TypeRef::RangeInclusive => Some("range="),
+        _ => None,
     }
 }
 
@@ -532,7 +605,7 @@ fn receiver_matches_method_type(receiver: &TypeRef, expected: &TypeRef) -> bool 
 
     match (receiver, expected) {
         (TypeRef::Unknown | TypeRef::Any | TypeRef::Dynamic | TypeRef::Never, _) => true,
-        (TypeRef::Union(items), expected) => items
+        (TypeRef::Union(items), expected) | (TypeRef::Ambiguous(items), expected) => items
             .iter()
             .any(|item| receiver_matches_method_type(item, expected)),
         (TypeRef::Nullable(inner), expected) => receiver_matches_method_type(inner, expected),
@@ -565,7 +638,12 @@ fn receiver_matches_method_type(receiver: &TypeRef, expected: &TypeRef) -> bool 
 fn receiver_dispatch_is_precise(receiver: &TypeRef) -> bool {
     !matches!(
         receiver,
-        TypeRef::Unknown | TypeRef::Any | TypeRef::Dynamic | TypeRef::Never | TypeRef::Union(_)
+        TypeRef::Unknown
+            | TypeRef::Any
+            | TypeRef::Dynamic
+            | TypeRef::Never
+            | TypeRef::Union(_)
+            | TypeRef::Ambiguous(_)
     )
 }
 

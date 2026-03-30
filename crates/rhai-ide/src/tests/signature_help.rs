@@ -566,6 +566,139 @@ fn signature_help_returns_builtin_introspection_signatures() {
 }
 
 #[test]
+fn signature_help_returns_builtin_string_method_signatures() {
+    let mut host = AnalysisHost::default();
+    host.apply_change(ChangeSet::single_file(
+        "main.rhai",
+        r#"
+            fn run() {
+                let value = "hello";
+                value.contains("ell");
+            }
+        "#,
+        DocumentVersion(1),
+    ));
+
+    let analysis = host.snapshot();
+    let file_id = analysis
+        .db
+        .vfs()
+        .file_id(Path::new("main.rhai"))
+        .expect("expected main.rhai");
+    assert_no_syntax_diagnostics(&analysis, file_id);
+    let text = analysis.db.file_text(file_id).expect("expected text");
+    let offset =
+        u32::try_from(text.find("\"ell\"").expect("expected contains arg") + 2).expect("offset");
+
+    let help = analysis
+        .signature_help(FilePosition { file_id, offset })
+        .expect("expected builtin string method signature help");
+    assert!(!help.signatures.is_empty());
+    assert!(
+        help.signatures
+            .iter()
+            .any(|signature| signature.label == "fn contains(string) -> bool")
+    );
+}
+
+#[test]
+fn signature_help_returns_builtin_array_and_map_method_signatures() {
+    let mut host = AnalysisHost::default();
+    host.apply_change(ChangeSet::single_file(
+        "main.rhai",
+        r#"
+            fn run() {
+                let values = [1, 2, 3];
+                values.contains(item);
+
+                let user = #{ name: "Ada" };
+                user.contains(key);
+            }
+        "#,
+        DocumentVersion(1),
+    ));
+
+    let analysis = host.snapshot();
+    let file_id = analysis
+        .db
+        .vfs()
+        .file_id(Path::new("main.rhai"))
+        .expect("expected main.rhai");
+    assert_no_syntax_diagnostics(&analysis, file_id);
+    let text = analysis.db.file_text(file_id).expect("expected text");
+
+    let array_offset =
+        u32::try_from(text.find("item").expect("expected array argument")).expect("offset");
+    let array_help = analysis
+        .signature_help(FilePosition {
+            file_id,
+            offset: array_offset,
+        })
+        .expect("expected array signature help");
+    assert_eq!(array_help.signatures[0].label, "fn contains(any) -> bool");
+
+    let map_offset =
+        u32::try_from(text.rfind("key").expect("expected map argument")).expect("offset");
+    let map_help = analysis
+        .signature_help(FilePosition {
+            file_id,
+            offset: map_offset,
+        })
+        .expect("expected map signature help");
+    assert_eq!(map_help.signatures[0].label, "fn contains(string) -> bool");
+}
+
+#[test]
+fn signature_help_returns_builtin_primitive_method_signatures() {
+    let mut host = AnalysisHost::default();
+    host.apply_change(ChangeSet::single_file(
+        "main.rhai",
+        r#"
+            fn run() {
+                let count = 1;
+                count.max(limit);
+
+                let ratio = 3.5;
+                ratio.max(limit);
+            }
+        "#,
+        DocumentVersion(1),
+    ));
+
+    let analysis = host.snapshot();
+    let file_id = analysis
+        .db
+        .vfs()
+        .file_id(Path::new("main.rhai"))
+        .expect("expected main.rhai");
+    assert_no_syntax_diagnostics(&analysis, file_id);
+    let text = analysis.db.file_text(file_id).expect("expected text");
+
+    let int_offset =
+        u32::try_from(text.find("limit").expect("expected int max arg")).expect("offset");
+    let int_help = analysis
+        .signature_help(FilePosition {
+            file_id,
+            offset: int_offset,
+        })
+        .expect("expected int method signature help");
+    assert_eq!(int_help.signatures[0].label, "fn max(int) -> int");
+
+    let float_offset =
+        u32::try_from(text.rfind("limit").expect("expected float max arg")).expect("offset");
+    let float_help = analysis
+        .signature_help(FilePosition {
+            file_id,
+            offset: float_offset,
+        })
+        .expect("expected float method signature help");
+    assert_eq!(
+        float_help.signatures[0].label,
+        "fn max(int | float) -> float"
+    );
+}
+
+#[test]
 fn signature_help_returns_host_method_signatures() {
     let mut host = AnalysisHost::default();
     host.apply_change(ChangeSet {
@@ -699,4 +832,68 @@ fn signature_help_prefers_host_method_overload_matching_argument_types() {
     assert_eq!(help.signatures.len(), 2);
     assert_eq!(help.signatures[0].label, "fn open(int) -> bool");
     assert_eq!(help.signatures[1].label, "fn open(string) -> bool");
+}
+
+#[test]
+fn signature_help_specializes_generic_host_method_signatures_from_receiver_types() {
+    let mut host = AnalysisHost::default();
+    host.apply_change(ChangeSet {
+        files: vec![rhai_db::FileChange {
+            path: "main.rhai".into(),
+            text: r#"
+                /// @param boxed Box<int>
+                fn run(boxed) {
+                    boxed.unwrap_or(value);
+                }
+            "#
+            .to_owned(),
+            version: DocumentVersion(1),
+        }],
+        removed_files: Vec::new(),
+        project: Some(ProjectConfig {
+            types: [(
+                "Box<T>".to_owned(),
+                rhai_project::TypeSpec {
+                    docs: None,
+                    methods: [(
+                        "unwrap_or".to_owned(),
+                        vec![rhai_project::FunctionSpec {
+                            signature: "fun(T) -> T".to_owned(),
+                            return_type: None,
+                            docs: Some("Return the boxed value or a fallback".to_owned()),
+                        }],
+                    )]
+                    .into_iter()
+                    .collect(),
+                },
+            )]
+            .into_iter()
+            .collect(),
+            ..ProjectConfig::default()
+        }),
+    });
+
+    let analysis = host.snapshot();
+    let file_id = analysis
+        .db
+        .vfs()
+        .file_id(Path::new("main.rhai"))
+        .expect("expected main.rhai");
+    assert_no_syntax_diagnostics(&analysis, file_id);
+    let text = analysis.db.file_text(file_id).expect("expected text");
+    let offset = u32::try_from(text.find("value").expect("expected argument")).expect("offset");
+
+    let help = analysis
+        .signature_help(FilePosition { file_id, offset })
+        .expect("expected signature help");
+
+    assert_eq!(help.active_signature, 0);
+    assert_eq!(help.active_parameter, 0);
+    assert_eq!(help.signatures.len(), 1);
+    assert_eq!(help.signatures[0].label, "fn unwrap_or(int) -> int");
+    assert_eq!(help.signatures[0].parameters.len(), 1);
+    assert_eq!(
+        help.signatures[0].parameters[0].annotation.as_deref(),
+        Some("int")
+    );
 }
