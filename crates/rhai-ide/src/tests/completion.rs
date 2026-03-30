@@ -5,7 +5,7 @@ use rhai_project::ProjectConfig;
 use rhai_vfs::DocumentVersion;
 
 use crate::tests::assert_no_syntax_diagnostics;
-use crate::{AnalysisHost, CompletionItemSource, FilePosition};
+use crate::{AnalysisHost, CompletionInsertFormat, CompletionItemSource, FilePosition};
 
 #[test]
 fn completions_merge_visible_project_and_member_results() {
@@ -130,7 +130,54 @@ fn completions_include_builtin_string_members() {
     assert!(
         completions
             .iter()
+            .any(|item| item.label == "is_shared" && item.source == CompletionItemSource::Member)
+    );
+    assert!(
+        completions
+            .iter()
             .any(|item| item.label == "len" && item.source == CompletionItemSource::Member)
+    );
+}
+
+#[test]
+fn completions_include_builtin_array_members_for_incomplete_trailing_dot_access() {
+    let mut host = AnalysisHost::default();
+    host.apply_change(ChangeSet::single_file(
+        "main.rhai",
+        r#"
+            fn run() {
+                let a = [1, 2, 3];
+                a.
+                next();
+            }
+
+            fn next() {}
+        "#,
+        DocumentVersion(1),
+    ));
+
+    let analysis = host.snapshot();
+    let file_id = analysis
+        .db
+        .vfs()
+        .file_id(Path::new("main.rhai"))
+        .expect("expected main.rhai");
+    let text = analysis.db.file_text(file_id).expect("expected text");
+    let offset = u32::try_from(text.find("a.").expect("expected array member access") + "a.".len())
+        .expect("offset");
+
+    let completions = analysis.completions(FilePosition { file_id, offset });
+    assert!(
+        completions
+            .iter()
+            .any(|item| item.label == "len" && item.source == CompletionItemSource::Member),
+        "expected array len member completion, got {completions:?}"
+    );
+    assert!(
+        completions
+            .iter()
+            .any(|item| item.label == "push" && item.source == CompletionItemSource::Member),
+        "expected array push member completion, got {completions:?}"
     );
 }
 
@@ -268,6 +315,47 @@ fn completions_include_builtin_primitive_members() {
         char_completions
             .iter()
             .any(|item| item.label == "to_int" && item.source == CompletionItemSource::Member)
+    );
+}
+
+#[test]
+fn completions_include_builtin_global_functions_with_docs() {
+    let mut host = AnalysisHost::default();
+    host.apply_change(ChangeSet::single_file(
+        "main.rhai",
+        r#"
+            fn run() {
+                pri
+            }
+        "#,
+        DocumentVersion(1),
+    ));
+
+    let analysis = host.snapshot();
+    let file_id = analysis
+        .db
+        .vfs()
+        .file_id(Path::new("main.rhai"))
+        .expect("expected main.rhai");
+    assert_no_syntax_diagnostics(&analysis, file_id);
+    let text = analysis.db.file_text(file_id).expect("expected text");
+    let offset = u32::try_from(text.find("pri").expect("expected builtin prefix") + "pri".len())
+        .expect("offset");
+
+    let completions = analysis.completions(FilePosition { file_id, offset });
+    let print = completions
+        .iter()
+        .find(|item| item.label == "print" && item.source == CompletionItemSource::Builtin)
+        .expect("expected builtin print completion");
+    assert_eq!(print.detail.as_deref(), Some("fun(any) -> ()"));
+    assert_eq!(
+        print.docs.as_deref(),
+        Some("Print a value via the engine's print callback.")
+    );
+    assert_eq!(print.insert_format, CompletionInsertFormat::Snippet);
+    assert_eq!(
+        print.text_edit.as_ref().map(|edit| edit.new_text.as_str()),
+        Some("print(${1:any})$0")
     );
 }
 
@@ -494,4 +582,638 @@ fn completion_resolve_populates_visible_symbol_docs() {
 
     let resolved = analysis.resolve_completion(helper);
     assert_eq!(resolved.docs.as_deref(), Some("local helper docs"));
+}
+
+#[test]
+fn function_completions_insert_call_snippets_with_tabstops() {
+    let mut host = AnalysisHost::default();
+    host.apply_change(ChangeSet::single_file(
+        "main.rhai",
+        r#"
+            /// @param left int
+            /// @param right int
+            /// @return int
+            fn add(left, right) {
+                left + right
+            }
+
+            fn run() {
+                ad
+            }
+        "#,
+        DocumentVersion(1),
+    ));
+
+    let analysis = host.snapshot();
+    let file_id = analysis
+        .db
+        .vfs()
+        .file_id(Path::new("main.rhai"))
+        .expect("expected main.rhai");
+    assert_no_syntax_diagnostics(&analysis, file_id);
+    let text = analysis.db.file_text(file_id).expect("expected text");
+    let offset = u32::try_from(text.find("ad").expect("expected completion prefix") + "ad".len())
+        .expect("offset");
+
+    let add = analysis
+        .completions(FilePosition { file_id, offset })
+        .into_iter()
+        .find(|item| item.label == "add")
+        .expect("expected add completion");
+
+    assert_eq!(add.insert_format, CompletionInsertFormat::Snippet);
+    assert_eq!(
+        add.text_edit.as_ref().map(|edit| edit.new_text.as_str()),
+        Some("add(${1:left}, ${2:right})$0")
+    );
+}
+
+#[test]
+fn member_completions_insert_call_snippets_with_tabstops() {
+    let mut host = AnalysisHost::default();
+    host.apply_change(ChangeSet::single_file(
+        "main.rhai",
+        r#"
+            fn run() {
+                let values = [1, 2, 3];
+                values.
+                next();
+            }
+
+            fn next() {}
+        "#,
+        DocumentVersion(1),
+    ));
+
+    let analysis = host.snapshot();
+    let file_id = analysis
+        .db
+        .vfs()
+        .file_id(Path::new("main.rhai"))
+        .expect("expected main.rhai");
+    let text = analysis.db.file_text(file_id).expect("expected text");
+    let offset = u32::try_from(
+        text.find("values.")
+            .expect("expected member completion target")
+            + "values.".len(),
+    )
+    .expect("offset");
+
+    let push = analysis
+        .completions(FilePosition { file_id, offset })
+        .into_iter()
+        .find(|item| item.label == "push")
+        .expect("expected push completion");
+
+    assert_eq!(push.insert_format, CompletionInsertFormat::Snippet);
+    assert_eq!(
+        push.text_edit.as_ref().map(|edit| edit.new_text.as_str()),
+        Some("push(${1:any})$0")
+    );
+}
+
+#[test]
+fn postfix_for_completion_rewrites_receiver_expression_into_loop_snippet() {
+    let mut host = AnalysisHost::default();
+    host.apply_change(ChangeSet::single_file(
+        "main.rhai",
+        r#"
+            fn run() {
+                let values = [1, 2, 3];
+                values.for
+            }
+        "#,
+        DocumentVersion(1),
+    ));
+
+    let analysis = host.snapshot();
+    let file_id = analysis
+        .db
+        .vfs()
+        .file_id(Path::new("main.rhai"))
+        .expect("expected main.rhai");
+    let text = analysis.db.file_text(file_id).expect("expected text");
+    let offset = u32::try_from(
+        text.find("values.for")
+            .expect("expected postfix completion target")
+            + "values.for".len(),
+    )
+    .expect("offset");
+
+    let item = analysis
+        .completions(FilePosition { file_id, offset })
+        .into_iter()
+        .find(|item| item.label == "for" && item.source == CompletionItemSource::Postfix)
+        .expect("expected postfix for completion");
+
+    assert_eq!(item.insert_format, CompletionInsertFormat::Snippet);
+    assert_eq!(item.filter_text.as_deref(), Some("values.for"));
+    assert_eq!(
+        item.text_edit.as_ref().map(|edit| edit.new_text.as_str()),
+        Some("for ${1:item} in values {\n    $0\n}")
+    );
+}
+
+#[test]
+fn postfix_for_completion_appears_when_typing_a_suffix_prefix() {
+    let mut host = AnalysisHost::default();
+    host.apply_change(ChangeSet::single_file(
+        "main.rhai",
+        r#"
+            fn run() {
+                let values = [1, 2, 3];
+                values.f
+            }
+        "#,
+        DocumentVersion(1),
+    ));
+
+    let analysis = host.snapshot();
+    let file_id = analysis
+        .db
+        .vfs()
+        .file_id(Path::new("main.rhai"))
+        .expect("expected main.rhai");
+    let text = analysis.db.file_text(file_id).expect("expected text");
+    let offset = u32::try_from(
+        text.find("values.f")
+            .expect("expected postfix completion target")
+            + "values.f".len(),
+    )
+    .expect("offset");
+
+    let completions = analysis.completions(FilePosition { file_id, offset });
+    let item = completions
+        .iter()
+        .find(|item| item.label == "for" && item.source == CompletionItemSource::Postfix)
+        .expect("expected postfix for completion while typing a suffix prefix");
+    assert_eq!(item.filter_text.as_deref(), Some("values.for"));
+}
+
+#[test]
+fn postfix_templates_do_not_appear_before_typing_a_suffix_prefix() {
+    let mut host = AnalysisHost::default();
+    host.apply_change(ChangeSet::single_file(
+        "main.rhai",
+        r#"
+            fn run() {
+                let values = [1, 2, 3];
+                values.
+            }
+        "#,
+        DocumentVersion(1),
+    ));
+
+    let analysis = host.snapshot();
+    let file_id = analysis
+        .db
+        .vfs()
+        .file_id(Path::new("main.rhai"))
+        .expect("expected main.rhai");
+    let text = analysis.db.file_text(file_id).expect("expected text");
+    let offset = u32::try_from(
+        text.find("values.")
+            .expect("expected postfix completion target")
+            + "values.".len(),
+    )
+    .expect("offset");
+
+    let completions = analysis.completions(FilePosition { file_id, offset });
+    assert!(
+        completions
+            .iter()
+            .all(|item| item.source != CompletionItemSource::Postfix),
+        "expected postfix templates to stay hidden until a suffix prefix is typed, got {completions:?}"
+    );
+}
+
+#[test]
+fn dot_trigger_positions_still_hide_postfix_templates() {
+    let mut host = AnalysisHost::default();
+    host.apply_change(ChangeSet::single_file(
+        "main.rhai",
+        r#"
+            fn run() {
+                let values = [1, 2, 3];
+                values.
+            }
+        "#,
+        DocumentVersion(1),
+    ));
+
+    let analysis = host.snapshot();
+    let file_id = analysis
+        .db
+        .vfs()
+        .file_id(Path::new("main.rhai"))
+        .expect("expected main.rhai");
+    let text = analysis.db.file_text(file_id).expect("expected text");
+    let offset = u32::try_from(
+        text.find("values.").expect("expected dot trigger position") + "values".len(),
+    )
+    .expect("offset");
+
+    let completions = analysis.completions(FilePosition { file_id, offset });
+    assert!(
+        completions
+            .iter()
+            .all(|item| item.source != CompletionItemSource::Postfix),
+        "expected dot-trigger completions to hide postfix templates until a suffix prefix is typed, got {completions:?}"
+    );
+}
+
+#[test]
+fn postfix_switch_completion_rewrites_receiver_expression_into_switch_snippet() {
+    let mut host = AnalysisHost::default();
+    host.apply_change(ChangeSet::single_file(
+        "main.rhai",
+        r#"
+            fn run() {
+                let value = 42;
+                value.switch
+            }
+        "#,
+        DocumentVersion(1),
+    ));
+
+    let analysis = host.snapshot();
+    let file_id = analysis
+        .db
+        .vfs()
+        .file_id(Path::new("main.rhai"))
+        .expect("expected main.rhai");
+    let text = analysis.db.file_text(file_id).expect("expected text");
+    let offset = u32::try_from(
+        text.find("value.switch")
+            .expect("expected postfix completion target")
+            + "value.switch".len(),
+    )
+    .expect("offset");
+
+    let item = analysis
+        .completions(FilePosition { file_id, offset })
+        .into_iter()
+        .find(|item| item.label == "switch" && item.source == CompletionItemSource::Postfix)
+        .expect("expected postfix switch completion");
+
+    assert_eq!(item.insert_format, CompletionInsertFormat::Snippet);
+    assert_eq!(item.filter_text.as_deref(), Some("value.switch"));
+    assert_eq!(
+        item.text_edit.as_ref().map(|edit| edit.new_text.as_str()),
+        Some("switch value {\n    ${1:_} => {\n        $0\n    }\n}")
+    );
+}
+
+#[test]
+fn postfix_if_and_return_completions_expand_to_expected_snippets() {
+    let mut host = AnalysisHost::default();
+    host.apply_change(ChangeSet::single_file(
+        "main.rhai",
+        r#"
+            fn run() {
+                let value = ready;
+                value.if
+                value.return
+            }
+        "#,
+        DocumentVersion(1),
+    ));
+
+    let analysis = host.snapshot();
+    let file_id = analysis
+        .db
+        .vfs()
+        .file_id(Path::new("main.rhai"))
+        .expect("expected main.rhai");
+    let text = analysis.db.file_text(file_id).expect("expected text");
+
+    let if_offset = u32::try_from(
+        text.find("value.if")
+            .expect("expected postfix completion target")
+            + "value.if".len(),
+    )
+    .expect("offset");
+    let if_item = analysis
+        .completions(FilePosition {
+            file_id,
+            offset: if_offset,
+        })
+        .into_iter()
+        .find(|item| item.label == "if" && item.source == CompletionItemSource::Postfix)
+        .expect("expected postfix if completion");
+    assert_eq!(
+        if_item
+            .text_edit
+            .as_ref()
+            .map(|edit| edit.new_text.as_str()),
+        Some("if value {\n    $0\n}")
+    );
+
+    let return_offset = u32::try_from(
+        text.find("value.return")
+            .expect("expected postfix completion target")
+            + "value.return".len(),
+    )
+    .expect("offset");
+    let return_item = analysis
+        .completions(FilePosition {
+            file_id,
+            offset: return_offset,
+        })
+        .into_iter()
+        .find(|item| item.label == "return" && item.source == CompletionItemSource::Postfix)
+        .expect("expected postfix return completion");
+    assert_eq!(
+        return_item
+            .text_edit
+            .as_ref()
+            .map(|edit| edit.new_text.as_str()),
+        Some("return value;$0")
+    );
+}
+
+#[test]
+fn completions_suggest_doc_tags_inside_doc_comments() {
+    let mut host = AnalysisHost::default();
+    host.apply_change(ChangeSet::single_file(
+        "main.rhai",
+        r#"
+            /// @pa
+            fn sample(value) {
+                value
+            }
+        "#,
+        DocumentVersion(1),
+    ));
+
+    let analysis = host.snapshot();
+    let file_id = analysis
+        .db
+        .vfs()
+        .file_id(Path::new("main.rhai"))
+        .expect("expected main.rhai");
+    let text = analysis.db.file_text(file_id).expect("expected text");
+    let offset = u32::try_from(text.find("@pa").expect("expected doc tag prefix") + "@pa".len())
+        .expect("offset");
+
+    let completions = analysis.completions(FilePosition { file_id, offset });
+    let param = completions
+        .iter()
+        .find(|item| item.label == "param")
+        .expect("expected param completion");
+
+    assert_eq!(param.source, CompletionItemSource::Builtin);
+    assert_eq!(param.detail.as_deref(), Some("doc tag"));
+    assert_eq!(param.filter_text.as_deref(), Some("param"));
+    assert_eq!(
+        param.text_edit.as_ref().map(|edit| edit.new_text.as_str()),
+        Some("param")
+    );
+}
+
+#[test]
+fn completions_suggest_doc_type_annotations_inside_param_tags() {
+    let mut host = AnalysisHost::default();
+    host.apply_change(ChangeSet::single_file(
+        "main.rhai",
+        r#"
+            /// @param value st
+            fn sample(value) {
+                value
+            }
+        "#,
+        DocumentVersion(1),
+    ));
+
+    let analysis = host.snapshot();
+    let file_id = analysis
+        .db
+        .vfs()
+        .file_id(Path::new("main.rhai"))
+        .expect("expected main.rhai");
+    let text = analysis.db.file_text(file_id).expect("expected text");
+    let offset =
+        u32::try_from(text.find("st").expect("expected type prefix") + "st".len()).expect("offset");
+
+    let completions = analysis.completions(FilePosition { file_id, offset });
+    let string = completions
+        .iter()
+        .find(|item| item.label == "string")
+        .expect("expected string type completion");
+
+    assert_eq!(string.source, CompletionItemSource::Builtin);
+    assert_eq!(string.detail.as_deref(), Some("type"));
+    assert_eq!(string.filter_text.as_deref(), Some("string"));
+    assert_eq!(
+        string.text_edit.as_ref().map(|edit| edit.new_text.as_str()),
+        Some("string")
+    );
+}
+
+#[test]
+fn completions_suggest_doc_type_annotations_inside_return_tags_after_space() {
+    let mut host = AnalysisHost::default();
+    host.apply_change(ChangeSet::single_file(
+        "main.rhai",
+        r#"
+            /// @return 
+            fn sample(value) {
+                value
+            }
+        "#,
+        DocumentVersion(1),
+    ));
+
+    let analysis = host.snapshot();
+    let file_id = analysis
+        .db
+        .vfs()
+        .file_id(Path::new("main.rhai"))
+        .expect("expected main.rhai");
+    let text = analysis.db.file_text(file_id).expect("expected text");
+    let offset =
+        u32::try_from(text.find("@return ").expect("expected return tag") + "@return ".len())
+            .expect("offset");
+
+    let completions = analysis.completions(FilePosition { file_id, offset });
+    let string = completions
+        .iter()
+        .find(|item| item.label == "string")
+        .expect("expected string type completion");
+
+    assert_eq!(string.source, CompletionItemSource::Builtin);
+    assert_eq!(string.detail.as_deref(), Some("type"));
+    assert_eq!(
+        string.text_edit.as_ref().map(|edit| edit.new_text.as_str()),
+        Some("string")
+    );
+}
+
+#[test]
+fn completions_include_module_qualified_import_members() {
+    let mut host = AnalysisHost::default();
+    host.apply_change(ChangeSet {
+        files: vec![
+            rhai_db::FileChange {
+                path: "provider.rhai".into(),
+                text: r#"
+                    /// helper docs
+                    /// @param left int
+                    /// @param right int
+                    /// @return int
+                    fn helper(left, right) {
+                        left + right
+                    }
+
+                    export const VALUE = 1;
+                "#
+                .to_owned(),
+                version: DocumentVersion(1),
+            },
+            rhai_db::FileChange {
+                path: "consumer.rhai".into(),
+                text: r#"
+                    import "provider" as tools;
+
+                    fn run() {
+                        tools::
+                    }
+                "#
+                .to_owned(),
+                version: DocumentVersion(1),
+            },
+        ],
+        removed_files: Vec::new(),
+        project: None,
+    });
+
+    let analysis = host.snapshot();
+    let file_id = analysis
+        .db
+        .vfs()
+        .file_id(Path::new("consumer.rhai"))
+        .expect("expected consumer.rhai");
+    let text = analysis.db.file_text(file_id).expect("expected text");
+    let offset =
+        u32::try_from(text.find("tools::").expect("expected module path access") + "tools::".len())
+            .expect("offset");
+
+    let completions = analysis.completions(FilePosition { file_id, offset });
+    let helper = completions
+        .iter()
+        .find(|item| item.label == "helper")
+        .expect("expected helper completion");
+    let value = completions
+        .iter()
+        .find(|item| item.label == "VALUE")
+        .expect("expected VALUE completion");
+
+    assert_eq!(helper.detail.as_deref(), Some("fun(int, int) -> int"));
+    assert_eq!(helper.insert_format, CompletionInsertFormat::Snippet);
+    assert_eq!(
+        helper.text_edit.as_ref().map(|edit| edit.new_text.as_str()),
+        Some("helper(${1:left}, ${2:right})$0")
+    );
+    assert_eq!(value.detail.as_deref(), Some("int"));
+}
+
+#[test]
+fn completions_filter_module_qualified_import_members_by_prefix() {
+    let mut host = AnalysisHost::default();
+    host.apply_change(ChangeSet {
+        files: vec![
+            rhai_db::FileChange {
+                path: "provider.rhai".into(),
+                text: r#"
+                    fn helper() {}
+                    fn world() {}
+                "#
+                .to_owned(),
+                version: DocumentVersion(1),
+            },
+            rhai_db::FileChange {
+                path: "consumer.rhai".into(),
+                text: r#"
+                    import "provider" as tools;
+
+                    fn run() {
+                        tools::wo
+                    }
+                "#
+                .to_owned(),
+                version: DocumentVersion(1),
+            },
+        ],
+        removed_files: Vec::new(),
+        project: None,
+    });
+
+    let analysis = host.snapshot();
+    let file_id = analysis
+        .db
+        .vfs()
+        .file_id(Path::new("consumer.rhai"))
+        .expect("expected consumer.rhai");
+    let text = analysis.db.file_text(file_id).expect("expected text");
+    let offset = u32::try_from(
+        text.find("tools::wo").expect("expected completion target") + "tools::wo".len(),
+    )
+    .expect("offset");
+
+    let completions = analysis.completions(FilePosition { file_id, offset });
+    let world_index = completions
+        .iter()
+        .position(|item| item.label == "world")
+        .expect("expected world completion");
+    let helper_index = completions
+        .iter()
+        .position(|item| item.label == "helper")
+        .expect("expected helper completion");
+
+    assert!(world_index < helper_index);
+}
+
+#[test]
+fn completions_do_not_appear_for_single_colon_module_path_prefix() {
+    let mut host = AnalysisHost::default();
+    host.apply_change(ChangeSet {
+        files: vec![
+            rhai_db::FileChange {
+                path: "provider.rhai".into(),
+                text: "fn helper() {}".to_owned(),
+                version: DocumentVersion(1),
+            },
+            rhai_db::FileChange {
+                path: "consumer.rhai".into(),
+                text: r#"
+                    import "provider" as tools;
+
+                    fn run() {
+                        tools:
+                    }
+                "#
+                .to_owned(),
+                version: DocumentVersion(1),
+            },
+        ],
+        removed_files: Vec::new(),
+        project: None,
+    });
+
+    let analysis = host.snapshot();
+    let file_id = analysis
+        .db
+        .vfs()
+        .file_id(Path::new("consumer.rhai"))
+        .expect("expected consumer.rhai");
+    let text = analysis.db.file_text(file_id).expect("expected text");
+    let offset =
+        u32::try_from(text.find("tools:").expect("expected completion target") + "tools:".len())
+            .expect("offset");
+
+    let completions = analysis.completions(FilePosition { file_id, offset });
+    assert!(
+        completions.is_empty(),
+        "expected no completions, got {completions:?}"
+    );
 }

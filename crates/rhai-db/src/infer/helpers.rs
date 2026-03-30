@@ -112,6 +112,18 @@ pub(crate) fn join_types(left: &TypeRef, right: &TypeRef) -> TypeRef {
         (TypeRef::Array(left), TypeRef::Array(right)) => {
             TypeRef::Array(Box::new(join_types(left, right)))
         }
+        (TypeRef::Array(items), other)
+            if matches!(items.as_ref(), TypeRef::Unknown | TypeRef::Never)
+                && matches!(other, TypeRef::Array(_)) =>
+        {
+            other.clone()
+        }
+        (other, TypeRef::Array(items))
+            if matches!(items.as_ref(), TypeRef::Unknown | TypeRef::Never)
+                && matches!(other, TypeRef::Array(_)) =>
+        {
+            other.clone()
+        }
         (TypeRef::Array(items), TypeRef::Map(key, value))
         | (TypeRef::Map(key, value), TypeRef::Array(items))
             if matches!(
@@ -188,8 +200,24 @@ pub(crate) fn push_union_member(members: &mut Vec<TypeRef>, ty: &TypeRef) {
                 push_union_member(members, item);
             }
         }
-        other if !members.iter().any(|existing| existing == other) => members.push(other.clone()),
-        _ => {}
+        other => {
+            if let Some(index) = members
+                .iter()
+                .position(|existing| union_member_subsumes(existing, other))
+            {
+                members[index] = other.clone();
+                return;
+            }
+
+            if members
+                .iter()
+                .any(|existing| existing == other || union_member_subsumes(other, existing))
+            {
+                return;
+            }
+
+            members.push(other.clone());
+        }
     }
 }
 
@@ -200,8 +228,34 @@ pub(crate) fn push_ambiguous_member(members: &mut Vec<TypeRef>, ty: TypeRef) {
                 push_ambiguous_member(members, item);
             }
         }
-        other if !members.iter().any(|existing| existing == &other) => members.push(other),
-        _ => {}
+        other => {
+            if let Some(index) = members
+                .iter()
+                .position(|existing| union_member_subsumes(existing, &other))
+            {
+                members[index] = other;
+                return;
+            }
+
+            if members
+                .iter()
+                .any(|existing| existing == &other || union_member_subsumes(&other, existing))
+            {
+                return;
+            }
+
+            members.push(other);
+        }
+    }
+}
+
+fn union_member_subsumes(existing: &TypeRef, next: &TypeRef) -> bool {
+    match (existing, next) {
+        (TypeRef::Array(existing), TypeRef::Array(next)) => {
+            matches!(existing.as_ref(), TypeRef::Unknown | TypeRef::Never)
+                && !matches!(next.as_ref(), TypeRef::Unknown | TypeRef::Never)
+        }
+        _ => false,
     }
 }
 

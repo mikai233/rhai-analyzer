@@ -2,7 +2,9 @@ use std::collections::HashMap;
 
 use crate::db::{AnalyzerDatabase, DatabaseSnapshot};
 use crate::infer::{ImportedMethodSignature, ImportedModuleMember};
-use crate::types::{LinkedModuleImport, LocatedModuleExport, LocatedSymbolIdentity};
+use crate::types::{
+    ImportedModuleCompletion, LinkedModuleImport, LocatedModuleExport, LocatedSymbolIdentity,
+};
 use rhai_hir::{FileBackedSymbolIdentity, FileHir, SymbolId, TypeRef};
 use rhai_vfs::FileId;
 
@@ -148,6 +150,84 @@ impl AnalyzerDatabase {
     }
 }
 
+impl DatabaseSnapshot {
+    pub fn imported_module_completions(
+        &self,
+        file_id: FileId,
+        module_path: &[String],
+    ) -> Vec<ImportedModuleCompletion> {
+        let Some(linked_import) = resolve_linked_import_for_module_path(self, file_id, module_path)
+        else {
+            return Vec::new();
+        };
+
+        let mut completions = HashMap::<String, ImportedModuleCompletion>::new();
+
+        for export in linked_import.exports.iter() {
+            let Some(identity) = project_identity_for_export(export) else {
+                continue;
+            };
+            let annotation = self
+                .inferred_symbol_type(export.file_id, identity.symbol)
+                .cloned()
+                .or_else(|| {
+                    self.hir(export.file_id)
+                        .and_then(|hir| hir.declared_symbol_type(identity.symbol).cloned())
+                });
+            let docs = self.hir(export.file_id).and_then(|hir| {
+                hir.symbol(identity.symbol)
+                    .docs
+                    .map(|docs| hir.doc_block(docs).text.clone())
+            });
+            let Some(name) = export.export.exported_name.clone() else {
+                continue;
+            };
+            completions.insert(
+                name.clone(),
+                ImportedModuleCompletion {
+                    name,
+                    kind: identity.kind,
+                    file_id: Some(export.file_id),
+                    symbol: Some(identity.symbol),
+                    annotation,
+                    docs,
+                },
+            );
+        }
+
+        let provider_hir = self.hir(linked_import.provider_file_id);
+        for nested in self.linked_imports(linked_import.provider_file_id) {
+            let Some(alias_symbol) = provider_hir
+                .as_ref()
+                .and_then(|hir| hir.import(nested.import).alias)
+            else {
+                continue;
+            };
+            let name = provider_hir
+                .as_ref()
+                .map(|hir| hir.symbol(alias_symbol).name.clone())
+                .unwrap_or_default();
+            if name.is_empty() {
+                continue;
+            }
+            completions
+                .entry(name.clone())
+                .or_insert(ImportedModuleCompletion {
+                    name,
+                    kind: rhai_hir::SymbolKind::ImportAlias,
+                    file_id: None,
+                    symbol: None,
+                    annotation: None,
+                    docs: None,
+                });
+        }
+
+        let mut values = completions.into_values().collect::<Vec<_>>();
+        values.sort_by(|left, right| left.name.cmp(&right.name));
+        values
+    }
+}
+
 pub(crate) fn project_identity_for_export(
     export: &LocatedModuleExport,
 ) -> Option<&FileBackedSymbolIdentity> {
@@ -218,6 +298,22 @@ fn resolve_linked_import_path_targets(
     path_parts: &[String],
 ) -> Vec<LocatedSymbolIdentity> {
     resolve_linked_import_path_targets_inner(snapshot, file_id, path_parts, &mut Vec::new())
+}
+
+fn resolve_linked_import_for_module_path<'a>(
+    snapshot: &'a DatabaseSnapshot,
+    file_id: FileId,
+    module_path: &[String],
+) -> Option<&'a LinkedModuleImport> {
+    let [alias_name, rest @ ..] = module_path else {
+        return None;
+    };
+    let linked_import = linked_import_for_alias_name(snapshot, file_id, alias_name)?;
+    if rest.is_empty() {
+        return Some(linked_import);
+    }
+
+    resolve_linked_import_for_module_path(snapshot, linked_import.provider_file_id, rest)
 }
 
 fn resolve_linked_import_path_targets_inner(

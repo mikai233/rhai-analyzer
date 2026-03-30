@@ -1,6 +1,6 @@
 use rhai_db::{
     DatabaseSnapshot, LocatedNavigationTarget, best_matching_signature_index,
-    specialize_signature_with_receiver_and_arg_types,
+    builtin_universal_method_signature, specialize_signature_with_receiver_and_arg_types,
 };
 use rhai_hir::{CallSite, FileHir, FunctionTypeRef, ParameterHint, SymbolId, SymbolKind, TypeRef};
 use rhai_syntax::TextSize;
@@ -409,13 +409,7 @@ fn signature_help_from_builtin_universal_method(
     let callee_expr = call.callee_range.and_then(|range| hir.expr_at(range))?;
     let access = hir.member_access(callee_expr)?;
     let method_name = hir.reference(access.field_reference).name.as_str();
-    let signature = match method_name {
-        "type_of" => FunctionTypeRef {
-            params: Vec::new(),
-            ret: Box::new(TypeRef::String),
-        },
-        _ => return None,
-    };
+    let signature = builtin_universal_method_signature(method_name)?;
 
     Some(SignatureHelp {
         signatures: vec![SignatureInformation {

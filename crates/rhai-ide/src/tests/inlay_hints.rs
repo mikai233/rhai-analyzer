@@ -133,3 +133,68 @@ fn inlay_hints_show_inferred_closure_parameter_and_return_types() {
         Some(&": float".to_owned())
     );
 }
+
+#[test]
+fn inlay_hints_stay_visible_even_with_explicit_doc_annotations() {
+    let mut host = AnalysisHost::default();
+    host.apply_change(ChangeSet::single_file(
+        "main.rhai",
+        r#"
+            /// @param left int
+            /// @param right int
+            /// @return int
+            fn add(left, right) {
+                let result = left + right;
+                result
+            }
+        "#,
+        DocumentVersion(1),
+    ));
+
+    let analysis = host.snapshot();
+    let file_id = analysis
+        .db
+        .vfs()
+        .file_id(Path::new("main.rhai"))
+        .expect("expected main.rhai");
+    assert_no_syntax_diagnostics(&analysis, file_id);
+    let text = analysis.db.file_text(file_id).expect("expected text");
+    let hints = analysis.inlay_hints(file_id);
+
+    let labels_by_offset = hints
+        .into_iter()
+        .map(|hint| ((hint.offset, hint.kind), hint.label))
+        .collect::<BTreeMap<_, _>>();
+
+    let left_offset =
+        u32::try_from(text.find("left,").expect("expected left parameter") + "left".len())
+            .expect("offset");
+    let right_offset =
+        u32::try_from(text.find("right)").expect("expected right parameter") + "right".len())
+            .expect("offset");
+    let function_return_offset = u32::try_from(
+        text.find("{\n                let result")
+            .expect("expected function body"),
+    )
+    .expect("offset");
+    let result_offset =
+        u32::try_from(text.find("result =").expect("expected result binding") + "result".len())
+            .expect("offset");
+
+    assert_eq!(
+        labels_by_offset.get(&(left_offset, InlayHintKind::Type)),
+        Some(&": int".to_owned())
+    );
+    assert_eq!(
+        labels_by_offset.get(&(right_offset, InlayHintKind::Type)),
+        Some(&": int".to_owned())
+    );
+    assert_eq!(
+        labels_by_offset.get(&(function_return_offset, InlayHintKind::Type)),
+        Some(&" -> int".to_owned())
+    );
+    assert_eq!(
+        labels_by_offset.get(&(result_offset, InlayHintKind::Type)),
+        Some(&": int".to_owned())
+    );
+}

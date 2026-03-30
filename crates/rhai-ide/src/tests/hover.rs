@@ -182,3 +182,38 @@ fn hover_keeps_declared_signature_and_surfaces_inferred_type_notes() {
             .any(|note| note == "Inferred type: let result: any | blob")
     );
 }
+
+#[test]
+fn hover_supports_builtin_global_functions() {
+    let mut host = AnalysisHost::default();
+    host.apply_change(ChangeSet::single_file(
+        "main.rhai",
+        r#"
+            fn run() {
+                print("hello");
+            }
+        "#,
+        DocumentVersion(1),
+    ));
+
+    let analysis = host.snapshot();
+    let file_id = analysis
+        .db
+        .vfs()
+        .file_id(Path::new("main.rhai"))
+        .expect("expected main.rhai");
+    assert_no_syntax_diagnostics(&analysis, file_id);
+    let text = analysis.db.file_text(file_id).expect("expected text");
+    let offset = u32::try_from(text.find("print").expect("expected print call")).expect("offset");
+
+    let hover = analysis
+        .hover(FilePosition { file_id, offset })
+        .expect("expected builtin hover");
+
+    assert_eq!(hover.signature, "fn print(any) -> ()");
+    assert_eq!(hover.source, HoverSignatureSource::Declared);
+    assert_eq!(
+        hover.docs.as_deref(),
+        Some("Print a value via the engine's print callback.")
+    );
+}

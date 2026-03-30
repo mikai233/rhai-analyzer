@@ -3,7 +3,7 @@ use rhai_hir::{BodyId, BodyKind, FileHir, FunctionTypeRef, SymbolId, SymbolKind,
 use rhai_vfs::FileId;
 
 use crate::support::convert::format_type_ref;
-use crate::{InlayHint, InlayHintKind};
+use crate::{InlayHint, InlayHintKind, InlayHintSource};
 
 pub(crate) fn inlay_hints(snapshot: &DatabaseSnapshot, file_id: FileId) -> Vec<InlayHint> {
     let Some(hir) = snapshot.hir(file_id) else {
@@ -12,11 +12,7 @@ pub(crate) fn inlay_hints(snapshot: &DatabaseSnapshot, file_id: FileId) -> Vec<I
     let mut hints = Vec::new();
 
     hints.extend(variable_type_hints(snapshot, file_id, hir.as_ref()));
-    hints.extend(closure_parameter_type_hints(
-        snapshot,
-        file_id,
-        hir.as_ref(),
-    ));
+    hints.extend(parameter_type_hints(snapshot, file_id, hir.as_ref()));
     hints.extend(function_return_type_hints(snapshot, file_id, hir.as_ref()));
     hints.extend(closure_return_type_hints(snapshot, file_id, hir.as_ref()));
 
@@ -34,8 +30,7 @@ fn variable_type_hints(
         .iter()
         .enumerate()
         .filter_map(|(index, symbol)| {
-            (symbol.kind == SymbolKind::Variable && symbol.annotation.is_none())
-                .then_some((SymbolId(index as u32), symbol))
+            (symbol.kind == SymbolKind::Variable).then_some((SymbolId(index as u32), symbol))
         })
         .filter_map(|(symbol_id, symbol)| {
             let ty = snapshot.inferred_symbol_type(file_id, symbol_id)?;
@@ -43,37 +38,55 @@ fn variable_type_hints(
                 offset: u32::from(symbol.range.end()),
                 label: format!(": {}", format_type_ref(ty)),
                 kind: InlayHintKind::Type,
+                source: InlayHintSource::Variable,
             })
         })
         .collect()
 }
 
-fn closure_parameter_type_hints(
+fn parameter_type_hints(
     snapshot: &DatabaseSnapshot,
     file_id: FileId,
     hir: &FileHir,
 ) -> Vec<InlayHint> {
-    hir.closure_exprs
+    let mut parameter_symbols = hir
+        .symbols
         .iter()
-        .flat_map(|closure| {
-            let scope = hir.body(closure.body).scope;
-            hir.scope(scope)
-                .symbols
-                .iter()
-                .copied()
-                .filter(|symbol_id| hir.symbol(*symbol_id).kind == SymbolKind::Parameter)
-                .collect::<Vec<_>>()
+        .enumerate()
+        .filter_map(|(index, symbol)| {
+            (symbol.kind == SymbolKind::Function).then_some(SymbolId(index as u32))
         })
         .filter_map(|symbol_id| {
+            hir.body_of(symbol_id)
+                .map(|body_id| hir.body(body_id).scope)
+        })
+        .flat_map(|scope| hir.scope(scope).symbols.iter().copied())
+        .filter(|symbol_id| hir.symbol(*symbol_id).kind == SymbolKind::Parameter)
+        .collect::<Vec<_>>();
+
+    parameter_symbols.extend(hir.closure_exprs.iter().flat_map(|closure| {
+        let scope = hir.body(closure.body).scope;
+        hir.scope(scope)
+            .symbols
+            .iter()
+            .copied()
+            .filter(|symbol_id| hir.symbol(*symbol_id).kind == SymbolKind::Parameter)
+            .collect::<Vec<_>>()
+    }));
+
+    parameter_symbols.sort_unstable_by_key(|symbol_id| symbol_id.0);
+    parameter_symbols.dedup();
+
+    parameter_symbols
+        .into_iter()
+        .filter_map(|symbol_id| {
             let symbol = hir.symbol(symbol_id);
-            if symbol.annotation.is_some() {
-                return None;
-            }
             let ty = snapshot.inferred_symbol_type(file_id, symbol_id)?;
             is_useful_type_hint(ty).then(|| InlayHint {
                 offset: u32::from(symbol.range.end()),
                 label: format!(": {}", format_type_ref(ty)),
                 kind: InlayHintKind::Type,
+                source: InlayHintSource::Parameter,
             })
         })
         .collect()
@@ -90,11 +103,9 @@ fn function_return_type_hints(
         .filter_map(|(index, symbol)| {
             (symbol.kind == SymbolKind::Function).then_some((SymbolId(index as u32), symbol))
         })
-        .filter_map(|(symbol_id, symbol)| {
+        .filter_map(|(symbol_id, _symbol)| {
             let body = hir.body_of(symbol_id).map(|body_id| hir.body(body_id))?;
-            if body.kind != BodyKind::Function
-                || has_explicit_return_annotation(symbol.annotation.as_ref())
-            {
+            if body.kind != BodyKind::Function {
                 return None;
             }
             let inferred = snapshot.inferred_symbol_type(file_id, symbol_id)?;
@@ -103,6 +114,7 @@ fn function_return_type_hints(
                 offset: u32::from(body.range.start()),
                 label: format!(" -> {}", format_type_ref(signature.ret.as_ref())),
                 kind: InlayHintKind::Type,
+                source: InlayHintSource::ReturnType,
             })
         })
         .collect()
@@ -121,6 +133,7 @@ fn closure_return_type_hints(
                 offset: u32::from(hir.body(closure.body).range.start()),
                 label: format!(" -> {}", format_type_ref(&ty)),
                 kind: InlayHintKind::Type,
+                source: InlayHintSource::ReturnType,
             })
         })
         .collect()
@@ -130,13 +143,6 @@ fn function_signature(ty: &TypeRef) -> Option<&FunctionTypeRef> {
     match ty {
         TypeRef::Function(signature) => Some(signature),
         _ => None,
-    }
-}
-
-fn has_explicit_return_annotation(annotation: Option<&TypeRef>) -> bool {
-    match annotation {
-        Some(TypeRef::Function(signature)) => !matches!(signature.ret.as_ref(), TypeRef::Unknown),
-        _ => false,
     }
 }
 

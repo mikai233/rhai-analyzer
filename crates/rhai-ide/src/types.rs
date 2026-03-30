@@ -12,6 +12,19 @@ pub struct FilePosition {
 pub struct Diagnostic {
     pub message: String,
     pub range: TextRange,
+    pub severity: DiagnosticSeverity,
+    pub tags: Vec<DiagnosticTag>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum DiagnosticSeverity {
+    Error,
+    Warning,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum DiagnosticTag {
+    Unnecessary,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -36,11 +49,19 @@ pub enum InlayHintKind {
     Type,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum InlayHintSource {
+    Variable,
+    Parameter,
+    ReturnType,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InlayHint {
     pub offset: u32,
     pub label: String,
     pub kind: InlayHintKind,
+    pub source: InlayHintSource,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -208,6 +229,8 @@ pub struct RenamePlan {
 pub enum CompletionItemKind {
     Symbol(SymbolKind),
     Member,
+    Keyword,
+    Type,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -215,6 +238,8 @@ pub enum CompletionItemSource {
     Visible,
     Project,
     Member,
+    Builtin,
+    Postfix,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -225,9 +250,24 @@ pub struct CompletionItem {
     pub sort_text: String,
     pub detail: Option<String>,
     pub docs: Option<String>,
+    pub filter_text: Option<String>,
+    pub text_edit: Option<CompletionTextEdit>,
+    pub insert_format: CompletionInsertFormat,
     pub file_id: Option<FileId>,
     pub exported: bool,
     pub resolve_data: Option<CompletionResolveData>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CompletionInsertFormat {
+    PlainText,
+    Snippet,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompletionTextEdit {
+    pub range: TextRange,
+    pub new_text: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -1,6 +1,8 @@
 use std::collections::{BTreeMap, HashSet};
 
-use crate::builtin::signatures::host_type_name_for_type;
+use crate::builtin::signatures::{
+    builtin_universal_method_names, builtin_universal_method_signature, host_type_name_for_type,
+};
 use crate::db::DatabaseSnapshot;
 use crate::db::query_support::{object_field_member_completions, symbol_for_expr};
 use crate::db::rebuild::default_file_stats;
@@ -126,7 +128,7 @@ fn cached_member_completion_at(
     analysis: &CachedFileAnalysis,
     offset: TextSize,
 ) -> Vec<MemberCompletion> {
-    let Some(access) = analysis
+    let access = analysis
         .hir
         .member_accesses
         .iter()
@@ -138,34 +140,35 @@ fn cached_member_completion_at(
                     .range
                     .contains(offset)
         })
-        .min_by_key(|access| access.range.len())
-    else {
-        return Vec::new();
-    };
+        .min_by_key(|access| access.range.len());
 
-    let mut members = BTreeMap::<String, MemberCompletion>::new();
-    for member in object_field_member_completions(&analysis.hir, access.receiver) {
-        members.entry(member.name.clone()).or_insert(member);
-    }
-
-    if let Some(query_support) = analysis.query_support.as_ref()
-        && let Some(symbol) = symbol_for_expr(&analysis.hir, access.receiver)
-        && let Some(cached) = query_support.member_completion_sets_by_symbol.get(&symbol)
-    {
-        for member in cached.iter().cloned() {
+    if let Some(access) = access {
+        let mut members = BTreeMap::<String, MemberCompletion>::new();
+        for member in object_field_member_completions(&analysis.hir, access.receiver) {
             members.entry(member.name.clone()).or_insert(member);
         }
-    } else {
-        for member in analysis.hir.member_completions_for_expr(access.receiver) {
+
+        if let Some(query_support) = analysis.query_support.as_ref()
+            && let Some(symbol) = symbol_for_expr(&analysis.hir, access.receiver)
+            && let Some(cached) = query_support.member_completion_sets_by_symbol.get(&symbol)
+        {
+            for member in cached.iter().cloned() {
+                members.entry(member.name.clone()).or_insert(member);
+            }
+        } else {
+            for member in analysis.hir.member_completions_for_expr(access.receiver) {
+                members.entry(member.name.clone()).or_insert(member);
+            }
+        }
+
+        for member in host_type_member_completions(snapshot, file_id, analysis, access.receiver) {
             members.entry(member.name.clone()).or_insert(member);
         }
+
+        return members.into_values().collect();
     }
 
-    for member in host_type_member_completions(snapshot, file_id, analysis, access.receiver) {
-        members.entry(member.name.clone()).or_insert(member);
-    }
-
-    members.into_values().collect()
+    fallback_member_completion_at(snapshot, file_id, analysis, offset)
 }
 
 fn host_type_member_completions(
@@ -192,6 +195,86 @@ fn host_type_member_completions(
     members.into_values().collect()
 }
 
+fn fallback_member_completion_at(
+    snapshot: &DatabaseSnapshot,
+    file_id: FileId,
+    analysis: &CachedFileAnalysis,
+    offset: TextSize,
+) -> Vec<MemberCompletion> {
+    let Some(receiver_name) = incomplete_member_receiver_name(snapshot, file_id, offset) else {
+        return Vec::new();
+    };
+
+    let Some(symbol) = analysis
+        .hir
+        .visible_symbols_at(offset)
+        .into_iter()
+        .rev()
+        .find(|symbol| analysis.hir.symbol(*symbol).name == receiver_name)
+    else {
+        return Vec::new();
+    };
+
+    let mut members = BTreeMap::<String, MemberCompletion>::new();
+    if let Some(query_support) = analysis.query_support.as_ref()
+        && let Some(cached) = query_support.member_completion_sets_by_symbol.get(&symbol)
+    {
+        for member in cached.iter().cloned() {
+            members.entry(member.name.clone()).or_insert(member);
+        }
+    }
+
+    if let Some(receiver_ty) = snapshot.inferred_symbol_type(file_id, symbol).cloned() {
+        let mut host_members = BTreeMap::<String, MemberCompletion>::new();
+        collect_host_type_member_completions(
+            &mut host_members,
+            snapshot.host_types(),
+            &receiver_ty,
+        );
+        for member in host_members.into_values() {
+            members.entry(member.name.clone()).or_insert(member);
+        }
+    }
+
+    members.into_values().collect()
+}
+
+fn incomplete_member_receiver_name(
+    snapshot: &DatabaseSnapshot,
+    file_id: FileId,
+    offset: TextSize,
+) -> Option<String> {
+    let text = snapshot.file_text(file_id)?;
+    let offset = usize::try_from(u32::from(offset)).ok()?.min(text.len());
+    let bytes = text.as_bytes();
+    let mut prefix_start = offset;
+
+    while prefix_start > 0 && is_identifier_byte(bytes[prefix_start - 1]) {
+        prefix_start -= 1;
+    }
+    if prefix_start == 0 || bytes[prefix_start - 1] != b'.' {
+        return None;
+    }
+
+    let mut receiver_end = prefix_start - 1;
+    while receiver_end > 0 && bytes[receiver_end - 1].is_ascii_whitespace() {
+        receiver_end -= 1;
+    }
+    let mut receiver_start = receiver_end;
+    while receiver_start > 0 && is_identifier_byte(bytes[receiver_start - 1]) {
+        receiver_start -= 1;
+    }
+    if receiver_start == receiver_end {
+        return None;
+    }
+
+    Some(text[receiver_start..receiver_end].to_owned())
+}
+
+fn is_identifier_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || byte == b'_'
+}
+
 fn collect_host_type_member_completions(
     members: &mut BTreeMap<String, MemberCompletion>,
     host_types: &[crate::HostType],
@@ -210,17 +293,21 @@ fn collect_host_type_member_completions(
         }
         _ => {
             let Some(host_type_name) = host_type_name_for_type(ty) else {
+                add_universal_method_members(members);
                 return;
             };
             let Some(host_type) = host_types
                 .iter()
                 .find(|host_type| host_type.name == host_type_name)
             else {
+                add_universal_method_members(members);
                 return;
             };
             add_host_type_members(members, ty, host_type, host_types);
         }
     }
+
+    add_universal_method_members(members);
 }
 
 fn add_host_type_members(
@@ -262,4 +349,17 @@ fn method_signature_annotation(
         })
         .collect::<Vec<_>>();
     merge_function_candidate_signatures(signatures, None).map(TypeRef::Function)
+}
+
+fn add_universal_method_members(members: &mut BTreeMap<String, MemberCompletion>) {
+    for method_name in builtin_universal_method_names() {
+        members
+            .entry((*method_name).to_owned())
+            .or_insert(MemberCompletion {
+                name: (*method_name).to_owned(),
+                annotation: builtin_universal_method_signature(method_name).map(TypeRef::Function),
+                range: None,
+                source: MemberCompletionSource::HostTypeMember,
+            });
+    }
 }

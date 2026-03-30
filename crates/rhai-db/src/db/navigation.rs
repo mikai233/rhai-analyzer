@@ -1,7 +1,6 @@
 use crate::db::DatabaseSnapshot;
 use crate::db::imports::{
-    dedupe_symbol_locations, imported_global_method_symbols,
-    linked_import_targets_for_path_reference, project_identity_for_export,
+    imported_global_method_symbols, linked_import_targets_for_path_reference,
 };
 use crate::db::query_support::cached_navigation_target;
 use crate::db::rename::project_reference_kind_rank;
@@ -10,7 +9,7 @@ use crate::types::{
     LocatedProjectReference, LocatedSymbolIdentity, LocatedWorkspaceSymbol, ProjectReferenceKind,
     ProjectReferences,
 };
-use rhai_hir::FileBackedSymbolIdentity;
+use rhai_hir::{FileBackedSymbolIdentity, SymbolId};
 use rhai_syntax::TextSize;
 use rhai_vfs::FileId;
 use std::collections::BTreeMap;
@@ -22,6 +21,10 @@ impl DatabaseSnapshot {
         file_id: FileId,
         offset: TextSize,
     ) -> Vec<LocatedNavigationTarget> {
+        if let Some(target) = self.goto_import_module_target(file_id, offset) {
+            return vec![target];
+        }
+
         self.project_targets_at(file_id, offset)
             .iter()
             .flat_map(|target| self.navigation_targets_for_identity(&target.symbol))
@@ -95,23 +98,6 @@ impl DatabaseSnapshot {
                     .to_vec();
             }
 
-            if let Some(import_index) = analysis
-                .hir
-                .imports
-                .iter()
-                .position(|import| import.module_reference == Some(reference_id))
-                && let Some(linked_import) = self.linked_import(file_id, import_index)
-            {
-                return dedupe_symbol_locations(
-                    linked_import
-                        .exports
-                        .iter()
-                        .filter_map(project_identity_for_export)
-                        .flat_map(|identity| self.locate_symbol(identity).iter().cloned())
-                        .collect(),
-                );
-            }
-
             if analysis.hir.reference(reference_id).kind == rhai_hir::ReferenceKind::Field
                 && let Some(access) = analysis
                     .hir
@@ -168,6 +154,31 @@ impl DatabaseSnapshot {
                     kind: ProjectReferenceKind::Reference,
                 },
             ));
+
+            for (&candidate_file_id, candidate_analysis) in self.analysis.iter() {
+                references.extend(
+                    candidate_analysis
+                        .hir
+                        .references
+                        .iter()
+                        .enumerate()
+                        .flat_map(|(index, reference)| {
+                            linked_import_targets_for_path_reference(
+                                self,
+                                candidate_file_id,
+                                candidate_analysis.hir.as_ref(),
+                                rhai_hir::ReferenceId(index as u32),
+                            )
+                            .into_iter()
+                            .filter(move |resolved| resolved.symbol == target.symbol)
+                            .map(move |_| LocatedProjectReference {
+                                file_id: candidate_file_id,
+                                range: reference.range,
+                                kind: ProjectReferenceKind::Reference,
+                            })
+                        }),
+                );
+            }
         }
 
         references.sort_by(|left, right| {
@@ -340,6 +351,40 @@ impl DatabaseSnapshot {
             symbol: location.symbol.clone(),
             target: cached_navigation_target(analysis, location.symbol.symbol),
         })
+    }
+
+    fn goto_import_module_target(
+        &self,
+        file_id: FileId,
+        offset: TextSize,
+    ) -> Option<LocatedNavigationTarget> {
+        let analysis = self.analysis.get(&file_id)?;
+        let import_index = analysis.hir.imports.iter().position(|import| {
+            import
+                .module_range
+                .is_some_and(|module_range| module_range.contains(offset))
+        })?;
+        let linked_import = self.linked_import(file_id, import_index)?;
+        self.file_navigation_target(linked_import.provider_file_id)
+    }
+
+    fn file_navigation_target(&self, file_id: FileId) -> Option<LocatedNavigationTarget> {
+        let analysis = self.analysis.get(&file_id)?;
+        let target = analysis
+            .document_symbols
+            .first()
+            .map(|symbol| rhai_hir::NavigationTarget {
+                symbol: symbol.symbol,
+                kind: symbol.kind,
+                full_range: symbol.full_range,
+                focus_range: symbol.focus_range,
+            })
+            .or_else(|| {
+                (!analysis.hir.symbols.is_empty())
+                    .then(|| cached_navigation_target(analysis, SymbolId(0)))
+            })?;
+
+        Some(LocatedNavigationTarget { file_id, target })
     }
 }
 

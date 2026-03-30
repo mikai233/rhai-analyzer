@@ -12,13 +12,14 @@ mod types;
 
 pub use crate::analysis::{Analysis, AnalysisHost};
 pub use crate::assists::{Assist, AssistId, AssistKind, DiagnosticWithFixes};
-pub use crate::change::{AutoImportAction, FileTextEdit, SourceChange, TextEdit};
+pub use crate::change::{AutoImportAction, FileRename, FileTextEdit, SourceChange, TextEdit};
 pub use crate::navigation::rename::PreparedRename;
 pub use crate::types::{
-    CallHierarchyItem, CompletionItem, CompletionItemKind, CompletionItemSource,
-    CompletionResolveData, Diagnostic, DocumentHighlight, DocumentHighlightKind, DocumentSymbol,
-    FilePosition, FoldingRange, FoldingRangeKind, HoverResult, HoverSignatureSource, IncomingCall,
-    InlayHint, InlayHintKind, NavigationTarget, OutgoingCall, ReferenceKind, ReferenceLocation,
+    CallHierarchyItem, CompletionInsertFormat, CompletionItem, CompletionItemKind,
+    CompletionItemSource, CompletionResolveData, Diagnostic, DiagnosticSeverity, DiagnosticTag,
+    DocumentHighlight, DocumentHighlightKind, DocumentSymbol, FilePosition, FoldingRange,
+    FoldingRangeKind, HoverResult, HoverSignatureSource, IncomingCall, InlayHint, InlayHintKind,
+    InlayHintSource, NavigationTarget, OutgoingCall, ReferenceKind, ReferenceLocation,
     ReferencesResult, RenameIssue, RenamePlan, SemanticToken, SemanticTokenKind,
     SemanticTokenModifier, SignatureHelp, SignatureInformation, SignatureParameter,
     WorkspaceSymbol,

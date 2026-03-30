@@ -1,7 +1,10 @@
 use crate::db::DatabaseSnapshot;
-use crate::types::{ProjectDiagnostic, ProjectDiagnosticKind};
+use crate::types::{
+    ProjectDiagnostic, ProjectDiagnosticKind, ProjectDiagnosticSeverity, ProjectDiagnosticTag,
+};
 use rhai_hir::{FileHir, SemanticDiagnostic, SemanticDiagnosticKind};
 use rhai_vfs::FileId;
+use std::sync::Arc;
 
 impl DatabaseSnapshot {
     pub fn project_diagnostics(&self, file_id: FileId) -> Vec<ProjectDiagnostic> {
@@ -14,9 +17,11 @@ impl DatabaseSnapshot {
             .iter()
             .map(|diagnostic| ProjectDiagnostic {
                 kind: ProjectDiagnosticKind::Syntax,
+                severity: ProjectDiagnosticSeverity::Error,
                 range: diagnostic.range(),
                 message: diagnostic.message().to_owned(),
                 related_range: None,
+                tags: Arc::from([]),
             })
             .collect::<Vec<_>>();
 
@@ -74,9 +79,11 @@ fn project_semantic_diagnostics(
         if diagnostic.kind != SemanticDiagnosticKind::UnresolvedImport {
             projected.push(ProjectDiagnostic {
                 kind: ProjectDiagnosticKind::Semantic,
+                severity: semantic_diagnostic_severity(diagnostic.kind),
                 range: diagnostic.range,
                 message: diagnostic.message.clone(),
                 related_range: diagnostic.related_range,
+                tags: semantic_diagnostic_tags(diagnostic.kind),
             });
             continue;
         }
@@ -84,9 +91,11 @@ fn project_semantic_diagnostics(
         let Some(import_index) = import_index_for_diagnostic(hir, diagnostic) else {
             projected.push(ProjectDiagnostic {
                 kind: ProjectDiagnosticKind::Semantic,
+                severity: semantic_diagnostic_severity(diagnostic.kind),
                 range: diagnostic.range,
                 message: diagnostic.message.clone(),
                 related_range: diagnostic.related_range,
+                tags: semantic_diagnostic_tags(diagnostic.kind),
             });
             continue;
         };
@@ -96,12 +105,14 @@ fn project_semantic_diagnostics(
             Some(linked_import) => {
                 projected.push(ProjectDiagnostic {
                     kind: ProjectDiagnosticKind::AmbiguousLinkedImport,
+                    severity: ProjectDiagnosticSeverity::Error,
                     range: diagnostic.range,
                     message: format!(
                         "ambiguous import module `{}` matches multiple workspace exports",
                         linked_import.module_name
                     ),
                     related_range: Some(hir.import(import_index).range),
+                    tags: Arc::from([]),
                 });
                 projected.extend(linked_import_usage_diagnostics(
                     hir,
@@ -116,9 +127,11 @@ fn project_semantic_diagnostics(
             None => {
                 projected.push(ProjectDiagnostic {
                     kind: ProjectDiagnosticKind::Semantic,
+                    severity: semantic_diagnostic_severity(diagnostic.kind),
                     range: diagnostic.range,
                     message: diagnostic.message.clone(),
                     related_range: diagnostic.related_range,
+                    tags: semantic_diagnostic_tags(diagnostic.kind),
                 });
                 projected.extend(linked_import_usage_diagnostics(
                     hir,
@@ -177,9 +190,25 @@ fn linked_import_usage_diagnostics(
     hir.references_to(alias_symbol)
         .map(|reference_id| ProjectDiagnostic {
             kind,
+            severity: ProjectDiagnosticSeverity::Error,
             range: hir.reference(reference_id).range,
             message: message.clone(),
             related_range: Some(hir.import(import_index).range),
+            tags: Arc::from([]),
         })
         .collect()
+}
+
+fn semantic_diagnostic_severity(kind: SemanticDiagnosticKind) -> ProjectDiagnosticSeverity {
+    match kind {
+        SemanticDiagnosticKind::UnusedSymbol => ProjectDiagnosticSeverity::Warning,
+        _ => ProjectDiagnosticSeverity::Error,
+    }
+}
+
+fn semantic_diagnostic_tags(kind: SemanticDiagnosticKind) -> Arc<[ProjectDiagnosticTag]> {
+    match kind {
+        SemanticDiagnosticKind::UnusedSymbol => Arc::from([ProjectDiagnosticTag::Unnecessary]),
+        _ => Arc::from([]),
+    }
 }

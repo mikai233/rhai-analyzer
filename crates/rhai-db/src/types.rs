@@ -6,8 +6,8 @@ use std::time::Duration;
 use rhai_hir::{
     CompletionSymbol, DocumentSymbol, ExternalSignatureIndex, FileBackedSymbolIdentity, FileHir,
     FileSymbolIndex, FunctionTypeRef, MemberCompletion, ModuleExportEdge, ModuleGraphIndex,
-    NavigationTarget, RenamePreflightIssue, SemanticDiagnostic, StableSymbolKey, SymbolId, TypeRef,
-    TypeSlotAssignments, WorkspaceSymbol,
+    NavigationTarget, RenamePreflightIssue, SemanticDiagnostic, StableSymbolKey, SymbolId,
+    SymbolKind, TypeRef, TypeSlotAssignments, WorkspaceSymbol,
 };
 use rhai_syntax::{Parse, SyntaxError, TextRange, TextSize};
 use rhai_vfs::{DocumentVersion, FileId};
@@ -188,6 +188,16 @@ pub struct CompletionInputs {
     pub member_symbols: Vec<MemberCompletion>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImportedModuleCompletion {
+    pub name: String,
+    pub kind: SymbolKind,
+    pub file_id: Option<FileId>,
+    pub symbol: Option<SymbolId>,
+    pub annotation: Option<TypeRef>,
+    pub docs: Option<String>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ProjectDiagnosticKind {
     Syntax,
@@ -196,12 +206,25 @@ pub enum ProjectDiagnosticKind {
     AmbiguousLinkedImport,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ProjectDiagnosticSeverity {
+    Error,
+    Warning,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ProjectDiagnosticTag {
+    Unnecessary,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProjectDiagnostic {
     pub kind: ProjectDiagnosticKind,
+    pub severity: ProjectDiagnosticSeverity,
     pub range: TextRange,
     pub message: String,
     pub related_range: Option<TextRange>,
+    pub tags: Arc<[ProjectDiagnosticTag]>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

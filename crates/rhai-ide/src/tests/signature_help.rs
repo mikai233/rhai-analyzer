@@ -518,6 +518,7 @@ fn signature_help_returns_builtin_introspection_signatures() {
                 let _a = is_def_var("value");
                 let _b = is_def_fn("int", "bump", 1);
                 let _c = value.type_of();
+                let _d = value.is_shared();
             }
         "#,
         DocumentVersion(1),
@@ -563,6 +564,130 @@ fn signature_help_returns_builtin_introspection_signatures() {
         .expect("expected type_of signature help");
     assert_eq!(type_of_help.signatures.len(), 1);
     assert_eq!(type_of_help.signatures[0].label, "fn type_of() -> string");
+
+    let is_shared_offset =
+        u32::try_from(text.find("is_shared").expect("expected is_shared call")).expect("offset");
+    let is_shared_help = analysis
+        .signature_help(FilePosition {
+            file_id,
+            offset: is_shared_offset,
+        })
+        .expect("expected is_shared signature help");
+    assert_eq!(is_shared_help.signatures.len(), 1);
+    assert_eq!(is_shared_help.signatures[0].label, "fn is_shared() -> bool");
+}
+
+#[test]
+fn signature_help_returns_builtin_print_and_parse_signatures() {
+    let mut host = AnalysisHost::default();
+    host.apply_change(ChangeSet::single_file(
+        "main.rhai",
+        r#"
+            fn run() {
+                print(1);
+                let _a = parse_int("42", 16);
+                let _b = parse_float("3.14");
+            }
+        "#,
+        DocumentVersion(1),
+    ));
+
+    let analysis = host.snapshot();
+    let file_id = analysis
+        .db
+        .vfs()
+        .file_id(Path::new("main.rhai"))
+        .expect("expected main.rhai");
+    assert_no_syntax_diagnostics(&analysis, file_id);
+    let diagnostics = analysis.diagnostics(file_id);
+    assert!(
+        diagnostics.is_empty(),
+        "expected builtin print/parse calls to avoid diagnostics, got {diagnostics:?}"
+    );
+    let text = analysis.db.file_text(file_id).expect("expected text");
+
+    let print_offset =
+        u32::try_from(text.find("1").expect("expected print argument")).expect("offset");
+    let print_help = analysis
+        .signature_help(FilePosition {
+            file_id,
+            offset: print_offset,
+        })
+        .expect("expected print signature help");
+    assert_eq!(print_help.signatures.len(), 1);
+    assert_eq!(print_help.signatures[0].label, "fn print(any) -> ()");
+
+    let parse_int_offset =
+        u32::try_from(text.find("16").expect("expected parse_int radix")).expect("offset");
+    let parse_int_help = analysis
+        .signature_help(FilePosition {
+            file_id,
+            offset: parse_int_offset,
+        })
+        .expect("expected parse_int signature help");
+    assert_eq!(parse_int_help.active_parameter, 1);
+    assert_eq!(parse_int_help.signatures.len(), 2);
+    assert_eq!(
+        parse_int_help.signatures[0].label,
+        "fn parse_int(string) -> int"
+    );
+    assert_eq!(
+        parse_int_help.signatures[1].label,
+        "fn parse_int(string, int) -> int"
+    );
+
+    let parse_float_offset =
+        u32::try_from(text.find("\"3.14\"").expect("expected parse_float input")).expect("offset");
+    let parse_float_help = analysis
+        .signature_help(FilePosition {
+            file_id,
+            offset: parse_float_offset,
+        })
+        .expect("expected parse_float signature help");
+    assert_eq!(parse_float_help.signatures.len(), 1);
+    assert_eq!(
+        parse_float_help.signatures[0].label,
+        "fn parse_float(string) -> float"
+    );
+}
+
+#[test]
+fn signature_help_returns_builtin_eval_signature() {
+    let mut host = AnalysisHost::default();
+    host.apply_change(ChangeSet::single_file(
+        "main.rhai",
+        r#"
+            fn run() {
+                let result = eval("40 + 2");
+                result;
+            }
+        "#,
+        DocumentVersion(1),
+    ));
+
+    let analysis = host.snapshot();
+    let file_id = analysis
+        .db
+        .vfs()
+        .file_id(Path::new("main.rhai"))
+        .expect("expected main.rhai");
+    assert_no_syntax_diagnostics(&analysis, file_id);
+    let diagnostics = analysis.diagnostics(file_id);
+    assert!(
+        diagnostics.is_empty(),
+        "expected builtin eval call to avoid diagnostics, got {diagnostics:?}"
+    );
+    let text = analysis.db.file_text(file_id).expect("expected text");
+    let offset =
+        u32::try_from(text.find("\"40 + 2\"").expect("expected eval input")).expect("offset");
+
+    let help = analysis
+        .signature_help(FilePosition { file_id, offset })
+        .expect("expected eval signature help");
+
+    assert_eq!(help.active_parameter, 0);
+    assert_eq!(help.signatures.len(), 1);
+    assert_eq!(help.signatures[0].label, "fn eval(string) -> Dynamic");
 }
 
 #[test]

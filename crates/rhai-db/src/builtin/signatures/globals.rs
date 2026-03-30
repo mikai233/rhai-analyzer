@@ -93,6 +93,70 @@ pub(crate) fn register_builtin_global_functions(
                 docs: Some("Get the type name of a value.".to_owned()),
             }],
         },
+        HostFunction {
+            name: "print".to_owned(),
+            overloads: vec![HostFunctionOverload {
+                signature: Some(FunctionTypeRef {
+                    params: vec![TypeRef::Any],
+                    ret: Box::new(TypeRef::Unit),
+                }),
+                docs: Some("Print a value via the engine's print callback.".to_owned()),
+            }],
+        },
+        HostFunction {
+            name: "debug".to_owned(),
+            overloads: vec![HostFunctionOverload {
+                signature: Some(FunctionTypeRef {
+                    params: vec![TypeRef::Any],
+                    ret: Box::new(TypeRef::Unit),
+                }),
+                docs: Some("Print a value via the engine's debug callback.".to_owned()),
+            }],
+        },
+        HostFunction {
+            name: "parse_int".to_owned(),
+            overloads: vec![
+                HostFunctionOverload {
+                    signature: Some(FunctionTypeRef {
+                        params: vec![TypeRef::String],
+                        ret: Box::new(TypeRef::Int),
+                    }),
+                    docs: Some("Convert a string into an integer.".to_owned()),
+                },
+                HostFunctionOverload {
+                    signature: Some(FunctionTypeRef {
+                        params: vec![TypeRef::String, TypeRef::Int],
+                        ret: Box::new(TypeRef::Int),
+                    }),
+                    docs: Some(
+                        "Convert a string into an integer using the given radix.".to_owned(),
+                    ),
+                },
+            ],
+        },
+        HostFunction {
+            name: "parse_float".to_owned(),
+            overloads: vec![HostFunctionOverload {
+                signature: Some(FunctionTypeRef {
+                    params: vec![TypeRef::String],
+                    ret: Box::new(TypeRef::Float),
+                }),
+                docs: Some("Convert a string into a floating-point number.".to_owned()),
+            }],
+        },
+        HostFunction {
+            name: "eval".to_owned(),
+            overloads: vec![HostFunctionOverload {
+                signature: Some(FunctionTypeRef {
+                    params: vec![TypeRef::String],
+                    ret: Box::new(TypeRef::Dynamic),
+                }),
+                docs: Some(
+                    "Evaluate a script string inside the current scope and return its result."
+                        .to_owned(),
+                ),
+            }],
+        },
     ]
 }
 
@@ -137,6 +201,41 @@ fn register_builtin_external_signatures(external_signatures: &mut ExternalSignat
         TypeRef::Function(FunctionTypeRef {
             params: vec![TypeRef::Any],
             ret: Box::new(TypeRef::String),
+        }),
+    );
+    external_signatures.insert(
+        "print",
+        TypeRef::Function(FunctionTypeRef {
+            params: vec![TypeRef::Any],
+            ret: Box::new(TypeRef::Unit),
+        }),
+    );
+    external_signatures.insert(
+        "debug",
+        TypeRef::Function(FunctionTypeRef {
+            params: vec![TypeRef::Any],
+            ret: Box::new(TypeRef::Unit),
+        }),
+    );
+    external_signatures.insert(
+        "parse_int",
+        TypeRef::Function(FunctionTypeRef {
+            params: vec![TypeRef::String],
+            ret: Box::new(TypeRef::Int),
+        }),
+    );
+    external_signatures.insert(
+        "parse_float",
+        TypeRef::Function(FunctionTypeRef {
+            params: vec![TypeRef::String],
+            ret: Box::new(TypeRef::Float),
+        }),
+    );
+    external_signatures.insert(
+        "eval",
+        TypeRef::Function(FunctionTypeRef {
+            params: vec![TypeRef::String],
+            ret: Box::new(TypeRef::Dynamic),
         }),
     );
 }

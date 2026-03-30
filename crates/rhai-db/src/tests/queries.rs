@@ -1,6 +1,7 @@
 use crate::tests::{assert_workspace_files_have_no_syntax_diagnostics, offset_in};
 use crate::{AnalyzerDatabase, ChangeSet, FileChange, ProjectReferenceKind};
 use rhai_project::ProjectConfig;
+use rhai_syntax::TextSize;
 use rhai_vfs::DocumentVersion;
 use std::path::Path;
 use std::sync::Arc;
@@ -499,6 +500,186 @@ fn auto_import_candidates_do_not_plan_symbol_imports_from_workspace_exports() {
     let candidates =
         snapshot.auto_import_candidates(consumer, offset_in(&consumer_text, "shared_tools"));
     assert!(candidates.is_empty());
+}
+
+#[test]
+fn goto_definition_on_import_module_reference_targets_provider_file() {
+    let mut db = AnalyzerDatabase::default();
+    db.apply_change(ChangeSet {
+        files: vec![
+            FileChange {
+                path: "provider.rhai".into(),
+                text: r#"
+                    fn helper() {
+                        1
+                    }
+                "#
+                .to_owned(),
+                version: DocumentVersion(1),
+            },
+            FileChange {
+                path: "consumer.rhai".into(),
+                text: r#"
+                    import "provider" as tools;
+                "#
+                .to_owned(),
+                version: DocumentVersion(1),
+            },
+        ],
+        removed_files: Vec::new(),
+        project: None,
+    });
+
+    let snapshot = db.snapshot();
+    assert_workspace_files_have_no_syntax_diagnostics(&snapshot);
+    let consumer = snapshot
+        .vfs()
+        .file_id(Path::new("consumer.rhai"))
+        .expect("expected consumer.rhai");
+    let provider = snapshot
+        .vfs()
+        .file_id(Path::new("provider.rhai"))
+        .expect("expected provider.rhai");
+    let consumer_text = snapshot
+        .file_text(consumer)
+        .expect("expected consumer text");
+    let module_offset = offset_in(&consumer_text, "\"provider\"") + TextSize::from(1);
+
+    let definitions = snapshot.goto_definition(consumer, module_offset);
+
+    assert_eq!(definitions.len(), 1);
+    assert_eq!(definitions[0].file_id, provider);
+}
+
+#[test]
+fn find_references_on_import_alias_reports_current_file_usages() {
+    let mut db = AnalyzerDatabase::default();
+    db.apply_change(ChangeSet {
+        files: vec![
+            FileChange {
+                path: "provider.rhai".into(),
+                text: r#"
+                    fn helper() {
+                        1
+                    }
+
+                    export const VALUE = 1;
+                "#
+                .to_owned(),
+                version: DocumentVersion(1),
+            },
+            FileChange {
+                path: "consumer.rhai".into(),
+                text: r#"
+                    import "provider" as tools;
+
+                    fn run() {
+                        tools::helper();
+                        let value = tools::VALUE;
+                    }
+                "#
+                .to_owned(),
+                version: DocumentVersion(1),
+            },
+        ],
+        removed_files: Vec::new(),
+        project: None,
+    });
+
+    let snapshot = db.snapshot();
+    assert_workspace_files_have_no_syntax_diagnostics(&snapshot);
+    let consumer = snapshot
+        .vfs()
+        .file_id(Path::new("consumer.rhai"))
+        .expect("expected consumer.rhai");
+    let consumer_text = snapshot
+        .file_text(consumer)
+        .expect("expected consumer text");
+    let alias_offset = offset_in(&consumer_text, "tools");
+
+    let references = snapshot
+        .find_references(consumer, alias_offset)
+        .expect("expected project references");
+
+    assert_eq!(references.targets.len(), 1);
+    assert_eq!(references.targets[0].symbol.name, "tools");
+    assert_eq!(references.targets[0].file_id, consumer);
+    assert_eq!(references.references.len(), 3);
+    assert_eq!(
+        references
+            .references
+            .iter()
+            .map(|reference| (reference.file_id, reference.kind))
+            .collect::<Vec<_>>(),
+        vec![
+            (consumer, ProjectReferenceKind::Definition),
+            (consumer, ProjectReferenceKind::Reference),
+            (consumer, ProjectReferenceKind::Reference),
+        ]
+    );
+}
+
+#[test]
+fn find_references_on_imported_path_member_reaches_provider_symbol() {
+    let mut db = AnalyzerDatabase::default();
+    db.apply_change(ChangeSet {
+        files: vec![
+            FileChange {
+                path: "provider.rhai".into(),
+                text: r#"
+                    fn helper() {
+                        1
+                    }
+                "#
+                .to_owned(),
+                version: DocumentVersion(1),
+            },
+            FileChange {
+                path: "consumer.rhai".into(),
+                text: r#"
+                    import "provider" as tools;
+
+                    fn run() {
+                        tools::helper();
+                    }
+                "#
+                .to_owned(),
+                version: DocumentVersion(1),
+            },
+        ],
+        removed_files: Vec::new(),
+        project: None,
+    });
+
+    let snapshot = db.snapshot();
+    assert_workspace_files_have_no_syntax_diagnostics(&snapshot);
+    let provider = snapshot
+        .vfs()
+        .file_id(Path::new("provider.rhai"))
+        .expect("expected provider.rhai");
+    let consumer = snapshot
+        .vfs()
+        .file_id(Path::new("consumer.rhai"))
+        .expect("expected consumer.rhai");
+    let provider_text = snapshot
+        .file_text(provider)
+        .expect("expected provider text");
+
+    let references = snapshot
+        .find_references(provider, offset_in(&provider_text, "helper"))
+        .expect("expected project references");
+
+    assert_eq!(references.targets.len(), 1);
+    assert_eq!(references.targets[0].symbol.name, "helper");
+    assert!(
+        references
+            .references
+            .iter()
+            .any(|reference| reference.file_id == consumer
+                && reference.kind == ProjectReferenceKind::Reference),
+        "expected imported path reference, got {:?}",
+        references.references
+    );
 }
 
 #[test]

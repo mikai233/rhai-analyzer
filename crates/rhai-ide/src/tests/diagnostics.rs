@@ -3,8 +3,8 @@ use std::path::Path;
 use rhai_db::ChangeSet;
 use rhai_vfs::DocumentVersion;
 
-use crate::AnalysisHost;
 use crate::tests::assert_no_syntax_diagnostics;
+use crate::{AnalysisHost, DiagnosticSeverity, DiagnosticTag};
 
 #[test]
 fn diagnostics_return_empty_for_missing_files() {
@@ -171,6 +171,31 @@ fn diagnostics_report_nested_function_definitions_as_syntax_errors() {
 }
 
 #[test]
+fn diagnostics_report_missing_semicolon_between_statements() {
+    let mut host = AnalysisHost::default();
+    host.apply_change(ChangeSet::single_file(
+        "main.rhai",
+        r#"
+            let v = "hello"
+            let q = 1.0 + 2;
+        "#,
+        DocumentVersion(1),
+    ));
+
+    let analysis = host.snapshot();
+    let file_id = analysis
+        .db
+        .vfs()
+        .file_id(Path::new("main.rhai"))
+        .expect("expected main.rhai");
+
+    assert!(analysis.diagnostics(file_id).iter().any(|diagnostic| {
+        diagnostic.message == "expected `;` to terminate statement"
+            && diagnostic.severity == DiagnosticSeverity::Error
+    }));
+}
+
+#[test]
 fn diagnostics_report_function_access_to_external_scope() {
     let mut host = AnalysisHost::default();
     host.apply_change(ChangeSet::single_file(
@@ -320,6 +345,41 @@ fn diagnostics_with_fixes_attach_remove_unused_import_fix() {
     assert_eq!(unused.fixes.len(), 1);
     assert_eq!(unused.fixes[0].id.as_str(), "import.remove_unused");
     assert_eq!(unused.fixes[0].label, "Remove unused import");
+    assert_eq!(unused.diagnostic.severity, DiagnosticSeverity::Warning);
+    assert_eq!(unused.diagnostic.tags, vec![DiagnosticTag::Unnecessary]);
+}
+
+#[test]
+fn diagnostics_keep_errors_for_hard_failures() {
+    let mut host = AnalysisHost::default();
+    host.apply_change(ChangeSet::single_file(
+        "main.rhai",
+        r#"
+            let value = 42;
+
+            fn helper() {
+                value
+            }
+        "#,
+        DocumentVersion(1),
+    ));
+
+    let analysis = host.snapshot();
+    let file_id = analysis
+        .db
+        .vfs()
+        .file_id(Path::new("main.rhai"))
+        .expect("expected main.rhai");
+    assert_no_syntax_diagnostics(&analysis, file_id);
+
+    let unresolved = analysis
+        .diagnostics(file_id)
+        .into_iter()
+        .find(|diagnostic| diagnostic.message == "unresolved name `value`")
+        .expect("expected unresolved name diagnostic");
+
+    assert_eq!(unresolved.severity, DiagnosticSeverity::Error);
+    assert!(unresolved.tags.is_empty());
 }
 
 #[test]

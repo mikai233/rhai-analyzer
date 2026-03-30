@@ -102,6 +102,23 @@ pub(crate) fn diagnostics_with_fixes(
                 diagnostic: Diagnostic {
                     message: diagnostic.message,
                     range,
+                    severity: match diagnostic.severity {
+                        rhai_db::ProjectDiagnosticSeverity::Error => {
+                            crate::DiagnosticSeverity::Error
+                        }
+                        rhai_db::ProjectDiagnosticSeverity::Warning => {
+                            crate::DiagnosticSeverity::Warning
+                        }
+                    },
+                    tags: diagnostic
+                        .tags
+                        .iter()
+                        .map(|tag| match tag {
+                            rhai_db::ProjectDiagnosticTag::Unnecessary => {
+                                crate::DiagnosticTag::Unnecessary
+                            }
+                        })
+                        .collect(),
                 },
                 fixes,
             }

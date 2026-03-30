@@ -39,6 +39,75 @@ fn snapshot_tracks_flow_sensitive_reads_after_sequential_reassignments() {
 }
 
 #[test]
+fn snapshot_prefers_specific_array_types_over_array_unknown_in_variable_unions() {
+    let mut db = AnalyzerDatabase::default();
+    db.apply_change(ChangeSet::single_file(
+        "main.rhai",
+        r#"
+            let a = [1, 2, 3];
+            a = "world";
+
+            for i in a {
+            }
+        "#,
+        DocumentVersion(1),
+    ));
+
+    let snapshot = db.snapshot();
+    assert_workspace_files_have_no_syntax_diagnostics(&snapshot);
+    let file_id = snapshot
+        .vfs()
+        .file_id(Path::new("main.rhai"))
+        .expect("expected file id");
+    let hir = snapshot.hir(file_id).expect("expected hir");
+
+    let a = symbol_id_by_name(&hir, "a", SymbolKind::Variable);
+
+    assert_eq!(
+        snapshot.inferred_symbol_type(file_id, a),
+        Some(&TypeRef::Union(vec![
+            TypeRef::Array(Box::new(TypeRef::Int)),
+            TypeRef::String,
+        ]))
+    );
+}
+
+#[test]
+fn debug_snapshot_array_unknown_source() {
+    let mut db = AnalyzerDatabase::default();
+    db.apply_change(ChangeSet::single_file(
+        "main.rhai",
+        r#"
+            let a = [1, 2, 3];
+            a = "world";
+
+            for i in a {
+            }
+        "#,
+        DocumentVersion(1),
+    ));
+
+    let snapshot = db.snapshot();
+    let file_id = snapshot
+        .vfs()
+        .file_id(Path::new("main.rhai"))
+        .expect("expected file id");
+    let hir = snapshot.hir(file_id).expect("expected hir");
+    let a = symbol_id_by_name(&hir, "a", SymbolKind::Variable);
+
+    eprintln!("a type = {:?}", snapshot.inferred_symbol_type(file_id, a));
+    for flow in hir.value_flows_into(a) {
+        eprintln!(
+            "flow {:?} expr {:?} kind {:?} expr_ty {:?}",
+            flow.range,
+            flow.expr,
+            hir.expr(flow.expr).kind,
+            snapshot.inferred_expr_type_at(file_id, hir.expr(flow.expr).range.start())
+        );
+    }
+}
+
+#[test]
 fn snapshot_tracks_flow_sensitive_reads_through_if_else_overwrites() {
     let mut db = AnalyzerDatabase::default();
     db.apply_change(ChangeSet::single_file(
