@@ -126,7 +126,7 @@ mod tests {
             DocumentVersion(1),
         );
 
-        // Both resolve to the same absolute path.
+        // Both normalize to the same logical path.
         assert_eq!(
             normalize_path(Path::new("src/./main.rhai")),
             normalize_path(Path::new("src/main.rhai")),
@@ -158,10 +158,34 @@ mod tests {
     }
 
     #[test]
+    fn relative_paths_remain_relative() {
+        assert_eq!(
+            normalize_path(Path::new("src/./main.rhai")),
+            Path::new("src/main.rhai")
+        );
+        assert_eq!(
+            normalize_path(Path::new("src/../main.rhai")),
+            Path::new("main.rhai")
+        );
+    }
+
+    #[test]
     fn drive_letter_is_uppercased() {
-        let a = VfsPath::new("c:/Users/foo/main.rhai");
-        let b = VfsPath::new("C:/Users/foo/main.rhai");
+        let a = VfsPath::new_real_path("c:/Users/foo/main.rhai");
+        let b = VfsPath::new_real_path("C:/Users/foo/main.rhai");
         assert_eq!(a, b);
         assert!(a.to_string().starts_with("C:"));
+    }
+
+    #[test]
+    fn windows_drive_paths_are_lexically_normalized() {
+        let path = VfsPath::new_real_path("c:\\Users\\foo\\..\\bar\\main.rhai");
+        assert_eq!(path.to_string(), "C:/Users/bar/main.rhai");
+    }
+
+    #[test]
+    fn virtual_paths_are_normalized_without_host_path_rules() {
+        let path = VfsPath::new_virtual_path("fixtures\\src\\..\\main.rhai");
+        assert_eq!(path.to_string(), "fixtures/main.rhai");
     }
 }

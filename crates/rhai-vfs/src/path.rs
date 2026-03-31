@@ -1,65 +1,30 @@
 use std::fmt;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct VfsPath(String);
 
 impl VfsPath {
     pub fn new(path: impl AsRef<Path>) -> Self {
-        let path = path.as_ref();
+        VfsPath(normalize_lexical_path(&path.as_ref().to_string_lossy()))
+    }
 
-        // Resolve to absolute path first (before separator normalization),
-        // so that relative paths get a stable, cwd-based identity.
-        let abs_path = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
+    /// Creates a normalized path for a real filesystem path.
+    ///
+    /// Unlike `std::path`, this accepts both Unix roots (`/tmp/file.rhai`) and
+    /// Windows drive roots (`C:/tmp/file.rhai`) independent of the host OS.
+    pub fn new_real_path(path: impl AsRef<Path>) -> Self {
+        let normalized = normalize_lexical_path(&path.as_ref().to_string_lossy());
+        assert!(
+            is_rooted_path(&normalized),
+            "expected an absolute filesystem path, got `{normalized}`"
+        );
+        VfsPath(normalized)
+    }
 
-        // Normalize all separators to forward slash, then re-parse components.
-        let path_str = abs_path.to_string_lossy().replace('\\', "/");
-        let path = Path::new(&path_str);
-
-        let mut components = Vec::new();
-        for component in path.components() {
-            match component {
-                Component::Prefix(prefix) => {
-                    components.push(prefix.as_os_str().to_string_lossy().to_string())
-                }
-                Component::RootDir => components.push("/".to_string()),
-                Component::CurDir => {}
-                Component::ParentDir => {
-                    if let Some(last) = components.last() {
-                        if last != "/" && last != ".." && !last.ends_with(':') {
-                            components.pop();
-                        } else {
-                            components.push("..".to_string());
-                        }
-                    } else {
-                        components.push("..".to_string());
-                    }
-                }
-                Component::Normal(segment) => {
-                    components.push(segment.to_string_lossy().to_string())
-                }
-            }
-        }
-
-        if components.is_empty() {
-            if !path_str.is_empty() {
-                return VfsPath(".".to_string());
-            }
-            return VfsPath(String::new());
-        }
-
-        let mut res = String::new();
-        for (i, c) in components.iter().enumerate() {
-            if i > 0 && c != "/" && !res.ends_with('/') {
-                res.push('/');
-            }
-            res.push_str(c);
-        }
-
-        // Normalize drive letter to uppercase (e.g. "c:/" → "C:/").
-        uppercase_drive_letter(&mut res);
-
-        VfsPath(res)
+    /// Creates a normalized virtual path for tests or in-memory files.
+    pub fn new_virtual_path(path: impl AsRef<str>) -> Self {
+        VfsPath(normalize_lexical_path(path.as_ref()))
     }
 
     pub fn as_path(&self) -> &Path {
@@ -67,16 +32,73 @@ impl VfsPath {
     }
 }
 
-/// If `s` starts with a single ASCII letter followed by `':'`, upper-case it.
-fn uppercase_drive_letter(s: &mut String) {
-    let bytes = s.as_bytes();
-    if bytes.len() >= 2 && bytes[0].is_ascii_lowercase() && bytes[1] == b':' {
-        // SAFETY: replacing one ASCII lowercase byte with its uppercase variant
-        // keeps the string valid UTF-8.
-        unsafe {
-            s.as_bytes_mut()[0] = bytes[0].to_ascii_uppercase();
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PathRoot {
+    Relative,
+    Unix,
+    WindowsDrive(char),
+}
+
+fn normalize_lexical_path(path: &str) -> String {
+    let path = path.replace('\\', "/");
+    let (root, remainder) = parse_root(&path);
+    let rooted = root != PathRoot::Relative;
+
+    let mut components = Vec::<&str>::new();
+    for segment in remainder.split('/') {
+        match segment {
+            "" | "." => {}
+            ".." => {
+                if components.last().is_some_and(|last| *last != "..") {
+                    components.pop();
+                } else if !rooted {
+                    components.push("..");
+                }
+            }
+            _ => components.push(segment),
         }
     }
+
+    let mut normalized = match root {
+        PathRoot::Relative => String::new(),
+        PathRoot::Unix => "/".to_string(),
+        PathRoot::WindowsDrive(letter) => format!("{}:/", letter.to_ascii_uppercase()),
+    };
+
+    if !components.is_empty() {
+        if !normalized.is_empty() && !normalized.ends_with('/') {
+            normalized.push('/');
+        }
+        normalized.push_str(&components.join("/"));
+    }
+
+    if normalized.is_empty() && !path.is_empty() {
+        ".".to_string()
+    } else {
+        normalized
+    }
+}
+
+fn parse_root(path: &str) -> (PathRoot, &str) {
+    let bytes = path.as_bytes();
+    if path.starts_with('/') {
+        return (PathRoot::Unix, path.trim_start_matches('/'));
+    }
+
+    if bytes.len() >= 3 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' && bytes[2] == b'/' {
+        return (PathRoot::WindowsDrive(bytes[0] as char), &path[3..]);
+    }
+
+    (PathRoot::Relative, path)
+}
+
+fn is_rooted_path(s: &str) -> bool {
+    let bytes = s.as_bytes();
+    s.starts_with('/')
+        || (bytes.len() >= 3
+            && bytes[0].is_ascii_alphabetic()
+            && bytes[1] == b':'
+            && bytes[2] == b'/')
 }
 
 impl fmt::Display for VfsPath {
