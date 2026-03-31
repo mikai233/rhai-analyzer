@@ -48,7 +48,7 @@ impl Formatter<'_> {
         next: SyntaxNode,
     ) -> bool {
         self.trivia
-            .has_blank_line_after_node_before_node(&previous, &next)
+            .boundary_has_blank_line(&TriviaBoundary::NodeNode(previous, next))
     }
 
     pub(crate) fn is_whitespace_only_between_nodes(
@@ -57,7 +57,7 @@ impl Formatter<'_> {
         next: SyntaxNode,
     ) -> bool {
         self.trivia
-            .is_whitespace_only_after_node_before_node(&previous, &next)
+            .boundary_is_whitespace_only(&TriviaBoundary::NodeNode(previous, next))
     }
 
     pub(crate) fn range_after_node_before_node(
@@ -65,7 +65,8 @@ impl Formatter<'_> {
         previous: SyntaxNode,
         next: SyntaxNode,
     ) -> (usize, usize) {
-        self.trivia.range_after_node_before_node(&previous, &next)
+        self.trivia
+            .boundary_range(&TriviaBoundary::NodeNode(previous, next))
     }
 
     pub(crate) fn range_after_node_before_token(
@@ -74,7 +75,7 @@ impl Formatter<'_> {
         next: &SyntaxToken,
     ) -> (usize, usize) {
         self.trivia
-            .range_after_node_before_token(&previous, next.clone())
+            .boundary_range(&TriviaBoundary::NodeToken(previous, next.clone()))
     }
 
     pub(crate) fn range_after_token_before_node(
@@ -83,7 +84,7 @@ impl Formatter<'_> {
         next: SyntaxNode,
     ) -> (usize, usize) {
         self.trivia
-            .range_after_token_before_node(previous.clone(), &next)
+            .boundary_range(&TriviaBoundary::TokenNode(previous.clone(), next))
     }
 
     pub(crate) fn range_after_token_before_token(
@@ -92,7 +93,7 @@ impl Formatter<'_> {
         next: &SyntaxToken,
     ) -> (usize, usize) {
         self.trivia
-            .range_after_token_before_token(previous.clone(), next.clone())
+            .boundary_range(&TriviaBoundary::TokenToken(previous.clone(), next.clone()))
     }
 
     pub(crate) fn has_comments_after_node_before_token(
@@ -101,7 +102,7 @@ impl Formatter<'_> {
         next: &SyntaxToken,
     ) -> bool {
         self.trivia
-            .has_comments_after_node_before_token(&previous, next.clone())
+            .boundary_has_comments(&TriviaBoundary::NodeToken(previous, next.clone()))
     }
 
     pub(crate) fn has_comments_after_token_before_node(
@@ -110,7 +111,7 @@ impl Formatter<'_> {
         next: SyntaxNode,
     ) -> bool {
         self.trivia
-            .has_comments_after_token_before_node(previous.clone(), &next)
+            .boundary_has_comments(&TriviaBoundary::TokenNode(previous.clone(), next))
     }
 
     pub(crate) fn has_comments_after_token_before_token(
@@ -119,7 +120,7 @@ impl Formatter<'_> {
         next: &SyntaxToken,
     ) -> bool {
         self.trivia
-            .has_comments_after_token_before_token(previous.clone(), next.clone())
+            .boundary_has_comments(&TriviaBoundary::TokenToken(previous.clone(), next.clone()))
     }
 
     pub(crate) fn comment_gap(

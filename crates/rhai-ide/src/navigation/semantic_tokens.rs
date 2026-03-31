@@ -1,15 +1,13 @@
 use crate::{SemanticToken, SemanticTokenKind, SemanticTokenModifier};
 use rhai_db::DatabaseSnapshot;
 use rhai_hir::{FileHir, ReferenceKind, SymbolKind};
-use rhai_syntax::{LexToken, SyntaxNodeExt, TextSize, TokenKind};
+use rhai_syntax::{SyntaxNodeExt, SyntaxToken, TextSize, TokenKind};
 use rhai_vfs::FileId;
 
 struct TokenContext<'a> {
     snapshot: &'a DatabaseSnapshot,
     file_id: FileId,
     hir: Option<&'a FileHir>,
-    tokens: &'a [LexToken],
-    source: &'a str,
 }
 
 pub(crate) fn semantic_tokens(snapshot: &DatabaseSnapshot, file_id: FileId) -> Vec<SemanticToken> {
@@ -19,63 +17,50 @@ pub(crate) fn semantic_tokens(snapshot: &DatabaseSnapshot, file_id: FileId) -> V
     let root = parse.root();
     let tokens: Vec<_> = root
         .raw_tokens()
-        .filter_map(|token| {
-            token
-                .kind()
-                .token_kind()
-                .map(|kind| LexToken::new(kind, token.text_range()))
-        })
+        .filter(|token| token.kind().token_kind().is_some())
         .collect();
     let hir = snapshot.hir(file_id);
     let context = TokenContext {
         snapshot,
         file_id,
         hir: hir.as_deref(),
-        tokens: &tokens,
-        source: parse.text(),
     };
 
     tokens
         .iter()
-        .enumerate()
-        .filter_map(|(index, token)| semantic_token(&context, index, *token))
+        .filter_map(|token| semantic_token(&context, token))
         .collect()
 }
 
-fn semantic_token(
-    context: &TokenContext<'_>,
-    index: usize,
-    token: LexToken,
-) -> Option<SemanticToken> {
-    let kind = semantic_token_kind(context, index, token)?;
+fn semantic_token(context: &TokenContext<'_>, token: &SyntaxToken) -> Option<SemanticToken> {
+    let kind = semantic_token_kind(context, token)?;
 
     Some(SemanticToken {
-        range: token.range(),
+        range: token.text_range(),
         kind,
-        modifiers: semantic_token_modifiers(context, index, token),
+        modifiers: semantic_token_modifiers(context, token),
     })
 }
 
 fn semantic_token_kind(
     context: &TokenContext<'_>,
-    index: usize,
-    token: LexToken,
+    token: &SyntaxToken,
 ) -> Option<SemanticTokenKind> {
-    match token.kind() {
+    match token.kind().token_kind()? {
         TokenKind::LineComment
         | TokenKind::DocLineComment
         | TokenKind::BlockComment
         | TokenKind::DocBlockComment
         | TokenKind::Shebang => Some(SemanticTokenKind::Comment),
         TokenKind::String | TokenKind::RawString | TokenKind::BacktickString | TokenKind::Char => {
-            if is_typed_method_receiver(context.tokens, index) {
+            if is_typed_method_receiver(token) {
                 Some(SemanticTokenKind::Type)
             } else {
                 Some(SemanticTokenKind::String)
             }
         }
         TokenKind::Int | TokenKind::Float => Some(SemanticTokenKind::Number),
-        TokenKind::Ident => classify_identifier_token(context, index, token),
+        TokenKind::Ident => classify_identifier_token(context, token),
         TokenKind::ThisKw => Some(SemanticTokenKind::Variable),
         kind if is_keyword(kind) => Some(SemanticTokenKind::Keyword),
         kind if is_operator(kind) => Some(SemanticTokenKind::Operator),
@@ -85,15 +70,14 @@ fn semantic_token_kind(
 
 fn semantic_token_modifiers(
     context: &TokenContext<'_>,
-    index: usize,
-    token: LexToken,
+    token: &SyntaxToken,
 ) -> Vec<SemanticTokenModifier> {
-    let kind = semantic_token_kind(context, index, token);
-    if is_typed_method_receiver(context.tokens, index) {
+    let kind = semantic_token_kind(context, token);
+    if is_typed_method_receiver(token) {
         let mut modifiers = vec![SemanticTokenModifier::Declaration];
         if host_type_named(
             context.snapshot,
-            typed_method_receiver_name(token, context.source).as_deref(),
+            typed_method_receiver_name(token).as_deref(),
         ) {
             modifiers.push(SemanticTokenModifier::DefaultLibrary);
         }
@@ -105,20 +89,20 @@ fn semantic_token_modifiers(
     };
     let mut modifiers = Vec::new();
 
-    if let Some(symbol) = hir.symbol_at(token.range()) {
+    if let Some(symbol) = hir.symbol_at(token.text_range()) {
         modifiers.push(SemanticTokenModifier::Declaration);
 
         if matches!(hir.symbol(symbol).kind, SymbolKind::Constant) {
             modifiers.push(SemanticTokenModifier::Readonly);
         }
-    } else if let Some(reference) = hir.reference_at(token.range())
+    } else if let Some(reference) = hir.reference_at(token.text_range())
         && let Some(target) = hir.reference(reference).target
         && matches!(hir.symbol(target).kind, SymbolKind::Constant)
     {
         modifiers.push(SemanticTokenModifier::Readonly);
     }
 
-    if is_default_library_token(context, hir, index, token, kind) {
+    if is_default_library_token(context, hir, token, kind) {
         modifiers.push(SemanticTokenModifier::DefaultLibrary);
     }
 
@@ -127,20 +111,19 @@ fn semantic_token_modifiers(
 
 fn classify_identifier_token(
     context: &TokenContext<'_>,
-    index: usize,
-    token: LexToken,
+    token: &SyntaxToken,
 ) -> Option<SemanticTokenKind> {
-    if is_typed_method_receiver(context.tokens, index) {
+    if is_typed_method_receiver(token) {
         return Some(SemanticTokenKind::Type);
     }
 
     let hir = context.hir?;
 
-    if let Some(symbol) = hir.symbol_at(token.range()) {
+    if let Some(symbol) = hir.symbol_at(token.text_range()) {
         return Some(symbol_kind_semantic_token_kind(hir.symbol(symbol).kind));
     }
 
-    if let Some(reference_id) = hir.reference_at(token.range()) {
+    if let Some(reference_id) = hir.reference_at(token.text_range()) {
         let reference = hir.reference(reference_id);
 
         if let Some(target) = reference.target
@@ -151,7 +134,7 @@ fn classify_identifier_token(
 
         return Some(match reference.kind {
             ReferenceKind::Field => {
-                if is_method_callee_token(context.tokens, index) {
+                if is_method_callee_token(token) {
                     SemanticTokenKind::Method
                 } else {
                     SemanticTokenKind::Property
@@ -161,15 +144,14 @@ fn classify_identifier_token(
                 if let Some(kind) = external_signature_kind_for_path(
                     context.snapshot,
                     hir,
-                    token.range().start(),
-                    context.tokens,
-                    index,
+                    token.text_range().start(),
+                    token,
                 ) {
                     kind
-                } else if is_final_path_segment(context.tokens, index)
+                } else if is_final_path_segment(token)
                     && let Some(kind) = context
                         .snapshot
-                        .goto_definition(context.file_id, token.range().start())
+                        .goto_definition(context.file_id, token.text_range().start())
                         .first()
                         .map(|target| target.target.kind)
                 {
@@ -180,11 +162,11 @@ fn classify_identifier_token(
             }
             ReferenceKind::Name | ReferenceKind::This => {
                 if matches!(
-                    next_significant_token(context.tokens, index).map(LexToken::kind),
+                    next_significant_token(token).as_ref().and_then(token_kind),
                     Some(TokenKind::ColonColon)
                 ) {
                     SemanticTokenKind::Namespace
-                } else if is_call_like_token(context.tokens, index)
+                } else if is_call_like_token(token)
                     && (context
                         .snapshot
                         .global_function(reference.name.as_str())
@@ -203,8 +185,8 @@ fn classify_identifier_token(
         });
     }
 
-    let text = token.text(context.source);
-    if is_call_like_token(context.tokens, index)
+    let text = token.text();
+    if is_call_like_token(token)
         && (context.snapshot.global_function(text).is_some()
             || context.snapshot.external_signatures().get(text).is_some())
     {
@@ -232,48 +214,60 @@ fn symbol_kind_semantic_token_kind(kind: SymbolKind) -> SemanticTokenKind {
     }
 }
 
-fn is_typed_method_receiver(tokens: &[LexToken], index: usize) -> bool {
-    let token = tokens[index];
-    if !matches!(token.kind(), TokenKind::Ident | TokenKind::String) {
+fn is_typed_method_receiver(token: &SyntaxToken) -> bool {
+    if !matches!(
+        token_kind(token),
+        Some(TokenKind::Ident | TokenKind::String)
+    ) {
         return false;
     }
 
-    let previous = previous_significant_token(tokens, index);
-    let next = next_significant_token(tokens, index);
+    let previous = previous_significant_token(token);
+    let next = next_significant_token(token);
 
     matches!(
-        (previous.map(LexToken::kind), next.map(LexToken::kind)),
+        (
+            previous.as_ref().and_then(token_kind),
+            next.as_ref().and_then(token_kind)
+        ),
         (Some(TokenKind::FnKw), Some(TokenKind::Dot))
     )
 }
 
-fn is_method_callee_token(tokens: &[LexToken], index: usize) -> bool {
+fn is_method_callee_token(token: &SyntaxToken) -> bool {
     matches!(
-        next_significant_token(tokens, index).map(LexToken::kind),
+        next_significant_token(token).as_ref().and_then(token_kind),
         Some(TokenKind::OpenParen)
     )
 }
 
-fn is_final_path_segment(tokens: &[LexToken], index: usize) -> bool {
+fn is_final_path_segment(token: &SyntaxToken) -> bool {
     !matches!(
-        next_significant_token(tokens, index).map(LexToken::kind),
+        next_significant_token(token).as_ref().and_then(token_kind),
         Some(TokenKind::ColonColon)
     )
 }
 
-fn previous_significant_token(tokens: &[LexToken], index: usize) -> Option<LexToken> {
-    tokens[..index]
-        .iter()
-        .rev()
-        .copied()
-        .find(|token| !token.kind().is_trivia())
+fn previous_significant_token(token: &SyntaxToken) -> Option<SyntaxToken> {
+    let mut cursor = token.prev_token();
+    while let Some(current) = cursor {
+        if token_kind(&current).is_some_and(|kind| !kind.is_trivia()) {
+            return Some(current);
+        }
+        cursor = current.prev_token();
+    }
+    None
 }
 
-fn next_significant_token(tokens: &[LexToken], index: usize) -> Option<LexToken> {
-    tokens[index + 1..]
-        .iter()
-        .copied()
-        .find(|token| !token.kind().is_trivia())
+fn next_significant_token(token: &SyntaxToken) -> Option<SyntaxToken> {
+    let mut cursor = token.next_token();
+    while let Some(current) = cursor {
+        if token_kind(&current).is_some_and(|kind| !kind.is_trivia()) {
+            return Some(current);
+        }
+        cursor = current.next_token();
+    }
+    None
 }
 
 fn is_keyword(kind: TokenKind) -> bool {
@@ -367,25 +361,24 @@ fn is_operator(kind: TokenKind) -> bool {
 fn is_default_library_token(
     context: &TokenContext<'_>,
     hir: &FileHir,
-    index: usize,
-    token: LexToken,
+    token: &SyntaxToken,
     kind: Option<SemanticTokenKind>,
 ) -> bool {
-    let text = token.text(context.source);
+    let text = token.text();
 
     if matches!(kind, Some(SemanticTokenKind::Type)) {
         return host_type_named(context.snapshot, Some(unquote_type_name(text)));
     }
 
     if matches!(kind, Some(SemanticTokenKind::Function))
-        && is_call_like_token(context.tokens, index)
+        && is_call_like_token(token)
         && (context.snapshot.global_function(text).is_some()
             || context.snapshot.external_signatures().get(text).is_some())
     {
         return true;
     }
 
-    if let Some(reference_id) = hir.reference_at(token.range()) {
+    if let Some(reference_id) = hir.reference_at(token.text_range()) {
         let reference = hir.reference(reference_id);
 
         if matches!(reference.kind, ReferenceKind::Field)
@@ -401,17 +394,12 @@ fn is_default_library_token(
         if reference.kind == ReferenceKind::PathSegment
             || (reference.kind == ReferenceKind::Name
                 && matches!(
-                    next_significant_token(context.tokens, index).map(LexToken::kind),
+                    next_significant_token(token).as_ref().and_then(token_kind),
                     Some(TokenKind::ColonColon)
                 ))
         {
-            if is_path_external_signature(
-                context.snapshot,
-                hir,
-                token.range().start(),
-                context.tokens,
-                index,
-            ) {
+            if is_path_external_signature(context.snapshot, hir, token.text_range().start(), token)
+            {
                 return true;
             }
 
@@ -435,10 +423,10 @@ fn host_type_named(snapshot: &DatabaseSnapshot, name: Option<&str>) -> bool {
         .any(|host_type| host_type.name == name)
 }
 
-fn typed_method_receiver_name(token: LexToken, source: &str) -> Option<String> {
-    match token.kind() {
-        TokenKind::Ident => Some(token.text(source).to_owned()),
-        TokenKind::String => Some(unquote_type_name(token.text(source)).to_owned()),
+fn typed_method_receiver_name(token: &SyntaxToken) -> Option<String> {
+    match token_kind(token)? {
+        TokenKind::Ident => Some(token.text().to_owned()),
+        TokenKind::String => Some(unquote_type_name(token.text()).to_owned()),
         _ => None,
     }
 }
@@ -451,9 +439,9 @@ fn unquote_type_name(text: &str) -> &str {
     }
 }
 
-fn is_call_like_token(tokens: &[LexToken], index: usize) -> bool {
+fn is_call_like_token(token: &SyntaxToken) -> bool {
     matches!(
-        next_significant_token(tokens, index).map(LexToken::kind),
+        next_significant_token(token).as_ref().and_then(token_kind),
         Some(TokenKind::OpenParen | TokenKind::Bang)
     )
 }
@@ -591,24 +579,22 @@ fn is_path_external_signature(
     snapshot: &DatabaseSnapshot,
     hir: &FileHir,
     offset: TextSize,
-    tokens: &[LexToken],
-    index: usize,
+    token: &SyntaxToken,
 ) -> bool {
-    external_signature_kind_for_path(snapshot, hir, offset, tokens, index).is_some()
+    external_signature_kind_for_path(snapshot, hir, offset, token).is_some()
 }
 
 fn external_signature_kind_for_path(
     snapshot: &DatabaseSnapshot,
     hir: &FileHir,
     offset: TextSize,
-    tokens: &[LexToken],
-    index: usize,
+    token: &SyntaxToken,
 ) -> Option<SemanticTokenKind> {
     let expr = hir.expr_at_offset(offset)?;
     let qualified_name = hir.qualified_path_name(expr)?;
     let ty = snapshot.external_signatures().get(&qualified_name)?;
 
-    if is_call_like_token(tokens, index) {
+    if is_call_like_token(token) {
         return Some(if matches!(ty, rhai_hir::TypeRef::Function(_)) {
             SemanticTokenKind::Function
         } else {
@@ -627,4 +613,8 @@ fn namespace_has_external_prefix(snapshot: &DatabaseSnapshot, text: &str) -> boo
         .external_signatures()
         .iter()
         .any(|(name, _)| name.starts_with(&format!("{text}::")))
+}
+
+fn token_kind(token: &SyntaxToken) -> Option<TokenKind> {
+    token.kind().token_kind()
 }

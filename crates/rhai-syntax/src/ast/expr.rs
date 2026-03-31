@@ -294,11 +294,8 @@ impl ForExpr {
 
 impl ForBindings {
     pub fn names(&self) -> impl Iterator<Item = SyntaxToken> {
-        let syntax = self.syntax.clone();
-        token_children(&syntax)
+        token_children(&self.syntax)
             .filter(|token| token.kind().token_kind().is_some_and(is_binding_token))
-            .collect::<Vec<_>>()
-            .into_iter()
     }
 }
 
@@ -330,11 +327,8 @@ impl PathExpr {
     }
 
     pub fn segments(&self) -> impl Iterator<Item = SyntaxToken> {
-        let syntax = self.syntax.clone();
-        token_children(&syntax)
+        token_children(&self.syntax)
             .filter(|token| token.kind().token_kind().is_some_and(is_name_like_token))
-            .collect::<Vec<_>>()
-            .into_iter()
     }
 }
 

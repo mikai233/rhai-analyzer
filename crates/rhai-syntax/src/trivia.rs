@@ -179,6 +179,50 @@ impl TriviaStore {
         self.node_has_unowned_comments_outside_slots(node, &allowed_slots)
     }
 
+    pub fn boundary_range(&self, boundary: &TriviaBoundary) -> (usize, usize) {
+        match boundary {
+            TriviaBoundary::NodeNode(previous, next) => (
+                offset_after(previous.text_range()),
+                offset_before(next.text_range()),
+            ),
+            TriviaBoundary::NodeToken(previous, next) => (
+                offset_after(previous.text_range()),
+                offset_before(next.text_range()),
+            ),
+            TriviaBoundary::TokenNode(previous, next) => (
+                offset_after(previous.text_range()),
+                offset_before(next.text_range()),
+            ),
+            TriviaBoundary::TokenToken(previous, next) => (
+                offset_after(previous.text_range()),
+                offset_before(next.text_range()),
+            ),
+        }
+    }
+
+    pub fn boundary_has_comments(&self, boundary: &TriviaBoundary) -> bool {
+        let (start, end) = self.boundary_range(boundary);
+        self.range_has_comments(start, end)
+    }
+
+    pub fn boundary_is_whitespace_only(&self, boundary: &TriviaBoundary) -> bool {
+        let (start, end) = self.boundary_range(boundary);
+        self.range_is_whitespace_only(start, end)
+    }
+
+    pub fn boundary_has_blank_line(&self, boundary: &TriviaBoundary) -> bool {
+        let (start, end) = self.boundary_range(boundary);
+        self.range_has_blank_line(start, end)
+    }
+
+    pub fn boundary_slot(
+        &self,
+        owner: &SyntaxNode,
+        boundary: &TriviaBoundary,
+    ) -> Option<TriviaSlot> {
+        self.slot_for_boundary(owner, boundary)
+    }
+
     pub fn range_has_comments(&self, start: usize, end: usize) -> bool {
         self.comment_tokens
             .iter()
@@ -199,143 +243,6 @@ impl TriviaStore {
             return false;
         }
         self.line_index(end).saturating_sub(self.line_index(start)) >= 2
-    }
-
-    pub fn range_after_node_before_node(
-        &self,
-        previous: &SyntaxNode,
-        next: &SyntaxNode,
-    ) -> (usize, usize) {
-        (
-            offset_after(previous.text_range()),
-            offset_before(next.text_range()),
-        )
-    }
-
-    pub fn range_after_node_before_token(
-        &self,
-        previous: &SyntaxNode,
-        next: SyntaxToken,
-    ) -> (usize, usize) {
-        (
-            offset_after(previous.text_range()),
-            offset_before(next.text_range()),
-        )
-    }
-
-    pub fn range_after_token_before_node(
-        &self,
-        previous: SyntaxToken,
-        next: &SyntaxNode,
-    ) -> (usize, usize) {
-        (
-            offset_after(previous.text_range()),
-            offset_before(next.text_range()),
-        )
-    }
-
-    pub fn range_after_token_before_token(
-        &self,
-        previous: SyntaxToken,
-        next: SyntaxToken,
-    ) -> (usize, usize) {
-        (
-            offset_after(previous.text_range()),
-            offset_before(next.text_range()),
-        )
-    }
-
-    pub fn has_comments_after_node_before_node(
-        &self,
-        previous: &SyntaxNode,
-        next: &SyntaxNode,
-    ) -> bool {
-        let (start, end) = self.range_after_node_before_node(previous, next);
-        self.range_has_comments(start, end)
-    }
-
-    pub fn has_comments_after_node_before_token(
-        &self,
-        previous: &SyntaxNode,
-        next: SyntaxToken,
-    ) -> bool {
-        let (start, end) = self.range_after_node_before_token(previous, next);
-        self.range_has_comments(start, end)
-    }
-
-    pub fn has_comments_after_token_before_node(
-        &self,
-        previous: SyntaxToken,
-        next: &SyntaxNode,
-    ) -> bool {
-        let (start, end) = self.range_after_token_before_node(previous, next);
-        self.range_has_comments(start, end)
-    }
-
-    pub fn has_comments_after_token_before_token(
-        &self,
-        previous: SyntaxToken,
-        next: SyntaxToken,
-    ) -> bool {
-        let (start, end) = self.range_after_token_before_token(previous, next);
-        self.range_has_comments(start, end)
-    }
-
-    pub fn is_whitespace_only_after_node_before_node(
-        &self,
-        previous: &SyntaxNode,
-        next: &SyntaxNode,
-    ) -> bool {
-        let (start, end) = self.range_after_node_before_node(previous, next);
-        self.range_is_whitespace_only(start, end)
-    }
-
-    pub fn has_blank_line_after_node_before_node(
-        &self,
-        previous: &SyntaxNode,
-        next: &SyntaxNode,
-    ) -> bool {
-        let (start, end) = self.range_after_node_before_node(previous, next);
-        self.range_has_blank_line(start, end)
-    }
-
-    pub fn slot_after_node_before_node(
-        &self,
-        owner: &SyntaxNode,
-        previous: &SyntaxNode,
-        next: &SyntaxNode,
-    ) -> Option<TriviaSlot> {
-        self.slot_for_boundary(
-            owner,
-            &TriviaBoundary::NodeNode(previous.clone(), next.clone()),
-        )
-    }
-
-    pub fn slot_after_node_before_token(
-        &self,
-        owner: &SyntaxNode,
-        previous: &SyntaxNode,
-        next: SyntaxToken,
-    ) -> Option<TriviaSlot> {
-        self.slot_for_boundary(owner, &TriviaBoundary::NodeToken(previous.clone(), next))
-    }
-
-    pub fn slot_after_token_before_node(
-        &self,
-        owner: &SyntaxNode,
-        previous: SyntaxToken,
-        next: &SyntaxNode,
-    ) -> Option<TriviaSlot> {
-        self.slot_for_boundary(owner, &TriviaBoundary::TokenNode(previous, next.clone()))
-    }
-
-    pub fn slot_after_token_before_token(
-        &self,
-        owner: &SyntaxNode,
-        previous: SyntaxToken,
-        next: SyntaxToken,
-    ) -> Option<TriviaSlot> {
-        self.slot_for_boundary(owner, &TriviaBoundary::TokenToken(previous, next))
     }
 
     pub fn comment_gap(
@@ -406,47 +313,13 @@ impl TriviaStore {
         }
     }
 
-    pub fn comment_gap_after_node_before_node(
+    pub fn comment_gap_for_boundary(
         &self,
-        previous: &SyntaxNode,
-        next: &SyntaxNode,
+        boundary: &TriviaBoundary,
         has_previous: bool,
         has_next: bool,
     ) -> GapTrivia {
-        let (start, end) = self.range_after_node_before_node(previous, next);
-        self.comment_gap(start, end, has_previous, has_next)
-    }
-
-    pub fn comment_gap_after_node_before_token(
-        &self,
-        previous: &SyntaxNode,
-        next: SyntaxToken,
-        has_previous: bool,
-        has_next: bool,
-    ) -> GapTrivia {
-        let (start, end) = self.range_after_node_before_token(previous, next);
-        self.comment_gap(start, end, has_previous, has_next)
-    }
-
-    pub fn comment_gap_after_token_before_node(
-        &self,
-        previous: SyntaxToken,
-        next: &SyntaxNode,
-        has_previous: bool,
-        has_next: bool,
-    ) -> GapTrivia {
-        let (start, end) = self.range_after_token_before_node(previous, next);
-        self.comment_gap(start, end, has_previous, has_next)
-    }
-
-    pub fn comment_gap_after_token_before_token(
-        &self,
-        previous: SyntaxToken,
-        next: SyntaxToken,
-        has_previous: bool,
-        has_next: bool,
-    ) -> GapTrivia {
-        let (start, end) = self.range_after_token_before_token(previous, next);
+        let (start, end) = self.boundary_range(boundary);
         self.comment_gap(start, end, has_previous, has_next)
     }
 

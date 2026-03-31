@@ -348,7 +348,7 @@ impl<'a> LoweringContext<'a> {
     }
 
     pub(crate) fn docs_for_range(&mut self, range: TextRange) -> Option<DocBlockId> {
-        let doc = collect_doc_block(&self.parse.root(), self.parse.text(), range.start())?;
+        let doc = collect_doc_block(&self.parse.root(), range.start())?;
         Some(self.alloc_doc_block(doc))
     }
 

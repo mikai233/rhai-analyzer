@@ -1,5 +1,8 @@
 use crate::tests::{binary_lhs, binary_operator, binary_rhs, first_stmt_expr, node_kind};
-use crate::{AstNode, CommentKind, RhaiKind, Root, SyntaxKind, TokenKind, lex_text, parse_text};
+use crate::{
+    AstNode, CommentKind, RhaiKind, Root, SyntaxKind, TokenKind, TriviaBoundary, lex_text,
+    parse_text,
+};
 
 #[test]
 fn lexes_basic_tokens() {
@@ -370,12 +373,16 @@ fn parse_trivia_store_supports_node_and_token_boundary_queries() {
     assert!(
         parse
             .trivia()
-            .has_comments_after_node_before_node(&first_stmt, &second_stmt)
+            .boundary_has_comments(&TriviaBoundary::NodeNode(
+                first_stmt.clone(),
+                second_stmt.clone(),
+            ))
     );
-    let between_items =
-        parse
-            .trivia()
-            .comment_gap_after_node_before_node(&first_stmt, &second_stmt, true, true);
+    let between_items = parse.trivia().comment_gap_for_boundary(
+        &TriviaBoundary::NodeNode(first_stmt.clone(), second_stmt.clone()),
+        true,
+        true,
+    );
     assert_eq!(between_items.trailing_comments.len(), 1);
     assert_eq!(between_items.leading_comments.len(), 1);
 
@@ -394,11 +401,13 @@ fn parse_trivia_store_supports_node_and_token_boundary_queries() {
     assert!(
         parse
             .trivia()
-            .has_comments_after_node_before_token(&value_expr.syntax(), semicolon.clone())
+            .boundary_has_comments(&TriviaBoundary::NodeToken(
+                value_expr.syntax(),
+                semicolon.clone(),
+            ))
     );
-    let before_semicolon = parse.trivia().comment_gap_after_node_before_token(
-        &value_expr.syntax(),
-        semicolon.clone(),
+    let before_semicolon = parse.trivia().comment_gap_for_boundary(
+        &TriviaBoundary::NodeToken(value_expr.syntax(), semicolon.clone()),
         true,
         true,
     );
@@ -411,12 +420,16 @@ fn parse_trivia_store_supports_node_and_token_boundary_queries() {
     assert!(
         parse
             .trivia()
-            .has_comments_after_token_before_node(semicolon.clone(), &second_stmt)
+            .boundary_has_comments(&TriviaBoundary::TokenNode(
+                semicolon.clone(),
+                second_stmt.clone(),
+            ))
     );
-    let after_semicolon =
-        parse
-            .trivia()
-            .comment_gap_after_token_before_node(semicolon, &second_stmt, true, true);
+    let after_semicolon = parse.trivia().comment_gap_for_boundary(
+        &TriviaBoundary::TokenNode(semicolon, second_stmt),
+        true,
+        true,
+    );
     assert_eq!(after_semicolon.trailing_comments.len(), 1);
     assert_eq!(after_semicolon.leading_comments.len(), 1);
 }
@@ -446,12 +459,16 @@ fn parse_trivia_store_supports_token_to_token_queries() {
     assert!(
         parse
             .trivia()
-            .has_comments_after_token_before_token(open_paren.clone(), close_paren.clone())
+            .boundary_has_comments(&TriviaBoundary::TokenToken(
+                open_paren.clone(),
+                close_paren.clone(),
+            ))
     );
-    let gap =
-        parse
-            .trivia()
-            .comment_gap_after_token_before_token(open_paren, close_paren, false, false);
+    let gap = parse.trivia().comment_gap_for_boundary(
+        &TriviaBoundary::TokenToken(open_paren, close_paren),
+        false,
+        false,
+    );
     assert_eq!(gap.dangling_comments.len(), 1);
     assert_eq!(gap.dangling_comments[0].text(parse.text()), "/* keep */");
 }

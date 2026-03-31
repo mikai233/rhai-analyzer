@@ -13,7 +13,7 @@ pub(crate) fn folding_ranges(snapshot: &DatabaseSnapshot, file_id: FileId) -> Ve
     };
 
     let root_syntax = parse.root();
-    let mut ranges = comment_folding_ranges(&root_syntax, parse.text());
+    let mut ranges = comment_folding_ranges(&root_syntax);
     let Some(root) = Root::cast(root_syntax) else {
         return ranges;
     };
@@ -29,7 +29,7 @@ pub(crate) fn folding_ranges(snapshot: &DatabaseSnapshot, file_id: FileId) -> Ve
     ranges
 }
 
-fn comment_folding_ranges(root: &SyntaxNode, _source: &str) -> Vec<FoldingRange> {
+fn comment_folding_ranges(root: &SyntaxNode) -> Vec<FoldingRange> {
     let mut ranges = Vec::new();
     let mut run_start = None;
     let mut run_end = None;

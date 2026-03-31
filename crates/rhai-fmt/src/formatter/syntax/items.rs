@@ -721,7 +721,7 @@ impl Formatter<'_> {
         let Some(params) = function.params() else {
             return self.node_has_unowned_comments(function.syntax());
         };
-        let signature_tokens = self.function_signature_tokens(function);
+        let signature_tokens = function.signature_tokens().collect::<Vec<_>>();
         let mut allowed_boundaries = signature_tokens
             .windows(2)
             .map(|pair| TriviaBoundary::TokenToken(pair[0].clone(), pair[1].clone()))
@@ -1000,20 +1000,21 @@ impl Formatter<'_> {
     }
 
     fn format_function_signature_doc(&self, function: &FnItem) -> Doc {
-        let tokens = self.function_signature_tokens(function);
+        let tokens = function.signature_tokens();
         let mut parts = Vec::new();
+        let mut previous: Option<SyntaxToken> = None;
 
-        for (index, token) in tokens.iter().cloned().enumerate() {
-            if index > 0 {
-                let previous = tokens[index - 1].clone();
+        for token in tokens {
+            if let Some(previous) = previous.as_ref() {
                 parts.push(self.function_signature_separator_doc(
                     range_end(previous.text_range()),
                     range_start(token.text_range()),
-                    function_signature_inline_separator(&previous, &token),
+                    function_signature_inline_separator(previous, &token),
                 ));
             }
 
             parts.push(Doc::text(token.text()));
+            previous = Some(token);
         }
 
         Doc::group(Doc::concat(parts))
@@ -1023,7 +1024,7 @@ impl Formatter<'_> {
         let Some(params) = function.params() else {
             return Doc::nil();
         };
-        let Some(last_token) = self.function_signature_tokens(function).last().cloned() else {
+        let Some(last_token) = function.signature_tokens().last() else {
             return Doc::nil();
         };
 
@@ -1032,31 +1033,6 @@ impl Formatter<'_> {
         } else {
             Doc::nil()
         }
-    }
-
-    fn function_signature_tokens(&self, function: &FnItem) -> Vec<SyntaxToken> {
-        let mut tokens = Vec::new();
-
-        for child in function.syntax().children_with_tokens() {
-            match child {
-                rhai_syntax::SyntaxElement::Node(node)
-                    if node.kind() == rhai_syntax::SyntaxKind::ParamList.to_rowan_kind() =>
-                {
-                    break;
-                }
-                rhai_syntax::SyntaxElement::Token(token)
-                    if token
-                        .kind()
-                        .token_kind()
-                        .is_some_and(|kind| !kind.is_trivia()) =>
-                {
-                    tokens.push(token);
-                }
-                _ => {}
-            }
-        }
-
-        tokens
     }
 
     fn space_or_tight_statement_gap_doc(&self, start: usize, end: usize) -> Doc {

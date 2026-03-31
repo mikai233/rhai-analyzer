@@ -57,28 +57,37 @@ impl RootItemList {
 }
 
 impl FnItem {
+    pub fn signature_tokens(&self) -> impl Iterator<Item = SyntaxToken> {
+        self.syntax
+            .children_with_tokens()
+            .take_while(|element| {
+                !matches!(
+                    element,
+                    rowan::NodeOrToken::Node(node)
+                        if node.kind().syntax_kind() == Some(SyntaxKind::ParamList)
+                )
+            })
+            .filter_map(|element| match element {
+                rowan::NodeOrToken::Token(token)
+                    if token
+                        .kind()
+                        .token_kind()
+                        .is_some_and(|kind| !kind.is_trivia()) =>
+                {
+                    Some(token)
+                }
+                _ => None,
+            })
+    }
+
     pub fn is_private(&self) -> bool {
         token_by_kind(&self.syntax, TokenKind::PrivateKw).is_some()
     }
 
     pub fn name_token(&self) -> Option<SyntaxToken> {
-        let mut last_ident = None;
-        for element in self.syntax.children_with_tokens() {
-            match element {
-                rowan::NodeOrToken::Node(node)
-                    if node.kind().syntax_kind() == Some(SyntaxKind::ParamList) =>
-                {
-                    break;
-                }
-                rowan::NodeOrToken::Token(token)
-                    if token.kind().token_kind() == Some(TokenKind::Ident) =>
-                {
-                    last_ident = Some(token);
-                }
-                _ => {}
-            }
-        }
-        last_ident
+        self.signature_tokens()
+            .filter(|token| token.kind().token_kind() == Some(TokenKind::Ident))
+            .last()
     }
 
     pub fn is_typed_method(&self) -> bool {
@@ -86,34 +95,24 @@ impl FnItem {
     }
 
     pub fn this_type_token(&self) -> Option<SyntaxToken> {
-        if !self.clone().is_typed_method() {
+        if !self.is_typed_method() {
             return None;
         }
 
-        let syntax = self.syntax.clone();
         let mut saw_fn = false;
-        for element in syntax.children_with_tokens() {
-            match element {
-                rowan::NodeOrToken::Token(token)
-                    if token.kind().token_kind() == Some(TokenKind::FnKw) =>
-                {
-                    saw_fn = true;
-                }
-                rowan::NodeOrToken::Token(token)
-                    if saw_fn
-                        && matches!(
-                            token.kind().token_kind(),
-                            Some(TokenKind::Ident | TokenKind::String)
-                        ) =>
-                {
-                    return Some(token);
-                }
-                rowan::NodeOrToken::Node(node)
-                    if node.kind().syntax_kind() == Some(SyntaxKind::ParamList) =>
-                {
-                    break;
-                }
-                _ => {}
+        for token in self.signature_tokens() {
+            if token.kind().token_kind() == Some(TokenKind::FnKw) {
+                saw_fn = true;
+                continue;
+            }
+
+            if saw_fn
+                && matches!(
+                    token.kind().token_kind(),
+                    Some(TokenKind::Ident | TokenKind::String)
+                )
+            {
+                return Some(token);
             }
         }
 
@@ -141,21 +140,15 @@ impl FnItem {
 
 impl ParamList {
     pub fn params(&self) -> impl Iterator<Item = SyntaxToken> {
-        let syntax = self.syntax.clone();
-        token_children(&syntax)
+        token_children(&self.syntax)
             .filter(|token| token.kind().token_kind().is_some_and(is_param_token))
-            .collect::<Vec<_>>()
-            .into_iter()
     }
 }
 
 impl ClosureParamList {
     pub fn params(&self) -> impl Iterator<Item = SyntaxToken> {
-        let syntax = self.syntax.clone();
-        token_children(&syntax)
+        token_children(&self.syntax)
             .filter(|token| token.kind().token_kind().is_some_and(is_param_token))
-            .collect::<Vec<_>>()
-            .into_iter()
     }
 }
 

@@ -22,11 +22,7 @@ pub enum DocTag {
     Unknown { name: String, value: String },
 }
 
-pub fn collect_doc_block(
-    root: &SyntaxNode,
-    _source: &str,
-    item_start: TextSize,
-) -> Option<DocBlock> {
+pub fn collect_doc_block(root: &SyntaxNode, item_start: TextSize) -> Option<DocBlock> {
     let tokens: Vec<_> = root
         .descendants_with_tokens()
         .filter_map(|element| element.into_token())
@@ -180,7 +176,7 @@ fn add(x, y) { x + y }
         assert_valid_rhai_syntax(source);
         let parse = parse_text(source);
         let fn_offset = TextSize::from(u32::try_from(source.find("fn").unwrap()).unwrap());
-        let docs = collect_doc_block(&parse.root(), source, fn_offset).expect("expected docs");
+        let docs = collect_doc_block(&parse.root(), fn_offset).expect("expected docs");
 
         assert_eq!(docs.lines[0], "Adds values.");
         assert_eq!(
@@ -206,7 +202,7 @@ fn add(x, y) { x + y }
         let parse = parse_text(source);
         let fn_offset = TextSize::from(u32::try_from(source.find("fn").unwrap()).unwrap());
 
-        assert!(collect_doc_block(&parse.root(), source, fn_offset).is_none());
+        assert!(collect_doc_block(&parse.root(), fn_offset).is_none());
     }
 
     #[test]
@@ -217,6 +213,6 @@ fn add(x, y) { x + y }
         let second_offset =
             TextSize::from(u32::try_from(source.find("let second").unwrap()).unwrap());
 
-        assert!(collect_doc_block(&parse.root(), source, second_offset).is_none());
+        assert!(collect_doc_block(&parse.root(), second_offset).is_none());
     }
 }
