@@ -1,4 +1,4 @@
-use crate::{SyntaxElement, SyntaxKind, parse_text};
+use crate::{AstNode, Item, Root, SyntaxElement, SyntaxKind, parse_text};
 
 #[test]
 fn recovers_from_missing_expression() {
@@ -7,9 +7,11 @@ fn recovers_from_missing_expression() {
     assert_eq!(parse.errors().len(), 1);
     assert_eq!(parse.errors()[0].message(), "expected expression");
 
-    let root = parse.root();
-    let stmt = root.children()[0]
-        .as_node()
+    let root = Root::cast(parse.root()).expect("expected root");
+    let stmt = root
+        .item_list()
+        .and_then(|items| items.items().next())
+        .map(Item::syntax)
         .expect("expected statement node");
     assert_eq!(stmt.kind(), SyntaxKind::StmtLet);
 
@@ -54,12 +56,14 @@ fn recovers_across_statement_boundary_after_broken_call() {
         "{messages:?}"
     );
 
-    let root = parse.root();
-    assert_eq!(root.children().len(), 2, "{}", parse.debug_tree());
+    let root = Root::cast(parse.root()).expect("expected root");
+    let items = root
+        .item_list()
+        .map(|items| items.items().collect::<Vec<_>>())
+        .unwrap_or_default();
+    assert_eq!(items.len(), 2, "{}", parse.debug_tree());
 
-    let second_stmt = root.children()[1]
-        .as_node()
-        .expect("expected second statement node");
+    let second_stmt = items[1].syntax();
     assert_eq!(second_stmt.kind(), SyntaxKind::StmtLet);
 }
 
@@ -78,11 +82,13 @@ fn recovers_across_statement_boundary_after_missing_binary_rhs() {
         "{messages:?}"
     );
 
-    let root = parse.root();
-    assert_eq!(root.children().len(), 2, "{}", parse.debug_tree());
-    let second_stmt = root.children()[1]
-        .as_node()
-        .expect("expected second statement node");
+    let root = Root::cast(parse.root()).expect("expected root");
+    let items = root
+        .item_list()
+        .map(|items| items.items().collect::<Vec<_>>())
+        .unwrap_or_default();
+    assert_eq!(items.len(), 2, "{}", parse.debug_tree());
+    let second_stmt = items[1].syntax();
     assert_eq!(second_stmt.kind(), SyntaxKind::StmtLet);
 }
 
@@ -110,6 +116,7 @@ fn recovers_when_switch_arm_is_missing_arrow() {
 
     let tree = parse.debug_tree();
     assert!(tree.contains("ExprSwitch"), "{tree}");
+    assert!(tree.contains("SwitchArmList"), "{tree}");
     assert!(tree.contains("SwitchArm"), "{tree}");
 }
 
@@ -185,40 +192,42 @@ import "mod" as ;
     );
 
     let expected = r#"Root
-  ItemFn
-    FnKw "fn"
-    Ident "broken"
-    ParamList
-      OpenParen "("
-      Ident "x"
-      Error
-      Ident "y"
-      Error
-    Block
-      OpenBrace "{"
-      StmtLet
-        LetKw "let"
-        Ident "values"
-        Eq "="
-        ExprArray
-          OpenBracket "["
-          ArrayItemList
+  RootItemList
+    ItemFn
+      FnKw "fn"
+      Ident "broken"
+      ParamList
+        OpenParen "("
+        Ident "x"
+        Error
+        Ident "y"
+        Error
+      Block
+        OpenBrace "{"
+        BlockItemList
+          StmtLet
+            LetKw "let"
+            Ident "values"
+            Eq "="
+            ExprArray
+              ArrayItemList
+                OpenBracket "["
+                ExprLiteral
+                  Int "1"
+                Error
+                ExprLiteral
+                  Int "2"
+                CloseBracket "]"
+            Semicolon ";"
+          StmtImport
+            ImportKw "import"
             ExprLiteral
-              Int "1"
-            Error
-            ExprLiteral
-              Int "2"
-          CloseBracket "]"
-        Semicolon ";"
-      StmtImport
-        ImportKw "import"
-        ExprLiteral
-          String "\"mod\""
-        AliasClause
-          AsKw "as"
-          Error
-        Semicolon ";"
-      CloseBrace "}"
+              String "\"mod\""
+            AliasClause
+              AsKw "as"
+              Error
+            Semicolon ";"
+        CloseBrace "}"
 "#;
 
     assert_eq!(parse.debug_tree_compact(), expected);
@@ -263,11 +272,13 @@ fn recovers_when_function_parameter_list_runs_into_body() {
     assert!(tree.contains("ItemFn"), "{tree}");
     assert!(tree.contains("StmtReturn"), "{tree}");
 
-    let root = parse.root();
-    assert_eq!(root.children().len(), 2, "{}", tree);
-    let second_stmt = root.children()[1]
-        .as_node()
-        .expect("expected second statement node");
+    let root = Root::cast(parse.root()).expect("expected root");
+    let items = root
+        .item_list()
+        .map(|items| items.items().collect::<Vec<_>>())
+        .unwrap_or_default();
+    assert_eq!(items.len(), 2, "{}", tree);
+    let second_stmt = items[1].syntax();
     assert_eq!(second_stmt.kind(), SyntaxKind::StmtLet);
 }
 
@@ -285,11 +296,13 @@ fn recovers_when_closure_parameter_list_runs_into_block_body() {
         "{messages:?}"
     );
 
-    let root = parse.root();
-    assert_eq!(root.children().len(), 2, "{}", parse.debug_tree());
-    let second_stmt = root.children()[1]
-        .as_node()
-        .expect("expected second statement node");
+    let root = Root::cast(parse.root()).expect("expected root");
+    let items = root
+        .item_list()
+        .map(|items| items.items().collect::<Vec<_>>())
+        .unwrap_or_default();
+    assert_eq!(items.len(), 2, "{}", parse.debug_tree());
+    let second_stmt = items[1].syntax();
     assert_eq!(second_stmt.kind(), SyntaxKind::StmtLet);
 }
 
@@ -303,68 +316,71 @@ let invoke = run(1 2);"##,
     );
 
     let expected = r##"Root
-  ItemFn
-    FnKw "fn"
-    Ident "broken"
-    ParamList
-      OpenParen "("
-      Ident "x"
-      Comma ","
-      Error
-      Error
-    Block
-      OpenBrace "{"
-      StmtReturn
-        ReturnKw "return"
-        ExprName
-          Ident "x"
-        Semicolon ";"
-      CloseBrace "}"
-  StmtLet
-    LetKw "let"
-    Ident "sum"
-    Eq "="
-    ExprBinary
-      ExprLiteral
-        Int "1"
-      Plus "+"
-      Error
-    Semicolon ";"
-  StmtLet
-    LetKw "let"
-    Ident "map"
-    Eq "="
-    ExprObject
-      HashBraceOpen "#{"
-      ObjectField
-        Ident "a"
-        Colon ":"
-        ExprLiteral
-          Int "1"
-      Error
-      ObjectField
-        Ident "b"
-        Colon ":"
-        ExprLiteral
-          Int "2"
-      CloseBrace "}"
-    Semicolon ";"
-  StmtLet
-    LetKw "let"
-    Ident "invoke"
-    Eq "="
-    ExprCall
-      ExprName
-        Ident "run"
-      OpenParen "("
-      ArgList
-        ExprLiteral
-          Int "1"
+  RootItemList
+    ItemFn
+      FnKw "fn"
+      Ident "broken"
+      ParamList
+        OpenParen "("
+        Ident "x"
+        Comma ","
         Error
+        Error
+      Block
+        OpenBrace "{"
+        BlockItemList
+          StmtReturn
+            ReturnKw "return"
+            ExprName
+              Ident "x"
+            Semicolon ";"
+        CloseBrace "}"
+    StmtLet
+      LetKw "let"
+      Ident "sum"
+      Eq "="
+      ExprBinary
         ExprLiteral
-          Int "2"
-      CloseParen ")"
-    Semicolon ";"
+          Int "1"
+        Plus "+"
+        Error
+      Semicolon ";"
+    StmtLet
+      LetKw "let"
+      Ident "map"
+      Eq "="
+      ExprObject
+        HashBraceOpen "#{"
+        ObjectFieldList
+          ObjectField
+            Ident "a"
+            Colon ":"
+            ExprLiteral
+              Int "1"
+          Error
+          ObjectField
+            Ident "b"
+            Colon ":"
+            ExprLiteral
+              Int "2"
+        CloseBrace "}"
+      Semicolon ";"
+    StmtLet
+      LetKw "let"
+      Ident "invoke"
+      Eq "="
+      ExprCall
+        ExprName
+          Ident "run"
+        ArgList
+          OpenParen "("
+          ExprLiteral
+            Int "1"
+          Error
+          ExprLiteral
+            Int "2"
+          CloseParen ")"
+      Semicolon ";"
 "##;
 
     assert_eq!(parse.debug_tree_compact(), expected);

@@ -1,5 +1,5 @@
 use crate::tests::{binary_lhs, binary_operator, binary_rhs, first_stmt_expr};
-use crate::{SyntaxKind, TokenKind, lex_text, parse_text};
+use crate::{AstNode, CommentKind, Root, SyntaxKind, TokenKind, lex_text, parse_text};
 
 #[test]
 fn lexes_basic_tokens() {
@@ -227,7 +227,169 @@ fn parser_skips_shebang_and_all_comment_kinds() {
     );
 
     assert!(parse.errors().is_empty(), "{}", parse.debug_tree());
-    assert_eq!(parse.root().children().len(), 2, "{}", parse.debug_tree());
+    let root = Root::cast(parse.root()).expect("expected root");
+    let item_count = root
+        .item_list()
+        .map(|items| items.items().count())
+        .unwrap_or(0);
+    assert_eq!(item_count, 2, "{}", parse.debug_tree());
+}
+
+#[test]
+fn parse_trivia_store_attaches_trailing_and_leading_comments() {
+    let parse = parse_text("let first = 1; // trailing\n/* leading */\nlet second = 2;");
+
+    assert!(parse.errors().is_empty(), "{}", parse.debug_tree());
+
+    let root = Root::cast(parse.root()).expect("expected root");
+    let items = root
+        .item_list()
+        .map(|items| items.items().collect::<Vec<_>>())
+        .expect("expected root item list");
+    let first_end = u32::from(items[0].syntax().range().end()) as usize;
+    let second_start = u32::from(items[1].syntax().range().start()) as usize;
+    let gap = parse
+        .trivia()
+        .comment_gap(first_end, second_start, true, true);
+
+    assert_eq!(gap.trailing_comments.len(), 1);
+    assert_eq!(gap.trailing_comments[0].kind, CommentKind::Line);
+    assert_eq!(gap.trailing_comments[0].text(parse.text()), "// trailing");
+    assert_eq!(gap.leading_comments.len(), 1);
+    assert_eq!(gap.leading_comments[0].kind, CommentKind::Block);
+    assert_eq!(gap.leading_comments[0].text(parse.text()), "/* leading */");
+}
+
+#[test]
+fn parse_trivia_store_tracks_blank_lines_between_comments_and_next_node() {
+    let parse = parse_text("let first = 1;\n\n/* keep */\nlet second = 2;");
+
+    assert!(parse.errors().is_empty(), "{}", parse.debug_tree());
+
+    let root = Root::cast(parse.root()).expect("expected root");
+    let items = root
+        .item_list()
+        .map(|items| items.items().collect::<Vec<_>>())
+        .expect("expected root item list");
+    let first_end = u32::from(items[0].syntax().range().end()) as usize;
+    let second_start = u32::from(items[1].syntax().range().start()) as usize;
+    let gap = parse
+        .trivia()
+        .comment_gap(first_end, second_start, true, true);
+
+    assert_eq!(gap.leading_comments.len(), 1);
+    assert_eq!(gap.leading_comments[0].text(parse.text()), "/* keep */");
+    assert_eq!(gap.leading_comments[0].blank_lines_before, 1);
+}
+
+#[test]
+fn parse_trivia_store_supports_node_and_token_boundary_queries() {
+    let parse = parse_text(
+        "let first = value /* before semi */; // trailing\n/* leading */\nlet second = 2;",
+    );
+
+    assert!(parse.errors().is_empty(), "{}", parse.debug_tree());
+
+    let root = Root::cast(parse.root()).expect("expected root");
+    let items = root
+        .item_list()
+        .map(|items| items.items().collect::<Vec<_>>())
+        .expect("expected root item list");
+    let first_stmt = items[0].syntax();
+    let second_stmt = items[1].syntax();
+
+    assert!(
+        parse
+            .trivia()
+            .has_comments_after_node_before_node(first_stmt, second_stmt)
+    );
+    let between_items =
+        parse
+            .trivia()
+            .comment_gap_after_node_before_node(first_stmt, second_stmt, true, true);
+    assert_eq!(between_items.trailing_comments.len(), 1);
+    assert_eq!(between_items.leading_comments.len(), 1);
+
+    let semicolon = first_stmt
+        .children()
+        .iter()
+        .filter_map(|child| child.as_token())
+        .find(|token| token.kind() == TokenKind::Semicolon)
+        .expect("expected semicolon");
+    let value_expr = match items[0] {
+        crate::Item::Stmt(crate::Stmt::Let(let_stmt)) => {
+            let_stmt.initializer().expect("expected value")
+        }
+        _ => panic!("expected let stmt"),
+    };
+
+    assert!(
+        parse
+            .trivia()
+            .has_comments_after_node_before_token(value_expr.syntax(), semicolon)
+    );
+    let before_semicolon = parse.trivia().comment_gap_after_node_before_token(
+        value_expr.syntax(),
+        semicolon,
+        true,
+        true,
+    );
+    assert_eq!(before_semicolon.trailing_comments.len(), 1);
+    assert_eq!(
+        before_semicolon.trailing_comments[0].text(parse.text()),
+        "/* before semi */"
+    );
+
+    assert!(
+        parse
+            .trivia()
+            .has_comments_after_token_before_node(semicolon, second_stmt)
+    );
+    let after_semicolon =
+        parse
+            .trivia()
+            .comment_gap_after_token_before_node(semicolon, second_stmt, true, true);
+    assert_eq!(after_semicolon.trailing_comments.len(), 1);
+    assert_eq!(after_semicolon.leading_comments.len(), 1);
+}
+
+#[test]
+fn parse_trivia_store_supports_token_to_token_queries() {
+    let parse = parse_text("call( /* keep */ );");
+
+    assert!(parse.errors().is_empty(), "{}", parse.debug_tree());
+
+    let expr = first_stmt_expr(&parse);
+    let args = expr
+        .children()
+        .iter()
+        .filter_map(|child| child.as_node())
+        .find(|node| node.kind() == SyntaxKind::ArgList)
+        .expect("expected arg list");
+    let open_paren = args
+        .children()
+        .iter()
+        .filter_map(|child| child.as_token())
+        .find(|token| token.kind() == TokenKind::OpenParen)
+        .expect("expected open paren");
+    let close_paren = args
+        .children()
+        .iter()
+        .filter_map(|child| child.as_token())
+        .find(|token| token.kind() == TokenKind::CloseParen)
+        .expect("expected close paren");
+
+    assert!(
+        parse
+            .trivia()
+            .has_comments_after_token_before_token(open_paren, close_paren)
+    );
+    let gap =
+        parse
+            .trivia()
+            .comment_gap_after_token_before_token(open_paren, close_paren, false, false);
+    assert_eq!(gap.dangling_comments.len(), 1);
+    assert_eq!(gap.dangling_comments[0].text(parse.text()), "/* keep */");
 }
 
 #[test]
@@ -236,16 +398,17 @@ fn parses_let_statement_with_call_and_binary_expr() {
 
     assert!(parse.errors().is_empty(), "{}", parse.debug_tree());
 
-    let root = parse.root();
-    assert_eq!(root.kind(), SyntaxKind::Root);
-    assert_eq!(root.children().len(), 1);
+    let root = Root::cast(parse.root()).expect("expected root");
+    assert_eq!(root.syntax().kind(), SyntaxKind::Root);
+    let item_list = root.item_list().expect("expected root item list");
+    let items = item_list.items().collect::<Vec<_>>();
+    assert_eq!(items.len(), 1);
 
-    let stmt = root.children()[0]
-        .as_node()
-        .expect("expected statement node");
+    let stmt = items[0].syntax();
     assert_eq!(stmt.kind(), SyntaxKind::StmtLet);
 
     let tree = parse.debug_tree();
+    assert!(tree.contains("RootItemList"), "{tree}");
     assert!(tree.contains("ExprBinary"), "{tree}");
     assert!(tree.contains("ExprCall"), "{tree}");
     assert!(tree.contains("ArgList"), "{tree}");
@@ -259,6 +422,7 @@ fn parses_array_object_and_access_chains() {
 
     let tree = parse.debug_tree();
     assert!(tree.contains("ExprObject"), "{tree}");
+    assert!(tree.contains("ObjectFieldList"), "{tree}");
     assert!(tree.contains("ObjectField"), "{tree}");
     assert!(tree.contains("ExprArray"), "{tree}");
     assert!(tree.contains("ExprField"), "{tree}");
@@ -420,6 +584,8 @@ fn parses_switch_expression_with_patterns() {
     assert_eq!(expr.kind(), SyntaxKind::ExprSwitch);
 
     let tree = parse.debug_tree();
+    assert!(tree.contains("BlockItemList"), "{tree}");
+    assert!(tree.contains("SwitchArmList"), "{tree}");
     assert!(tree.contains("SwitchArm"), "{tree}");
     assert!(tree.contains("SwitchPatternList"), "{tree}");
     assert!(tree.contains("Block"), "{tree}");
@@ -447,70 +613,73 @@ let kind = switch ANSWER { 42 => `yes`, _ => `no` };"#,
     assert!(parse.errors().is_empty(), "{}", parse.debug_tree());
 
     let expected = r#"Root
-  ItemFn
-    PrivateKw "private"
-    FnKw "fn"
-    Ident "add"
-    ParamList
-      OpenParen "("
-      Ident "x"
-      Comma ","
-      Ident "y"
-      Comma ","
-      CloseParen ")"
-    Block
-      OpenBrace "{"
-      StmtReturn
-        ReturnKw "return"
-        ExprBinary
-          ExprName
-            Ident "x"
-          Plus "+"
-          ExprName
-            Ident "y"
-        Semicolon ";"
-      CloseBrace "}"
-  StmtConst
-    ConstKw "const"
-    Ident "ANSWER"
-    Eq "="
-    ExprCall
-      ExprName
-        Ident "add"
-      OpenParen "("
-      ArgList
-        ExprLiteral
-          Int "20"
+  RootItemList
+    ItemFn
+      PrivateKw "private"
+      FnKw "fn"
+      Ident "add"
+      ParamList
+        OpenParen "("
+        Ident "x"
         Comma ","
-        ExprLiteral
-          Int "22"
-      CloseParen ")"
-    Semicolon ";"
-  StmtLet
-    LetKw "let"
-    Ident "kind"
-    Eq "="
-    ExprSwitch
-      SwitchKw "switch"
-      ExprName
-        Ident "ANSWER"
-      OpenBrace "{"
-      SwitchArm
-        SwitchPatternList
+        Ident "y"
+        Comma ","
+        CloseParen ")"
+      Block
+        OpenBrace "{"
+        BlockItemList
+          StmtReturn
+            ReturnKw "return"
+            ExprBinary
+              ExprName
+                Ident "x"
+              Plus "+"
+              ExprName
+                Ident "y"
+            Semicolon ";"
+        CloseBrace "}"
+    StmtConst
+      ConstKw "const"
+      Ident "ANSWER"
+      Eq "="
+      ExprCall
+        ExprName
+          Ident "add"
+        ArgList
+          OpenParen "("
           ExprLiteral
-            Int "42"
-        FatArrow "=>"
-        ExprLiteral
-          BacktickString "`yes`"
-      Comma ","
-      SwitchArm
-        SwitchPatternList
-          Underscore "_"
-        FatArrow "=>"
-        ExprLiteral
-          BacktickString "`no`"
-      CloseBrace "}"
-    Semicolon ";"
+            Int "20"
+          Comma ","
+          ExprLiteral
+            Int "22"
+          CloseParen ")"
+      Semicolon ";"
+    StmtLet
+      LetKw "let"
+      Ident "kind"
+      Eq "="
+      ExprSwitch
+        SwitchKw "switch"
+        ExprName
+          Ident "ANSWER"
+        OpenBrace "{"
+        SwitchArmList
+          SwitchArm
+            SwitchPatternList
+              ExprLiteral
+                Int "42"
+            FatArrow "=>"
+            ExprLiteral
+              BacktickString "`yes`"
+          Comma ","
+          SwitchArm
+            SwitchPatternList
+              Underscore "_"
+            FatArrow "=>"
+            ExprLiteral
+              BacktickString "`no`"
+        CloseBrace "}"
+      Semicolon ";"
 "#;
 
     assert_eq!(parse.debug_tree_compact(), expected);
@@ -544,9 +713,11 @@ fn parses_interpolated_string_structure() {
 
     let tree = parse.debug_tree();
     assert!(tree.contains("ExprInterpolatedString"), "{tree}");
+    assert!(tree.contains("StringPartList"), "{tree}");
     assert!(tree.contains("StringSegment"), "{tree}");
     assert!(tree.contains("StringInterpolation"), "{tree}");
     assert!(tree.contains("InterpolationBody"), "{tree}");
+    assert!(tree.contains("InterpolationItemList"), "{tree}");
 }
 
 #[test]
@@ -570,27 +741,30 @@ fn compact_snapshot_for_interpolated_string() {
     assert!(parse.errors().is_empty(), "{}", parse.debug_tree());
 
     let expected = r#"Root
-  StmtLet
-    LetKw "let"
-    Ident "msg"
-    Eq "="
-    ExprInterpolatedString
-      Backtick "`"
-      StringSegment
-        StringText "value="
-      StringInterpolation
-        InterpolationStart "${"
-        InterpolationBody
-          StmtExpr
-            ExprBinary
-              ExprName
-                Ident "x"
-              Plus "+"
-              ExprLiteral
-                Int "1"
-        CloseBrace "}"
-      Backtick "`"
-    Semicolon ";"
+  RootItemList
+    StmtLet
+      LetKw "let"
+      Ident "msg"
+      Eq "="
+      ExprInterpolatedString
+        Backtick "`"
+        StringPartList
+          StringSegment
+            StringText "value="
+          StringInterpolation
+            InterpolationStart "${"
+            InterpolationBody
+              InterpolationItemList
+                StmtExpr
+                  ExprBinary
+                    ExprName
+                      Ident "x"
+                    Plus "+"
+                    ExprLiteral
+                      Int "1"
+            CloseBrace "}"
+        Backtick "`"
+      Semicolon ";"
 "#;
 
     assert_eq!(parse.debug_tree_compact(), expected);

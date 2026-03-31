@@ -1,49 +1,10 @@
-use rhai_syntax::{SyntaxNode, TextRange, TokenKind};
+use rhai_syntax::{
+    AttachedComment, CommentKind, GapTrivia, SyntaxNode, SyntaxToken, TextRange, TokenKind,
+    TriviaBoundary,
+};
 
 use crate::formatter::Formatter;
 use crate::formatter::layout::doc::Doc;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum CommentKind {
-    Line,
-    DocLine,
-    Block,
-    DocBlock,
-    Shebang,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct AttachedComment {
-    pub(crate) kind: CommentKind,
-    pub(crate) text: String,
-    pub(crate) blank_lines_before: usize,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(crate) struct GapTrivia {
-    pub(crate) trailing_comments: Vec<AttachedComment>,
-    pub(crate) leading_comments: Vec<AttachedComment>,
-    pub(crate) dangling_comments: Vec<AttachedComment>,
-    pub(crate) trailing_blank_lines_before_next: usize,
-}
-
-impl GapTrivia {
-    pub(crate) fn has_vertical_comments(&self) -> bool {
-        !self.leading_comments.is_empty() || !self.dangling_comments.is_empty()
-    }
-
-    pub(crate) fn has_comments(&self) -> bool {
-        !self.trailing_comments.is_empty() || self.has_vertical_comments()
-    }
-
-    pub(crate) fn vertical_comments(&self) -> &[AttachedComment] {
-        if !self.leading_comments.is_empty() {
-            &self.leading_comments
-        } else {
-            &self.dangling_comments
-        }
-    }
-}
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct GapSeparatorOptions<'a> {
@@ -56,7 +17,7 @@ pub(crate) struct GapSeparatorOptions<'a> {
 
 impl Formatter<'_> {
     pub(crate) fn node_has_unowned_comments(&self, node: &SyntaxNode) -> bool {
-        self.node_has_unowned_comments_outside(node, &[])
+        self.trivia.node_has_unowned_comments(node)
     }
 
     pub(crate) fn node_has_unowned_comments_outside(
@@ -64,37 +25,98 @@ impl Formatter<'_> {
         node: &SyntaxNode,
         allowed_ranges: &[(usize, usize)],
     ) -> bool {
-        let child_ranges = node
-            .children()
-            .iter()
-            .filter_map(|child| child.as_node())
-            .map(|child| child.range())
-            .collect::<Vec<_>>();
+        self.trivia
+            .node_has_unowned_comments_outside(node, allowed_ranges)
+    }
 
-        let start = u32::from(node.range().start()) as usize;
-        let end = u32::from(node.range().end()) as usize;
-
-        self.tokens
-            .iter()
-            .copied()
-            .filter(|token| self.token_in_range(*token, start, end))
-            .any(|token| {
-                self.comment_kind(token.kind()).is_some()
-                    && !child_ranges
-                        .iter()
-                        .any(|range| range_contains(*range, token.range()))
-                    && !allowed_ranges.iter().any(|(allowed_start, allowed_end)| {
-                        self.token_in_usize_range(token, *allowed_start, *allowed_end)
-                    })
-            })
+    pub(crate) fn node_has_unowned_comments_outside_boundaries(
+        &self,
+        node: &SyntaxNode,
+        boundaries: &[TriviaBoundary<'_>],
+    ) -> bool {
+        self.trivia
+            .node_has_unowned_comments_outside_boundaries(node, boundaries)
     }
 
     pub(crate) fn range_has_comments(&self, start: usize, end: usize) -> bool {
-        self.tokens
-            .iter()
-            .copied()
-            .filter(|token| self.token_in_range(*token, start, end))
-            .any(|token| self.comment_kind(token.kind()).is_some())
+        self.trivia.range_has_comments(start, end)
+    }
+
+    pub(crate) fn has_blank_line_between_nodes(
+        &self,
+        previous: &SyntaxNode,
+        next: &SyntaxNode,
+    ) -> bool {
+        self.trivia
+            .has_blank_line_after_node_before_node(previous, next)
+    }
+
+    pub(crate) fn is_whitespace_only_between_nodes(
+        &self,
+        previous: &SyntaxNode,
+        next: &SyntaxNode,
+    ) -> bool {
+        self.trivia
+            .is_whitespace_only_after_node_before_node(previous, next)
+    }
+
+    pub(crate) fn range_after_node_before_node(
+        &self,
+        previous: &SyntaxNode,
+        next: &SyntaxNode,
+    ) -> (usize, usize) {
+        self.trivia.range_after_node_before_node(previous, next)
+    }
+
+    pub(crate) fn range_after_node_before_token(
+        &self,
+        previous: &SyntaxNode,
+        next: SyntaxToken,
+    ) -> (usize, usize) {
+        self.trivia.range_after_node_before_token(previous, next)
+    }
+
+    pub(crate) fn range_after_token_before_node(
+        &self,
+        previous: SyntaxToken,
+        next: &SyntaxNode,
+    ) -> (usize, usize) {
+        self.trivia.range_after_token_before_node(previous, next)
+    }
+
+    pub(crate) fn range_after_token_before_token(
+        &self,
+        previous: SyntaxToken,
+        next: SyntaxToken,
+    ) -> (usize, usize) {
+        self.trivia.range_after_token_before_token(previous, next)
+    }
+
+    pub(crate) fn has_comments_after_node_before_token(
+        &self,
+        previous: &SyntaxNode,
+        next: SyntaxToken,
+    ) -> bool {
+        self.trivia
+            .has_comments_after_node_before_token(previous, next)
+    }
+
+    pub(crate) fn has_comments_after_token_before_node(
+        &self,
+        previous: SyntaxToken,
+        next: &SyntaxNode,
+    ) -> bool {
+        self.trivia
+            .has_comments_after_token_before_node(previous, next)
+    }
+
+    pub(crate) fn has_comments_after_token_before_token(
+        &self,
+        previous: SyntaxToken,
+        next: SyntaxToken,
+    ) -> bool {
+        self.trivia
+            .has_comments_after_token_before_token(previous, next)
     }
 
     pub(crate) fn comment_gap(
@@ -104,75 +126,24 @@ impl Formatter<'_> {
         has_previous: bool,
         has_next: bool,
     ) -> GapTrivia {
-        if start >= end || end > self.source.len() {
-            return GapTrivia::default();
-        }
-
-        let start_line = self.line_index(start);
-        let mut cursor_line = start_line;
-        let mut trailing_comments = Vec::new();
-        let mut leading_comments = Vec::new();
-        let mut dangling_comments = Vec::new();
-
-        for token in self
-            .tokens
-            .iter()
-            .copied()
-            .filter(|token| self.token_in_range(*token, start, end))
-        {
-            let Some(kind) = self.comment_kind(token.kind()) else {
-                continue;
-            };
-
-            let comment_start_line = self.line_index(u32::from(token.range().start()) as usize);
-            let comment_end_line = self.line_index_for_end(u32::from(token.range().end()) as usize);
-            let text = token.text(self.source).to_owned();
-
-            if has_previous
-                && comment_start_line == start_line
-                && leading_comments.is_empty()
-                && dangling_comments.is_empty()
-            {
-                trailing_comments.push(AttachedComment {
-                    kind,
-                    text,
-                    blank_lines_before: 0,
-                });
-                cursor_line = comment_end_line;
-                continue;
-            }
-
-            let blank_lines_before = comment_start_line.saturating_sub(cursor_line + 1);
-            let attached_comment = AttachedComment {
-                kind,
-                text,
-                blank_lines_before,
-            };
-            if has_next {
-                leading_comments.push(attached_comment);
-            } else {
-                dangling_comments.push(attached_comment);
-            }
-            cursor_line = comment_end_line;
-        }
-
-        let next_line = self.line_index(end);
-        let trailing_blank_lines_before_next = next_line.saturating_sub(cursor_line + 1);
-
-        GapTrivia {
-            trailing_comments,
-            leading_comments,
-            dangling_comments,
-            trailing_blank_lines_before_next,
-        }
+        self.trivia.comment_gap(start, end, has_previous, has_next)
     }
 
     pub(crate) fn token_range(&self, node: &SyntaxNode, kind: TokenKind) -> Option<TextRange> {
-        node.children()
-            .iter()
-            .filter_map(|child| child.as_token())
-            .find(|token| token.kind() == kind)
-            .map(|token| token.range())
+        self.token(node, kind).map(|token| token.range())
+    }
+
+    pub(crate) fn token(&self, node: &SyntaxNode, kind: TokenKind) -> Option<SyntaxToken> {
+        node.significant_tokens().find(|token| token.kind() == kind)
+    }
+
+    pub(crate) fn tokens<'a>(
+        &self,
+        node: &'a SyntaxNode,
+        kind: TokenKind,
+    ) -> impl Iterator<Item = SyntaxToken> + 'a {
+        node.significant_tokens()
+            .filter(move |token| token.kind() == kind)
     }
 
     pub(crate) fn gap_separator_doc(
@@ -299,6 +270,33 @@ impl Formatter<'_> {
         Doc::concat(parts)
     }
 
+    pub(crate) fn tight_comment_gap_after_node_before_token(
+        &self,
+        previous: &SyntaxNode,
+        next: SyntaxToken,
+    ) -> Doc {
+        let (start, end) = self.range_after_node_before_token(previous, next);
+        self.tight_comment_gap_doc(start, end)
+    }
+
+    pub(crate) fn tight_comment_gap_after_token_before_node(
+        &self,
+        previous: SyntaxToken,
+        next: &SyntaxNode,
+    ) -> Doc {
+        let (start, end) = self.range_after_token_before_node(previous, next);
+        self.tight_comment_gap_doc(start, end)
+    }
+
+    pub(crate) fn tight_comment_gap_after_token_before_token(
+        &self,
+        previous: SyntaxToken,
+        next: SyntaxToken,
+    ) -> Doc {
+        let (start, end) = self.range_after_token_before_token(previous, next);
+        self.tight_comment_gap_doc(start, end)
+    }
+
     pub(crate) fn tight_comment_gap_doc_without_trailing_space(
         &self,
         start: usize,
@@ -345,7 +343,7 @@ impl Formatter<'_> {
             if index > 0 {
                 parts.push(hard_lines(comment.blank_lines_before + 1));
             }
-            parts.push(Doc::text(render_comment_text(comment)));
+            parts.push(Doc::text(render_comment_text(comment, self.source)));
         }
 
         Doc::concat(parts)
@@ -354,64 +352,26 @@ impl Formatter<'_> {
     fn render_trailing_comments_doc(&self, comments: &[AttachedComment]) -> Doc {
         let parts = comments
             .iter()
-            .flat_map(|comment| [Doc::text(" "), Doc::text(render_comment_text(comment))])
+            .flat_map(|comment| {
+                [
+                    Doc::text(" "),
+                    Doc::text(render_comment_text(comment, self.source)),
+                ]
+            })
             .collect::<Vec<_>>();
         Doc::concat(parts)
     }
-
-    fn comment_kind(&self, kind: TokenKind) -> Option<CommentKind> {
-        match kind {
-            TokenKind::LineComment => Some(CommentKind::Line),
-            TokenKind::DocLineComment => Some(CommentKind::DocLine),
-            TokenKind::BlockComment => Some(CommentKind::Block),
-            TokenKind::DocBlockComment => Some(CommentKind::DocBlock),
-            TokenKind::Shebang => Some(CommentKind::Shebang),
-            _ => None,
-        }
-    }
-
-    fn token_in_range(&self, token: rhai_syntax::SyntaxToken, start: usize, end: usize) -> bool {
-        let token_start = u32::from(token.range().start()) as usize;
-        let token_end = u32::from(token.range().end()) as usize;
-        token_start >= start && token_end <= end
-    }
-
-    fn token_in_usize_range(
-        &self,
-        token: rhai_syntax::SyntaxToken,
-        start: usize,
-        end: usize,
-    ) -> bool {
-        let token_start = u32::from(token.range().start()) as usize;
-        let token_end = u32::from(token.range().end()) as usize;
-        start <= token_start && token_end <= end
-    }
-
-    fn line_index(&self, offset: usize) -> usize {
-        self.line_starts
-            .partition_point(|line_start| *line_start <= offset)
-            .saturating_sub(1)
-    }
-
-    fn line_index_for_end(&self, offset: usize) -> usize {
-        self.line_index(offset.saturating_sub(1))
-    }
 }
 
-fn render_comment_text(comment: &AttachedComment) -> String {
+fn render_comment_text(comment: &AttachedComment, source: &str) -> String {
     match comment.kind {
-        CommentKind::Block | CommentKind::DocBlock => comment.text.clone(),
+        CommentKind::Block | CommentKind::DocBlock => comment.text(source).to_owned(),
         CommentKind::Line | CommentKind::DocLine | CommentKind::Shebang => {
-            comment.text.trim().to_owned()
+            comment.text(source).trim().to_owned()
         }
     }
 }
 
 fn hard_lines(count: usize) -> Doc {
     Doc::concat(vec![Doc::hard_line(); count])
-}
-
-fn range_contains(container: TextRange, candidate: TextRange) -> bool {
-    u32::from(container.start()) <= u32::from(candidate.start())
-        && u32::from(candidate.end()) <= u32::from(container.end())
 }

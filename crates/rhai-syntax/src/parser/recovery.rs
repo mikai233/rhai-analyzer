@@ -140,17 +140,28 @@ impl<'a> Parser<'a> {
     }
 
     pub(crate) fn peek(&self) -> Option<SyntaxToken> {
-        self.tokens.get(self.cursor).copied()
+        self.next_significant_index(self.cursor)
+            .and_then(|index| self.tokens.get(index).copied())
     }
 
     pub(crate) fn bump(&mut self) -> Option<SyntaxToken> {
-        let token = self.peek()?;
-        self.cursor += 1;
+        let index = self.next_significant_index(self.cursor)?;
+        let token = self.tokens[index];
+        self.cursor = index + 1;
         Some(token)
     }
 
     pub(crate) fn peek_n(&self, n: usize) -> Option<SyntaxToken> {
-        self.tokens.get(self.cursor + n).copied()
+        let mut index = self.cursor;
+        let mut remaining = n;
+        loop {
+            let next = self.next_significant_index(index)?;
+            if remaining == 0 {
+                return self.tokens.get(next).copied();
+            }
+            remaining -= 1;
+            index = next + 1;
+        }
     }
 
     pub(crate) fn peek_kind(&self) -> Option<TokenKind> {
@@ -169,12 +180,18 @@ impl<'a> Parser<'a> {
     }
 
     pub(crate) fn current_offset(&self) -> TextSize {
+        self.tokens
+            .get(self.cursor)
+            .map_or(self.text_len, |token| token.range().start())
+    }
+
+    pub(crate) fn next_significant_offset(&self) -> TextSize {
         self.peek()
             .map_or(self.text_len, |token| token.range().start())
     }
 
     pub(crate) fn is_eof(&self) -> bool {
-        self.cursor >= self.tokens.len()
+        self.next_significant_index(self.cursor).is_none()
     }
 
     pub(crate) fn is_stmt_terminator(&self) -> bool {
@@ -261,6 +278,16 @@ impl<'a> Parser<'a> {
         while !self.is_eof() && !kinds.iter().copied().any(|kind| self.at(kind)) {
             self.bump();
         }
+    }
+
+    fn next_significant_index(&self, mut index: usize) -> Option<usize> {
+        while let Some(token) = self.tokens.get(index) {
+            if !token.kind().is_trivia() {
+                return Some(index);
+            }
+            index += 1;
+        }
+        None
     }
 }
 

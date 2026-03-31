@@ -39,11 +39,9 @@ fn range_formatter_expands_to_enclosing_block_boundary() {
     let result = format_range(source, range, &FormatOptions::default())
         .expect("expected range formatting result");
 
-    assert_eq!(u32::from(result.range.start()), 9);
-    assert_eq!(u32::from(result.range.end()), 28);
     assert_eq!(
-        result.text,
-        "\n    let value = 1 + 2;\n    value\n".to_owned()
+        apply_range_edit(source, result.range, &result.text),
+        "fn run(){let value = 1 + 2;\n    value}\n"
     );
 }
 
@@ -112,7 +110,78 @@ fn range_formatter_can_target_array_item_lists() {
 
     assert_eq!(
         apply_range_edit(source, result.range, &result.text),
-        "fn run(){let values=[\n        alpha,\n        beta,\n        gamma,\n        delta,\n];}\n"
+        "fn run(){let values=[\n        alpha,\n        beta,\n        gamma,\n        delta,\n    ];}\n"
+    );
+}
+
+#[test]
+fn range_formatter_can_target_interpolation_item_lists() {
+    let source = "let message = `value=${let total=foo+bar;total}`;\n";
+    let selection_start = u32::try_from(
+        source
+            .find("let total")
+            .expect("expected interpolation body"),
+    )
+    .expect("offset");
+    let selection_end =
+        u32::try_from(source.find("}").expect("expected interpolation end")).expect("offset");
+    let result = format_range(
+        source,
+        TextRange::new(selection_start.into(), selection_end.into()),
+        &FormatOptions {
+            max_line_length: 30,
+            ..FormatOptions::default()
+        },
+    )
+    .expect("expected range formatting result");
+
+    assert_eq!(
+        apply_range_edit(source, result.range, &result.text),
+        "let message = `value=${\n    let total = foo + bar;\n    total\n}`;\n"
+    );
+}
+
+#[test]
+fn range_formatter_can_target_string_part_lists() {
+    let source = "let message = `hello ${foo+bar} world ${baz+qux}`;\n";
+    let selection_start =
+        u32::try_from(source.find("hello").expect("expected string part body")).expect("offset");
+    let selection_end =
+        u32::try_from(source.rfind("}").expect("expected string part end") + 1).expect("offset");
+    let result = format_range(
+        source,
+        TextRange::new(selection_start.into(), selection_end.into()),
+        &FormatOptions::default(),
+    )
+    .expect("expected range formatting result");
+
+    assert_eq!(
+        apply_range_edit(source, result.range, &result.text),
+        "let message = `hello ${foo + bar} world ${baz + qux}`;\n"
+    );
+}
+
+#[test]
+fn range_formatter_can_target_object_field_lists() {
+    let source =
+        "fn run(){let user=#{first_name:\"Ada\",last_name:\"Lovelace\",city:\"London\"};}\n";
+    let selection_start =
+        u32::try_from(source.find("first_name").expect("expected object fields")).expect("offset");
+    let selection_end =
+        u32::try_from(source.find("};").expect("expected object end")).expect("offset");
+    let result = format_range(
+        source,
+        TextRange::new(selection_start.into(), selection_end.into()),
+        &FormatOptions {
+            max_line_length: 26,
+            ..FormatOptions::default()
+        },
+    )
+    .expect("expected range formatting result");
+
+    assert_eq!(
+        apply_range_edit(source, result.range, &result.text),
+        "fn run(){let user=#{\n        first_name: \"Ada\",\n        last_name: \"Lovelace\",\n        city: \"London\",\n};}\n"
     );
 }
 
@@ -135,7 +204,7 @@ fn range_formatter_can_target_call_argument_lists() {
 
     assert_eq!(
         apply_range_edit(source, result.range, &result.text),
-        "fn run(){helper(\n        alpha,\n        beta,\n        gamma,\n        delta,\n);}\n"
+        "fn run(){helper(\n        alpha,\n        beta,\n        gamma,\n        delta,\n    );}\n"
     );
 }
 
@@ -156,6 +225,26 @@ fn range_formatter_can_target_switch_pattern_lists() {
     assert_eq!(
         apply_range_edit(source, result.range, &result.text),
         "fn run(kind){switch kind {foo | bar=>1}}\n"
+    );
+}
+
+#[test]
+fn range_formatter_can_target_switch_arm_lists() {
+    let source = "fn run(kind){switch kind {foo=>alpha+beta,bar=>gamma+delta}}\n";
+    let selection_start =
+        u32::try_from(source.find("foo").expect("expected switch arms")).expect("offset");
+    let selection_end =
+        u32::try_from(source.find("}").expect("expected switch end")).expect("offset");
+    let result = format_range(
+        source,
+        TextRange::new(selection_start.into(), selection_end.into()),
+        &FormatOptions::default(),
+    )
+    .expect("expected range formatting result");
+
+    assert_eq!(
+        apply_range_edit(source, result.range, &result.text),
+        "fn run(kind){switch kind {foo => alpha + beta, bar => gamma + delta}}\n"
     );
 }
 

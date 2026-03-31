@@ -33,7 +33,7 @@ impl<'a> Parser<'a> {
                 SyntaxNode::with_range(SyntaxKind::Error, range, Vec::new())
             };
 
-            lhs = SyntaxNode::new(
+            lhs = self.finish_node(
                 expr_kind,
                 vec![node_element(lhs), op_token, node_element(rhs)],
                 start,
@@ -49,7 +49,7 @@ impl<'a> Parser<'a> {
                 let start = self.current_offset();
                 let operator = self.bump_element("unary operator token should be present");
                 let operand = node_element(self.parse_prefix_expr());
-                SyntaxNode::new(SyntaxKind::ExprUnary, vec![operator, operand], start)
+                self.finish_node(SyntaxKind::ExprUnary, vec![operator, operand], start)
             }
             _ => self.parse_postfix_expr(),
         }
@@ -98,26 +98,28 @@ impl<'a> Parser<'a> {
             | TokenKind::TypeOfKw
             | TokenKind::PrintKw
             | TokenKind::DebugKw
-            | TokenKind::EvalKw => SyntaxNode::new(
-                SyntaxKind::ExprName,
-                vec![token_element(
-                    self.bump().expect("identifier token should be present"),
-                )],
-                token.range().start(),
-            ),
+            | TokenKind::EvalKw => {
+                let bumped = self.bump().expect("identifier token should be present");
+                self.finish_node(
+                    SyntaxKind::ExprName,
+                    vec![token_element(bumped)],
+                    token.range().start(),
+                )
+            }
             TokenKind::Int
             | TokenKind::Float
             | TokenKind::String
             | TokenKind::RawString
             | TokenKind::Char
             | TokenKind::TrueKw
-            | TokenKind::FalseKw => SyntaxNode::new(
-                SyntaxKind::ExprLiteral,
-                vec![token_element(
-                    self.bump().expect("literal token should be present"),
-                )],
-                token.range().start(),
-            ),
+            | TokenKind::FalseKw => {
+                let bumped = self.bump().expect("literal token should be present");
+                self.finish_node(
+                    SyntaxKind::ExprLiteral,
+                    vec![token_element(bumped)],
+                    token.range().start(),
+                )
+            }
             TokenKind::IfKw => self.parse_if_expr(),
             TokenKind::SwitchKw => self.parse_switch_expr(),
             TokenKind::WhileKw => self.parse_while_expr(),
@@ -136,7 +138,7 @@ impl<'a> Parser<'a> {
 
     pub(crate) fn parse_name_expr(&mut self) -> SyntaxNode {
         let token = self.bump().expect("identifier token should be present");
-        SyntaxNode::new(
+        self.finish_node(
             SyntaxKind::ExprName,
             vec![token_element(token)],
             token.range().start(),
@@ -155,22 +157,30 @@ impl<'a> Parser<'a> {
         ));
         if matches!(children.last(), Some(crate::SyntaxElement::Node(node)) if node.kind() == SyntaxKind::Error)
         {
-            return SyntaxNode::new(SyntaxKind::ExprSwitch, children, start);
+            return self.finish_node(SyntaxKind::ExprSwitch, children, start);
         }
 
+        let arms_start = self.current_offset();
+        let mut arm_children = Vec::new();
         while !self.is_eof() && !self.at(TokenKind::CloseBrace) {
-            children.push(node_element(self.parse_switch_arm()));
+            arm_children.push(node_element(self.parse_switch_arm()));
 
             if self.at(TokenKind::Comma) {
-                children.push(self.bump_element("`,` token should be present"));
+                arm_children.push(self.bump_element("`,` token should be present"));
             } else if !self.at(TokenKind::CloseBrace) {
-                children.push(self.missing_error("expected `,` between `switch` arms"));
+                arm_children.push(self.missing_error("expected `,` between `switch` arms"));
                 self.recover_to_any(&[TokenKind::Comma, TokenKind::CloseBrace]);
                 if let Some(comma) = self.eat(TokenKind::Comma, "`,` token should be present") {
-                    children.push(comma);
+                    arm_children.push(comma);
                 }
             }
         }
+        let arms_end = self.next_significant_offset();
+        children.push(node_element(self.finish_node_with_range(
+            SyntaxKind::SwitchArmList,
+            TextRange::new(arms_start, arms_end),
+            arm_children,
+        )));
 
         children.push(self.expect_token(
             TokenKind::CloseBrace,
@@ -178,7 +188,7 @@ impl<'a> Parser<'a> {
             "`}` token should be present",
         ));
 
-        SyntaxNode::new(SyntaxKind::ExprSwitch, children, start)
+        self.finish_node(SyntaxKind::ExprSwitch, children, start)
     }
 
     pub(crate) fn parse_if_expr(&mut self) -> SyntaxNode {
@@ -193,7 +203,7 @@ impl<'a> Parser<'a> {
             children.push(node_element(self.parse_else_branch()));
         }
 
-        SyntaxNode::new(SyntaxKind::ExprIf, children, start)
+        self.finish_node(SyntaxKind::ExprIf, children, start)
     }
 
     pub(crate) fn parse_else_branch(&mut self) -> SyntaxNode {
@@ -208,7 +218,7 @@ impl<'a> Parser<'a> {
             ));
         }
 
-        SyntaxNode::new(SyntaxKind::ElseBranch, children, start)
+        self.finish_node(SyntaxKind::ElseBranch, children, start)
     }
 
     pub(crate) fn parse_while_expr(&mut self) -> SyntaxNode {
@@ -219,7 +229,7 @@ impl<'a> Parser<'a> {
             self.parse_required_block("expected block after `while` condition"),
         ));
 
-        SyntaxNode::new(SyntaxKind::ExprWhile, children, start)
+        self.finish_node(SyntaxKind::ExprWhile, children, start)
     }
 
     pub(crate) fn parse_loop_expr(&mut self) -> SyntaxNode {
@@ -229,7 +239,7 @@ impl<'a> Parser<'a> {
             self.parse_required_block("expected block after `loop`"),
         ));
 
-        SyntaxNode::new(SyntaxKind::ExprLoop, children, start)
+        self.finish_node(SyntaxKind::ExprLoop, children, start)
     }
 
     pub(crate) fn parse_for_expr(&mut self) -> SyntaxNode {
@@ -248,7 +258,7 @@ impl<'a> Parser<'a> {
             self.parse_required_block("expected block after `for` expression"),
         ));
 
-        SyntaxNode::new(SyntaxKind::ExprFor, children, start)
+        self.finish_node(SyntaxKind::ExprFor, children, start)
     }
 
     pub(crate) fn parse_do_expr(&mut self) -> SyntaxNode {
@@ -271,13 +281,13 @@ impl<'a> Parser<'a> {
                 .push(self.missing_error("expected `while` or `until` after `do` block"));
         }
 
-        children.push(node_element(SyntaxNode::new(
+        children.push(node_element(self.finish_node(
             SyntaxKind::DoCondition,
             condition_children,
             condition_start,
         )));
 
-        SyntaxNode::new(SyntaxKind::ExprDo, children, start)
+        self.finish_node(SyntaxKind::ExprDo, children, start)
     }
 
     pub(crate) fn parse_closure_expr(&mut self) -> SyntaxNode {
@@ -292,7 +302,7 @@ impl<'a> Parser<'a> {
             children.push(self.missing_error("expected closure body"));
         }
 
-        SyntaxNode::new(SyntaxKind::ExprClosure, children, start)
+        self.finish_node(SyntaxKind::ExprClosure, children, start)
     }
 
     pub(crate) fn parse_backtick_string_expr(&mut self) -> SyntaxNode {
@@ -302,7 +312,7 @@ impl<'a> Parser<'a> {
         let text = token.text(self.source);
 
         if !text.contains("${") {
-            return SyntaxNode::new(
+            return self.finish_node(
                 SyntaxKind::ExprLiteral,
                 vec![token_element(token)],
                 token.range().start(),
@@ -317,6 +327,7 @@ impl<'a> Parser<'a> {
             ),
         ))];
 
+        let mut part_children = Vec::new();
         let ranges = self.collect_interpolated_string_parts(token, text);
         for part in ranges {
             match part {
@@ -325,7 +336,7 @@ impl<'a> Parser<'a> {
                         continue;
                     }
                     let fragment = SyntaxToken::new(TokenKind::StringText, range);
-                    children.push(node_element(SyntaxNode::new(
+                    part_children.push(node_element(self.finish_node(
                         SyntaxKind::StringSegment,
                         vec![token_element(fragment)],
                         range.start(),
@@ -344,7 +355,7 @@ impl<'a> Parser<'a> {
                     interpolation_children.push(node_element(body));
                     interpolation_children
                         .push(token_element(SyntaxToken::new(TokenKind::CloseBrace, end)));
-                    children.push(node_element(SyntaxNode::new(
+                    part_children.push(node_element(self.finish_node(
                         SyntaxKind::StringInterpolation,
                         interpolation_children,
                         start.start(),
@@ -352,13 +363,18 @@ impl<'a> Parser<'a> {
                 }
             }
         }
+        children.push(node_element(self.finish_node(
+            SyntaxKind::StringPartList,
+            part_children,
+            token.range().start() + TextSize::from(1),
+        )));
 
         children.push(token_element(SyntaxToken::new(
             TokenKind::Backtick,
             TextRange::new(token.range().end() - TextSize::from(1), token.range().end()),
         )));
 
-        SyntaxNode::new(
+        self.finish_node(
             SyntaxKind::ExprInterpolatedString,
             children,
             token.range().start(),
@@ -453,13 +469,7 @@ impl<'a> Parser<'a> {
                 .map(|error| shift_error(error, shifted_offset)),
         );
 
-        let significant_tokens: Vec<_> = tokens
-            .iter()
-            .copied()
-            .filter(|token| !token.kind().is_trivia())
-            .collect();
-
-        let mut parser = Parser::new(significant_tokens, text_size_of(body_text), body_text);
+        let mut parser = Parser::new(tokens.clone(), text_size_of(body_text), body_text);
         let root = parser.parse_root();
         self.errors.extend(
             parser
@@ -470,12 +480,24 @@ impl<'a> Parser<'a> {
 
         let shifted_children = root
             .children()
+            .first()
+            .and_then(crate::syntax::SyntaxElement::as_node)
+            .map(crate::SyntaxNode::children)
+            .unwrap_or(root.children())
             .iter()
             .cloned()
             .map(|element| shift_element(element, shifted_offset))
             .collect();
 
-        SyntaxNode::with_range(SyntaxKind::InterpolationBody, body_range, shifted_children)
+        SyntaxNode::with_range(
+            SyntaxKind::InterpolationBody,
+            body_range,
+            vec![node_element(SyntaxNode::with_range(
+                SyntaxKind::InterpolationItemList,
+                body_range,
+                shifted_children,
+            ))],
+        )
     }
 
     pub(crate) fn parse_for_bindings(&mut self) -> SyntaxNode {
@@ -508,7 +530,7 @@ impl<'a> Parser<'a> {
             children.push(self.missing_error("expected binding in `for` expression"));
         }
 
-        SyntaxNode::new(SyntaxKind::ForBindings, children, start)
+        self.finish_node(SyntaxKind::ForBindings, children, start)
     }
 
     pub(crate) fn parse_switch_arm(&mut self) -> SyntaxNode {
@@ -523,7 +545,7 @@ impl<'a> Parser<'a> {
 
         children.push(node_element(self.parse_switch_arm_body()));
 
-        SyntaxNode::new(SyntaxKind::SwitchArm, children, start)
+        self.finish_node(SyntaxKind::SwitchArm, children, start)
     }
 
     pub(crate) fn parse_switch_pattern_list(&mut self) -> SyntaxNode {
@@ -544,7 +566,7 @@ impl<'a> Parser<'a> {
             }
         }
 
-        SyntaxNode::new(SyntaxKind::SwitchPatternList, children, start)
+        self.finish_node(SyntaxKind::SwitchPatternList, children, start)
     }
 
     pub(crate) fn parse_switch_arm_body(&mut self) -> SyntaxNode {
@@ -562,9 +584,8 @@ impl<'a> Parser<'a> {
             self.validate_caller_scope_callee(&children[0]);
             children.push(self.bump_element("`!` token should be present"));
         }
-        children.push(self.bump_element("`(` token should be present"));
-
-        let mut arg_children = Vec::new();
+        let args_start = self.current_offset();
+        let mut arg_children = vec![self.bump_element("`(` token should be present")];
         while !self.is_eof() && !self.at(TokenKind::CloseParen) {
             arg_children.push(node_element(self.parse_expr(0)));
 
@@ -577,19 +598,19 @@ impl<'a> Parser<'a> {
             }
         }
 
-        children.push(node_element(SyntaxNode::new(
-            SyntaxKind::ArgList,
-            arg_children,
-            self.current_offset(),
-        )));
-
-        children.push(self.expect_token(
+        arg_children.push(self.expect_token(
             TokenKind::CloseParen,
             "expected `)` to close argument list",
             "`)` token should be present",
         ));
 
-        SyntaxNode::new(SyntaxKind::ExprCall, children, start)
+        children.push(node_element(self.finish_node(
+            SyntaxKind::ArgList,
+            arg_children,
+            args_start,
+        )));
+
+        self.finish_node(SyntaxKind::ExprCall, children, start)
     }
 
     pub(crate) fn validate_caller_scope_callee(&mut self, callee: &crate::SyntaxElement) {
@@ -636,7 +657,7 @@ impl<'a> Parser<'a> {
             }
         }
 
-        SyntaxNode::new(SyntaxKind::ExprPath, children, start)
+        self.finish_node(SyntaxKind::ExprPath, children, start)
     }
 
     pub(crate) fn parse_index_expr(&mut self, base: SyntaxNode) -> SyntaxNode {
@@ -660,7 +681,7 @@ impl<'a> Parser<'a> {
             children.push(self.missing_error("expected `]` to close index expression"));
         }
 
-        SyntaxNode::new(SyntaxKind::ExprIndex, children, start)
+        self.finish_node(SyntaxKind::ExprIndex, children, start)
     }
 
     pub(crate) fn parse_field_expr(&mut self, base: SyntaxNode) -> SyntaxNode {
@@ -679,14 +700,14 @@ impl<'a> Parser<'a> {
             children.push(self.missing_error("expected property name after field access"));
         }
 
-        SyntaxNode::new(SyntaxKind::ExprField, children, start)
+        self.finish_node(SyntaxKind::ExprField, children, start)
     }
 
     pub(crate) fn parse_array_expr(&mut self) -> SyntaxNode {
         let start = self.current_offset();
-        let mut children = vec![self.bump_element("`[` token should be present")];
-
-        let mut item_children = Vec::new();
+        let mut children = Vec::new();
+        let items_start = self.current_offset();
+        let mut item_children = vec![self.bump_element("`[` token should be present")];
         while !self.is_eof() && !self.at(TokenKind::CloseBracket) {
             item_children.push(node_element(self.parse_expr(0)));
 
@@ -699,36 +720,44 @@ impl<'a> Parser<'a> {
             }
         }
 
-        children.push(node_element(SyntaxNode::new(
-            SyntaxKind::ArrayItemList,
-            item_children,
-            self.current_offset(),
-        )));
-
-        children.push(self.expect_token(
+        item_children.push(self.expect_token(
             TokenKind::CloseBracket,
             "expected `]` to close array literal",
             "`]` token should be present",
         ));
 
-        SyntaxNode::new(SyntaxKind::ExprArray, children, start)
+        children.push(node_element(self.finish_node(
+            SyntaxKind::ArrayItemList,
+            item_children,
+            items_start,
+        )));
+
+        self.finish_node(SyntaxKind::ExprArray, children, start)
     }
 
     pub(crate) fn parse_object_expr(&mut self) -> SyntaxNode {
         let start = self.current_offset();
         let mut children = vec![self.bump_element("`#{` token should be present")];
 
+        let fields_start = self.current_offset();
+        let mut field_children = Vec::new();
         while !self.is_eof() && !self.at(TokenKind::CloseBrace) {
-            children.push(node_element(self.parse_object_field()));
+            field_children.push(node_element(self.parse_object_field()));
 
             if let Some(comma) = self.eat(TokenKind::Comma, "`,` token should be present") {
-                children.push(comma);
+                field_children.push(comma);
             } else if self.at_object_field_start() {
-                children.push(self.missing_error("expected `,` between object fields"));
+                field_children.push(self.missing_error("expected `,` between object fields"));
             } else {
                 break;
             }
         }
+        let fields_end = self.next_significant_offset();
+        children.push(node_element(self.finish_node_with_range(
+            SyntaxKind::ObjectFieldList,
+            TextRange::new(fields_start, fields_end),
+            field_children,
+        )));
 
         children.push(self.expect_token(
             TokenKind::CloseBrace,
@@ -736,7 +765,7 @@ impl<'a> Parser<'a> {
             "`}` token should be present",
         ));
 
-        SyntaxNode::new(SyntaxKind::ExprObject, children, start)
+        self.finish_node(SyntaxKind::ExprObject, children, start)
     }
 
     pub(crate) fn parse_object_field(&mut self) -> SyntaxNode {
@@ -759,7 +788,7 @@ impl<'a> Parser<'a> {
             children.push(node_element(self.parse_expr(0)));
         }
 
-        SyntaxNode::new(SyntaxKind::ObjectField, children, start)
+        self.finish_node(SyntaxKind::ObjectField, children, start)
     }
 
     pub(crate) fn parse_paren_expr(&mut self) -> SyntaxNode {
@@ -778,18 +807,26 @@ impl<'a> Parser<'a> {
             "`)` token should be present",
         ));
 
-        SyntaxNode::new(SyntaxKind::ExprParen, children, start)
+        self.finish_node(SyntaxKind::ExprParen, children, start)
     }
 
     pub(crate) fn parse_block_expr(&mut self) -> SyntaxNode {
         let start = self.current_offset();
         let mut children = vec![self.bump_element("`{` token should be present")];
 
+        let items_start = self.current_offset();
+        let mut item_children = Vec::new();
         self.statement_depth += 1;
         while !self.is_eof() && !self.at(TokenKind::CloseBrace) {
-            children.push(node_element(self.parse_stmt()));
+            item_children.push(node_element(self.parse_stmt()));
         }
         self.statement_depth = self.statement_depth.saturating_sub(1);
+        let items_end = self.next_significant_offset();
+        children.push(node_element(self.finish_node_with_range(
+            SyntaxKind::BlockItemList,
+            TextRange::new(items_start, items_end),
+            item_children,
+        )));
 
         children.push(self.expect_token(
             TokenKind::CloseBrace,
@@ -797,6 +834,6 @@ impl<'a> Parser<'a> {
             "`}` token should be present",
         ));
 
-        SyntaxNode::new(SyntaxKind::Block, children, start)
+        self.finish_node(SyntaxKind::Block, children, start)
     }
 }

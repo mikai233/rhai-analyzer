@@ -57,15 +57,17 @@ impl<'a> LoweringContext<'a> {
                 });
             }
             Expr::Object(object) => {
-                for field in object.fields() {
-                    let value = field.value().map(|value| self.lower_expr(value, scope));
-                    if let Some(name) = field.name_token() {
-                        self.file.object_fields.push(ObjectFieldInfo {
-                            owner: expr_id,
-                            name: normalize_object_field_name(name.text(self.parse.text())),
-                            range: name.range(),
-                            value,
-                        });
+                if let Some(fields) = object.field_list() {
+                    for field in fields.fields() {
+                        let value = field.value().map(|value| self.lower_expr(value, scope));
+                        if let Some(name) = field.name_token() {
+                            self.file.object_fields.push(ObjectFieldInfo {
+                                owner: expr_id,
+                                name: normalize_object_field_name(name.text(self.parse.text())),
+                                range: name.range(),
+                                value,
+                            });
+                        }
                     }
                 }
             }
@@ -93,8 +95,10 @@ impl<'a> LoweringContext<'a> {
                     .scrutinee()
                     .map(|scrutinee| self.lower_expr(scrutinee, scope));
                 let mut arms = Vec::new();
-                for arm in switch_expr.arms() {
-                    arms.push(self.lower_switch_arm(arm, scope, expr_id));
+                if let Some(arm_list) = switch_expr.arm_list() {
+                    for arm in arm_list.arms() {
+                        arms.push(self.lower_switch_arm(arm, scope, expr_id));
+                    }
                 }
                 self.file.switch_exprs.push(SwitchExprInfo {
                     owner: expr_id,
@@ -251,15 +255,19 @@ impl<'a> LoweringContext<'a> {
                     None,
                 );
                 let body_id = BodyId((self.file.bodies.len() - 1) as u32);
-                for part in string.parts() {
-                    if let StringPart::Interpolation(part) = part
-                        && let Some(body) = part.body()
-                    {
-                        self.with_body(body_id, |this| {
-                            for item in body.items() {
-                                this.lower_item(item, interpolation_scope);
-                            }
-                        });
+                if let Some(parts) = string.part_list() {
+                    for part in parts.parts() {
+                        if let StringPart::Interpolation(part) = part
+                            && let Some(body) = part.body()
+                        {
+                            self.with_body(body_id, |this| {
+                                if let Some(items) = body.item_list() {
+                                    for item in items.items() {
+                                        this.lower_item(item, interpolation_scope);
+                                    }
+                                }
+                            });
+                        }
                     }
                 }
             }
@@ -515,10 +523,12 @@ impl<'a> LoweringContext<'a> {
 
     pub(crate) fn block_may_fall_through(&self, block: BlockExpr<'_>) -> bool {
         let mut may_fall_through = true;
-        for item in block.items() {
-            may_fall_through = self.item_may_fall_through(item);
-            if !may_fall_through {
-                break;
+        if let Some(items) = block.item_list() {
+            for item in items.items() {
+                may_fall_through = self.item_may_fall_through(item);
+                if !may_fall_through {
+                    break;
+                }
             }
         }
         may_fall_through
@@ -539,18 +549,20 @@ impl<'a> LoweringContext<'a> {
             Expr::Switch(switch_expr) => {
                 let mut saw_wildcard = false;
                 let mut all_arms_terminate = true;
-                for arm in switch_expr.arms() {
-                    if let Some(patterns) = arm.patterns()
-                        && patterns.wildcard_token().is_some()
-                    {
-                        saw_wildcard = true;
-                    }
+                if let Some(arm_list) = switch_expr.arm_list() {
+                    for arm in arm_list.arms() {
+                        if let Some(patterns) = arm.patterns()
+                            && patterns.wildcard_token().is_some()
+                        {
+                            saw_wildcard = true;
+                        }
 
-                    let arm_fallthrough = arm
-                        .value()
-                        .is_none_or(|expr| self.expr_may_fall_through(expr));
-                    if arm_fallthrough {
-                        all_arms_terminate = false;
+                        let arm_fallthrough = arm
+                            .value()
+                            .is_none_or(|expr| self.expr_may_fall_through(expr));
+                        if arm_fallthrough {
+                            all_arms_terminate = false;
+                        }
                     }
                 }
 

@@ -1,4 +1,4 @@
-use crate::{SyntaxKind, parse_text};
+use crate::{AstNode, Item, Root, SyntaxKind, parse_text};
 
 #[test]
 fn parses_function_items_with_private_modifier() {
@@ -6,8 +6,12 @@ fn parses_function_items_with_private_modifier() {
 
     assert!(parse.errors().is_empty(), "{}", parse.debug_tree());
 
-    let root = parse.root();
-    let item = root.children()[0].as_node().expect("expected item node");
+    let root = Root::cast(parse.root()).expect("expected root");
+    let item = root
+        .item_list()
+        .and_then(|items| items.items().next())
+        .map(Item::syntax)
+        .expect("expected item node");
     assert_eq!(item.kind(), SyntaxKind::ItemFn);
 
     let tree = parse.debug_tree();

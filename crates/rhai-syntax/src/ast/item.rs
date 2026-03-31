@@ -1,7 +1,7 @@
 use crate::ast::{
     AliasClause, AstChildren, AstNode, BlockExpr, CatchClause, ClosureParamList, FnItem, ParamList,
-    Root, Stmt, child, children, find_token, is_binding_token, is_param_token, token_by_kind,
-    token_children,
+    Root, RootItemList, Stmt, child, children, find_token, is_binding_token, is_param_token,
+    token_by_kind, token_children,
 };
 use crate::{SyntaxElement, SyntaxKind, SyntaxNode, SyntaxToken, TokenKind};
 
@@ -45,6 +45,12 @@ impl<'a> AstNode<'a> for Item<'a> {
 }
 
 impl<'a> Root<'a> {
+    pub fn item_list(self) -> Option<RootItemList<'a>> {
+        child(self.syntax)
+    }
+}
+
+impl<'a> RootItemList<'a> {
     pub fn items(self) -> AstChildren<'a, Item<'a>> {
         children(self.syntax)
     }
@@ -57,7 +63,7 @@ impl<'a> FnItem<'a> {
 
     pub fn name_token(self) -> Option<SyntaxToken> {
         let mut last_ident = None;
-        for element in self.syntax.children() {
+        for element in self.syntax.significant_children() {
             match element {
                 SyntaxElement::Node(node) if node.kind() == SyntaxKind::ParamList => break,
                 SyntaxElement::Token(token) if token.kind() == TokenKind::Ident => {
@@ -79,7 +85,7 @@ impl<'a> FnItem<'a> {
         }
 
         let mut saw_fn = false;
-        for element in self.syntax.children() {
+        for element in self.syntax.significant_children() {
             match element {
                 SyntaxElement::Token(token) if token.kind() == TokenKind::FnKw => {
                     saw_fn = true;

@@ -1,12 +1,13 @@
 use crate::ast::{
     ArgList, ArrayExpr, ArrayItemList, AssignExpr, AstChildren, AstNode, BinaryExpr, BlockExpr,
-    CallExpr, ClosureExpr, ClosureParamList, DoCondition, DoExpr, ElseBranch, ErrorNode, FieldExpr,
-    ForBindings, ForExpr, IfExpr, IndexExpr, InterpolatedStringExpr, InterpolationBody, Item,
-    LiteralExpr, LoopExpr, NameExpr, ObjectExpr, ObjectField, ParenExpr, PathExpr,
-    StringInterpolation, StringSegment, SwitchArm, SwitchExpr, SwitchPatternList, UnaryExpr,
-    WhileExpr, child, children, find_token, is_assignment_operator, is_binary_operator,
-    is_binding_token, is_literal_token, is_name_like_token, is_prefix_operator, nth_child,
-    token_by_kind, token_children,
+    BlockItemList, CallExpr, ClosureExpr, ClosureParamList, DoCondition, DoExpr, ElseBranch,
+    ErrorNode, FieldExpr, ForBindings, ForExpr, IfExpr, IndexExpr, InterpolatedStringExpr,
+    InterpolationBody, InterpolationItemList, Item, LiteralExpr, LoopExpr, NameExpr, ObjectExpr,
+    ObjectField, ObjectFieldList, ParenExpr, PathExpr, StringInterpolation, StringPartList,
+    StringSegment, SwitchArm, SwitchArmList, SwitchExpr, SwitchPatternList, UnaryExpr, WhileExpr,
+    child, children, find_token, is_assignment_operator, is_binary_operator, is_binding_token,
+    is_literal_token, is_name_like_token, is_prefix_operator, nth_child, token_by_kind,
+    token_children,
 };
 use crate::{SyntaxKind, SyntaxNode, SyntaxToken, TokenKind};
 
@@ -182,6 +183,12 @@ impl<'a> ArrayItemList<'a> {
 }
 
 impl<'a> ObjectExpr<'a> {
+    pub fn field_list(self) -> Option<ObjectFieldList<'a>> {
+        child(self.syntax)
+    }
+}
+
+impl<'a> ObjectFieldList<'a> {
     pub fn fields(self) -> AstChildren<'a, ObjectField<'a>> {
         children(self.syntax)
     }
@@ -224,6 +231,12 @@ impl<'a> SwitchExpr<'a> {
         child(self.syntax)
     }
 
+    pub fn arm_list(self) -> Option<SwitchArmList<'a>> {
+        child(self.syntax)
+    }
+}
+
+impl<'a> SwitchArmList<'a> {
     pub fn arms(self) -> AstChildren<'a, SwitchArm<'a>> {
         children(self.syntax)
     }
@@ -328,6 +341,12 @@ impl<'a> ClosureExpr<'a> {
 }
 
 impl<'a> InterpolatedStringExpr<'a> {
+    pub fn part_list(self) -> Option<StringPartList<'a>> {
+        child(self.syntax)
+    }
+}
+
+impl<'a> StringPartList<'a> {
     pub fn parts(self) -> AstChildren<'a, StringPart<'a>> {
         children(self.syntax)
     }
@@ -346,6 +365,12 @@ impl<'a> StringInterpolation<'a> {
 }
 
 impl<'a> InterpolationBody<'a> {
+    pub fn item_list(self) -> Option<InterpolationItemList<'a>> {
+        child(self.syntax)
+    }
+}
+
+impl<'a> InterpolationItemList<'a> {
     pub fn items(self) -> AstChildren<'a, Item<'a>> {
         children(self.syntax)
     }
@@ -436,6 +461,12 @@ impl<'a> FieldExpr<'a> {
 }
 
 impl<'a> BlockExpr<'a> {
+    pub fn item_list(self) -> Option<BlockItemList<'a>> {
+        child(self.syntax)
+    }
+}
+
+impl<'a> BlockItemList<'a> {
     pub fn items(self) -> AstChildren<'a, Item<'a>> {
         children(self.syntax)
     }

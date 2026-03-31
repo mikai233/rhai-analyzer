@@ -2,22 +2,27 @@ mod ast;
 mod lexer;
 mod parser;
 mod syntax;
+mod trivia;
 
 pub use ast::{
     AliasClause, ArgList, ArrayExpr, ArrayItemList, AssignExpr, AstChildren, AstNode, BinaryExpr,
-    BlockExpr, BreakStmt, CallExpr, CatchClause, ClosureExpr, ClosureParamList, ConstStmt,
-    ContinueStmt, DoCondition, DoExpr, ElseBranch, ErrorNode, ExportStmt, Expr, ExprStmt,
-    FieldExpr, FnItem, ForBindings, ForExpr, IfExpr, ImportStmt, IndexExpr, InterpolatedStringExpr,
-    InterpolationBody, Item, LetStmt, LiteralExpr, LoopExpr, NameExpr, ObjectExpr, ObjectField,
-    ParamList, ParenExpr, PathExpr, ReturnStmt, Root, Stmt, StringInterpolation, StringPart,
-    StringSegment, SwitchArm, SwitchExpr, SwitchPatternList, ThrowStmt, TryStmt, UnaryExpr,
-    WhileExpr,
+    BlockExpr, BlockItemList, BreakStmt, CallExpr, CatchClause, ClosureExpr, ClosureParamList,
+    ConstStmt, ContinueStmt, DoCondition, DoExpr, ElseBranch, ErrorNode, ExportStmt, Expr,
+    ExprStmt, FieldExpr, FnItem, ForBindings, ForExpr, IfExpr, ImportStmt, IndexExpr,
+    InterpolatedStringExpr, InterpolationBody, InterpolationItemList, Item, LetStmt, LiteralExpr,
+    LoopExpr, NameExpr, ObjectExpr, ObjectField, ObjectFieldList, ParamList, ParenExpr, PathExpr,
+    ReturnStmt, Root, RootItemList, Stmt, StringInterpolation, StringPart, StringPartList,
+    StringSegment, SwitchArm, SwitchArmList, SwitchExpr, SwitchPatternList, ThrowStmt, TryStmt,
+    UnaryExpr, WhileExpr,
 };
 pub use lexer::{Lexed, lex_text};
 pub use parser::parse_text;
 pub use syntax::{
     Parse, SyntaxElement, SyntaxError, SyntaxKind, SyntaxNode, SyntaxToken, TextRange, TextSize,
     TokenKind,
+};
+pub use trivia::{
+    AttachedComment, CommentKind, GapTrivia, TriviaBoundary, TriviaSlot, TriviaStore,
 };
 
 #[cfg(test)]

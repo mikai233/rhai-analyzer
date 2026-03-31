@@ -4,6 +4,8 @@ use std::sync::Arc;
 
 use thiserror::Error;
 
+use crate::TriviaStore;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TokenKind {
     Whitespace,          // spaces, tabs, newlines
@@ -187,14 +189,20 @@ pub enum SyntaxKind {
     ExprCall,               // function or method call expression
     ExprIndex,              // indexing / safe indexing expression
     ExprField,              // field / property access expression
+    RootItemList,           // root-level item list
+    BlockItemList,          // block item list
     ArgList,                // call argument list
     ParamList,              // function parameter list
     ClosureParamList,       // closure parameter list
     ArrayItemList,          // array element list
+    ObjectFieldList,        // object field list
     ObjectField,            // object field entry
+    SwitchArmList,          // switch arm list
+    StringPartList,         // parts inside an interpolated string
     StringSegment,          // plain text segment inside interpolation
     StringInterpolation,    // `${ ... }` interpolation segment
     InterpolationBody,      // parsed body inside `${ ... }`
+    InterpolationItemList,  // item list inside `${ ... }`
     ElseBranch,             // `else` branch
     ForBindings,            // binding list in `for`
     AliasClause,            // `as alias`
@@ -273,7 +281,60 @@ impl SyntaxNode {
     }
 
     pub fn children(&self) -> &[SyntaxElement] {
+        self.raw_children()
+    }
+
+    pub fn raw_children(&self) -> &[SyntaxElement] {
         &self.children
+    }
+
+    pub fn significant_children(&self) -> impl Iterator<Item = &SyntaxElement> {
+        self.raw_children().iter().filter(|element| match element {
+            SyntaxElement::Token(token) => !token.kind().is_trivia(),
+            SyntaxElement::Node(_) => true,
+        })
+    }
+
+    pub fn child_nodes(&self) -> impl Iterator<Item = &SyntaxNode> {
+        self.raw_children()
+            .iter()
+            .filter_map(SyntaxElement::as_node)
+    }
+
+    pub fn raw_tokens(&self) -> impl Iterator<Item = SyntaxToken> + '_ {
+        self.raw_children()
+            .iter()
+            .filter_map(SyntaxElement::as_token)
+    }
+
+    pub fn significant_tokens(&self) -> impl Iterator<Item = SyntaxToken> + '_ {
+        self.raw_tokens().filter(|token| !token.kind().is_trivia())
+    }
+
+    pub fn first_significant_token(&self) -> Option<SyntaxToken> {
+        first_significant_token_in(self)
+    }
+
+    pub fn last_significant_token(&self) -> Option<SyntaxToken> {
+        last_significant_token_in(self)
+    }
+
+    pub fn significant_range(&self) -> TextRange {
+        match (
+            self.first_significant_token(),
+            self.last_significant_token(),
+        ) {
+            (Some(first), Some(last)) => TextRange::new(first.range().start(), last.range().end()),
+            _ => self.range(),
+        }
+    }
+
+    pub fn structural_range(&self) -> TextRange {
+        let end = self
+            .last_significant_token()
+            .map(|token| token.range().end())
+            .unwrap_or_else(|| self.range().end());
+        TextRange::new(self.range().start(), end.max(self.range().start()))
     }
 }
 
@@ -305,6 +366,7 @@ impl SyntaxError {
 pub struct Parse {
     text: Arc<str>,
     tokens: Vec<SyntaxToken>,
+    trivia: TriviaStore,
     root: SyntaxNode,
     errors: Vec<SyntaxError>,
 }
@@ -316,9 +378,11 @@ impl Parse {
         root: SyntaxNode,
         errors: Vec<SyntaxError>,
     ) -> Self {
+        let trivia = TriviaStore::new(&text, &tokens);
         Self {
             text,
             tokens,
+            trivia,
             root,
             errors,
         }
@@ -334,6 +398,10 @@ impl Parse {
 
     pub fn tokens(&self) -> &[SyntaxToken] {
         &self.tokens
+    }
+
+    pub fn trivia(&self) -> &TriviaStore {
+        &self.trivia
     }
 
     pub fn errors(&self) -> &[SyntaxError] {
@@ -361,6 +429,9 @@ impl Parse {
             match child {
                 SyntaxElement::Node(node) => self.write_node(out, node, indent + 2),
                 SyntaxElement::Token(token) => {
+                    if token.kind().is_trivia() {
+                        continue;
+                    }
                     push_indent(out, indent + 2);
                     push_range(out, token.range());
                     out.push_str(&format!(
@@ -381,6 +452,9 @@ impl Parse {
             match child {
                 SyntaxElement::Node(node) => self.write_compact_node(out, node, indent + 2),
                 SyntaxElement::Token(token) => {
+                    if token.kind().is_trivia() {
+                        continue;
+                    }
                     push_indent(out, indent + 2);
                     out.push_str(&format!(
                         "{:?} {:?}\n",
@@ -419,4 +493,36 @@ fn push_range(out: &mut String, range: TextRange) {
     let start = u32::from(range.start());
     let end = u32::from(range.end());
     out.push_str(&format!("{start}..{end} "));
+}
+
+fn first_significant_token_in(node: &SyntaxNode) -> Option<SyntaxToken> {
+    for child in node.raw_children() {
+        match child {
+            SyntaxElement::Token(token) if !token.kind().is_trivia() => return Some(*token),
+            SyntaxElement::Node(child_node) => {
+                if let Some(token) = first_significant_token_in(child_node) {
+                    return Some(token);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    None
+}
+
+fn last_significant_token_in(node: &SyntaxNode) -> Option<SyntaxToken> {
+    for child in node.raw_children().iter().rev() {
+        match child {
+            SyntaxElement::Token(token) if !token.kind().is_trivia() => return Some(*token),
+            SyntaxElement::Node(child_node) => {
+                if let Some(token) = last_significant_token_in(child_node) {
+                    return Some(token);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    None
 }

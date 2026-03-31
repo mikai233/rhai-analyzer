@@ -27,7 +27,7 @@ impl<'a> Parser<'a> {
             self.parse_required_block("expected function body after parameter list"),
         ));
 
-        SyntaxNode::new(SyntaxKind::ItemFn, children, start)
+        self.finish_node(SyntaxKind::ItemFn, children, start)
     }
 
     pub(crate) fn parse_fn_name_parts(&mut self) -> Vec<crate::SyntaxElement> {
@@ -96,7 +96,7 @@ impl<'a> Parser<'a> {
             self.parse_required_block("expected block after `catch`"),
         ));
 
-        SyntaxNode::new(SyntaxKind::CatchClause, children, start)
+        self.finish_node(SyntaxKind::CatchClause, children, start)
     }
 
     pub(crate) fn parse_alias_clause(&mut self) -> SyntaxNode {
@@ -106,7 +106,7 @@ impl<'a> Parser<'a> {
             self.expect_alias_name("expected alias after `as`", "alias token should be present"),
         );
 
-        SyntaxNode::new(SyntaxKind::AliasClause, children, start)
+        self.finish_node(SyntaxKind::AliasClause, children, start)
     }
 
     pub(crate) fn parse_param_list(&mut self) -> SyntaxNode {
@@ -117,7 +117,7 @@ impl<'a> Parser<'a> {
             children.push(self.bump_element("`(` token should be present"));
         } else {
             children.push(self.missing_error("expected `(` after function name"));
-            return SyntaxNode::new(SyntaxKind::ParamList, children, start);
+            return self.finish_node(SyntaxKind::ParamList, children, start);
         }
 
         while !self.is_eof() && !self.at(TokenKind::CloseParen) {
@@ -148,7 +148,7 @@ impl<'a> Parser<'a> {
             "`)` token should be present",
         ));
 
-        SyntaxNode::new(SyntaxKind::ParamList, children, start)
+        self.finish_node(SyntaxKind::ParamList, children, start)
     }
 
     pub(crate) fn parse_closure_param_list(&mut self) -> SyntaxNode {
@@ -159,7 +159,7 @@ impl<'a> Parser<'a> {
         let mut children = vec![token_element(open)];
 
         if open.kind() == TokenKind::PipePipe {
-            return SyntaxNode::new(SyntaxKind::ClosureParamList, children, start);
+            return self.finish_node(SyntaxKind::ClosureParamList, children, start);
         }
 
         while !self.is_eof() && !self.at(TokenKind::Pipe) {
@@ -190,6 +190,6 @@ impl<'a> Parser<'a> {
             "closing `|` token should be present",
         ));
 
-        SyntaxNode::new(SyntaxKind::ClosureParamList, children, start)
+        self.finish_node(SyntaxKind::ClosureParamList, children, start)
     }
 }

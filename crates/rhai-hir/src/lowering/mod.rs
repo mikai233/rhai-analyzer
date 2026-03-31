@@ -16,8 +16,10 @@ pub fn lower_file(parse: &Parse) -> LoweredFile {
     let mut ctx = crate::lowering::ctx::LoweringContext::new(parse);
     let file_scope = ctx.new_scope(ScopeKind::File, parse.root().range(), None);
 
-    for item in root.items() {
-        ctx.lower_item(item, file_scope);
+    if let Some(items) = root.item_list() {
+        for item in items.items() {
+            ctx.lower_item(item, file_scope);
+        }
     }
 
     ctx.finish()

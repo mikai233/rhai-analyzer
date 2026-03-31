@@ -65,7 +65,7 @@ impl<'a> Parser<'a> {
 
         self.finish_statement(&mut children, false);
 
-        SyntaxNode::new(SyntaxKind::StmtLet, children, start)
+        self.finish_node(SyntaxKind::StmtLet, children, start)
     }
 
     pub(crate) fn parse_const_stmt(&mut self) -> SyntaxNode {
@@ -91,7 +91,7 @@ impl<'a> Parser<'a> {
 
         self.finish_statement(&mut children, false);
 
-        SyntaxNode::new(SyntaxKind::StmtConst, children, start)
+        self.finish_node(SyntaxKind::StmtConst, children, start)
     }
 
     pub(crate) fn parse_import_stmt(&mut self) -> SyntaxNode {
@@ -110,7 +110,7 @@ impl<'a> Parser<'a> {
 
         self.finish_statement(&mut children, false);
 
-        SyntaxNode::new(SyntaxKind::StmtImport, children, start)
+        self.finish_node(SyntaxKind::StmtImport, children, start)
     }
 
     pub(crate) fn parse_export_stmt(&mut self) -> SyntaxNode {
@@ -167,7 +167,7 @@ impl<'a> Parser<'a> {
             self.finish_statement(&mut children, false);
         }
 
-        SyntaxNode::new(SyntaxKind::StmtExport, children, start)
+        self.finish_node(SyntaxKind::StmtExport, children, start)
     }
 
     pub(crate) fn parse_value_stmt(&mut self, kind: SyntaxKind) -> SyntaxNode {
@@ -180,7 +180,7 @@ impl<'a> Parser<'a> {
 
         self.finish_statement(&mut children, false);
 
-        SyntaxNode::new(kind, children, start)
+        self.finish_node(kind, children, start)
     }
 
     pub(crate) fn parse_continue_stmt(&mut self) -> SyntaxNode {
@@ -189,7 +189,7 @@ impl<'a> Parser<'a> {
 
         self.finish_statement(&mut children, false);
 
-        SyntaxNode::new(SyntaxKind::StmtContinue, children, start)
+        self.finish_node(SyntaxKind::StmtContinue, children, start)
     }
 
     pub(crate) fn parse_try_stmt(&mut self) -> SyntaxNode {
@@ -205,7 +205,7 @@ impl<'a> Parser<'a> {
             children.push(self.missing_error("expected `catch` clause after `try`"));
         }
 
-        SyntaxNode::new(SyntaxKind::StmtTry, children, start)
+        self.finish_node(SyntaxKind::StmtTry, children, start)
     }
 
     pub(crate) fn parse_expr_stmt(&mut self) -> SyntaxNode {
@@ -216,6 +216,6 @@ impl<'a> Parser<'a> {
 
         self.finish_statement(&mut children, can_omit_semicolon_before_next);
 
-        SyntaxNode::new(SyntaxKind::StmtExpr, children, start)
+        self.finish_node(SyntaxKind::StmtExpr, children, start)
     }
 }

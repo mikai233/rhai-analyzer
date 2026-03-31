@@ -507,22 +507,24 @@ fn static_import_dependencies(importer_path: &Path, text: &str) -> Vec<PathBuf> 
     };
 
     let mut dependencies = Vec::<PathBuf>::new();
-    for item in root.items() {
-        let Item::Stmt(Stmt::Import(import_stmt)) = item else {
-            continue;
-        };
-        let Some(module_expr) = import_stmt.module() else {
-            continue;
-        };
-        let Some(module_name) = static_import_module_name(module_expr, parse.text()) else {
-            continue;
-        };
-        if let Some(path) = candidate_module_paths(importer_path, &module_name)
-            .into_iter()
-            .find(|candidate| candidate.is_file())
-            && !dependencies.iter().any(|dependency| dependency == &path)
-        {
-            dependencies.push(path);
+    if let Some(items) = root.item_list() {
+        for item in items.items() {
+            let Item::Stmt(Stmt::Import(import_stmt)) = item else {
+                continue;
+            };
+            let Some(module_expr) = import_stmt.module() else {
+                continue;
+            };
+            let Some(module_name) = static_import_module_name(module_expr, parse.text()) else {
+                continue;
+            };
+            if let Some(path) = candidate_module_paths(importer_path, &module_name)
+                .into_iter()
+                .find(|candidate| candidate.is_file())
+                && !dependencies.iter().any(|dependency| dependency == &path)
+            {
+                dependencies.push(path);
+            }
         }
     }
 

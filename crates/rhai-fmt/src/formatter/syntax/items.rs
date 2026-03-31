@@ -1,6 +1,6 @@
 use rhai_syntax::{
-    AstNode, BlockExpr, ConstStmt, ExprStmt, FnItem, ImportStmt, Item, LetStmt, Root, Stmt,
-    SyntaxElement, SyntaxToken, TokenKind,
+    AstNode, BlockExpr, BlockItemList, ConstStmt, Expr, ExprStmt, FnItem, ImportStmt, Item,
+    LetStmt, Root, RootItemList, Stmt, SyntaxElement, SyntaxToken, TokenKind, TriviaBoundary,
 };
 
 use crate::ImportSortOrder;
@@ -11,7 +11,10 @@ use crate::formatter::trivia::comments::GapSeparatorOptions;
 
 impl Formatter<'_> {
     pub(crate) fn format_root(&self, root: Root<'_>) -> Doc {
-        let items = root.items().collect::<Vec<_>>();
+        let items = root
+            .item_list()
+            .map(|items| items.items().collect::<Vec<_>>())
+            .unwrap_or_default();
         let entries = self.root_entries(&items);
         let mut parts = Vec::new();
         let mut cursor = u32::from(root.syntax().range().start()) as usize;
@@ -46,6 +49,31 @@ impl Formatter<'_> {
             parts.push(Doc::hard_line());
             Doc::concat(parts)
         }
+    }
+
+    pub(crate) fn format_root_item_list_body_doc(&self, item_list: RootItemList<'_>) -> Doc {
+        let items = item_list.items().collect::<Vec<_>>();
+        let entries = self.root_entries(&items);
+        let mut parts = Vec::new();
+        let mut cursor = u32::from(item_list.syntax().range().start()) as usize;
+
+        for (index, entry) in entries.iter().enumerate() {
+            let gap = self.comment_gap(cursor, entry.start, index > 0, true);
+            parts.push(self.gap_separator_doc(
+                &gap,
+                if index > 0 {
+                    root_item_separator_min_newlines(entries[index - 1].kind, entry.kind)
+                } else {
+                    1
+                },
+                index > 0,
+                true,
+            ));
+            parts.push(entry.doc.clone());
+            cursor = entry.end;
+        }
+
+        Doc::concat(parts)
     }
 
     fn root_entries(&self, items: &[Item<'_>]) -> Vec<RootEntry> {
@@ -133,16 +161,12 @@ impl Formatter<'_> {
             let [left, right] = pair else {
                 return true;
             };
-            let between = &self.source[u32::from(left.syntax().range().end()) as usize
-                ..u32::from(right.syntax().range().start()) as usize];
-            between.chars().all(char::is_whitespace)
+            self.is_whitespace_only_between_nodes(left.syntax(), right.syntax())
         })
     }
 
     fn import_boundary_starts_new_group(&self, left: Item<'_>, right: Item<'_>) -> bool {
-        let between = &self.source[u32::from(left.syntax().range().end()) as usize
-            ..u32::from(right.syntax().range().start()) as usize];
-        between.matches('\n').count() >= 2
+        self.has_blank_line_between_nodes(left.syntax(), right.syntax())
     }
 
     pub(crate) fn format_item(&self, item: Item<'_>, indent: usize) -> Doc {
@@ -389,20 +413,26 @@ impl Formatter<'_> {
 
         let mut tail_parts = vec![self.format_expr_doc(module, indent)];
         if let Some(alias) = import_stmt.alias() {
-            tail_parts.push(self.space_or_tight_statement_gap_doc(
-                range_end(module.syntax().range()),
-                range_start(alias.syntax().range()),
-            ));
+            let (start, end) = self.range_after_node_before_node(module.syntax(), alias.syntax());
+            tail_parts.push(self.space_or_tight_statement_gap_doc(start, end));
             tail_parts.push(self.format_alias_clause_doc(alias));
         }
         let tail = Doc::concat(tail_parts);
         let module_start = range_start(module.syntax().range());
-        let keyword_end = self
-            .token_range(import_stmt.syntax(), TokenKind::ImportKw)
-            .map(range_end)
-            .unwrap_or(module_start);
+        let Some(import_kw) = import_stmt
+            .syntax()
+            .significant_tokens()
+            .find(|token| token.kind() == TokenKind::ImportKw)
+        else {
+            return Doc::concat(vec![
+                Doc::text("import"),
+                Doc::text(" "),
+                tail,
+                Doc::text(";"),
+            ]);
+        };
 
-        if !self.range_has_comments(keyword_end, module_start)
+        if !self.has_comments_after_token_before_node(import_kw, module.syntax())
             && self.statement_tail_renders_single_line(&tail, indent)
         {
             return Doc::group(Doc::concat(vec![
@@ -414,7 +444,7 @@ impl Formatter<'_> {
 
         Doc::concat(vec![
             Doc::text("import"),
-            self.space_or_tight_statement_gap_doc(keyword_end, module_start),
+            self.space_or_tight_statement_gap_doc(range_end(import_kw.range()), module_start),
             tail,
             Doc::text(";"),
         ])
@@ -428,12 +458,15 @@ impl Formatter<'_> {
         if let Some(declaration) = export_stmt.declaration() {
             let declaration_doc = self.format_stmt(declaration, indent);
             let declaration_start = range_start(declaration.syntax().range());
-            let keyword_end = self
-                .token_range(export_stmt.syntax(), TokenKind::ExportKw)
-                .map(range_end)
-                .unwrap_or(declaration_start);
+            let Some(export_kw) = export_stmt
+                .syntax()
+                .significant_tokens()
+                .find(|token| token.kind() == TokenKind::ExportKw)
+            else {
+                return Doc::concat(vec![Doc::text("export "), declaration_doc]);
+            };
 
-            if !self.range_has_comments(keyword_end, declaration_start)
+            if !self.has_comments_after_token_before_node(export_kw, declaration.syntax())
                 && self.statement_tail_renders_single_line(&declaration_doc, indent)
             {
                 return Doc::group(Doc::concat(vec![
@@ -444,26 +477,31 @@ impl Formatter<'_> {
 
             return Doc::concat(vec![
                 Doc::text("export"),
-                self.space_or_tight_statement_gap_doc(keyword_end, declaration_start),
+                self.space_or_tight_statement_gap_doc(
+                    range_end(export_kw.range()),
+                    declaration_start,
+                ),
                 declaration_doc,
             ]);
         } else if let Some(target) = export_stmt.target() {
             let mut tail_parts = vec![self.format_expr_doc(target, indent)];
             if let Some(alias) = export_stmt.alias() {
-                tail_parts.push(self.space_or_tight_statement_gap_doc(
-                    range_end(target.syntax().range()),
-                    range_start(alias.syntax().range()),
-                ));
+                let (start, end) =
+                    self.range_after_node_before_node(target.syntax(), alias.syntax());
+                tail_parts.push(self.space_or_tight_statement_gap_doc(start, end));
                 tail_parts.push(self.format_alias_clause_doc(alias));
             }
             let tail = Doc::concat(tail_parts);
             let target_start = range_start(target.syntax().range());
-            let keyword_end = self
-                .token_range(export_stmt.syntax(), TokenKind::ExportKw)
-                .map(range_end)
-                .unwrap_or(target_start);
+            let Some(export_kw) = export_stmt
+                .syntax()
+                .significant_tokens()
+                .find(|token| token.kind() == TokenKind::ExportKw)
+            else {
+                return Doc::concat(vec![Doc::text("export "), tail, Doc::text(";")]);
+            };
 
-            if !self.range_has_comments(keyword_end, target_start)
+            if !self.has_comments_after_token_before_node(export_kw, target.syntax())
                 && self.statement_tail_renders_single_line(&tail, indent)
             {
                 return Doc::group(Doc::concat(vec![
@@ -475,7 +513,7 @@ impl Formatter<'_> {
 
             return Doc::concat(vec![
                 Doc::text("export"),
-                self.space_or_tight_statement_gap_doc(keyword_end, target_start),
+                self.space_or_tight_statement_gap_doc(range_end(export_kw.range()), target_start),
                 tail,
                 Doc::text(";"),
             ]);
@@ -499,7 +537,10 @@ impl Formatter<'_> {
     }
 
     pub(crate) fn format_block_doc(&self, block: BlockExpr<'_>, indent: usize) -> Doc {
-        let items = block.items().collect::<Vec<_>>();
+        let items = block
+            .item_list()
+            .map(|items| items.items().collect::<Vec<_>>())
+            .unwrap_or_default();
         let open_brace_end = self
             .token_range(block.syntax(), TokenKind::OpenBrace)
             .map(|range| u32::from(range.end()) as usize)
@@ -574,6 +615,26 @@ impl Formatter<'_> {
         ])
     }
 
+    pub(crate) fn format_block_item_list_body_doc(
+        &self,
+        item_list: BlockItemList<'_>,
+        indent: usize,
+    ) -> Doc {
+        let items = item_list.items().collect::<Vec<_>>();
+        let mut body_parts = Vec::new();
+        let mut cursor = u32::from(item_list.syntax().range().start()) as usize;
+
+        for (index, item) in items.iter().enumerate() {
+            let item_start = u32::from(item.syntax().range().start()) as usize;
+            let gap = self.comment_gap(cursor, item_start, index > 0, true);
+            body_parts.push(self.gap_separator_doc(&gap, 1, index > 0, true));
+            body_parts.push(self.format_item(*item, indent));
+            cursor = u32::from(item.syntax().range().end()) as usize;
+        }
+
+        Doc::concat(body_parts)
+    }
+
     fn item_requires_raw_fallback(&self, item: Item<'_>) -> bool {
         match item {
             Item::Fn(function) => self.function_requires_raw_fallback(function),
@@ -590,24 +651,21 @@ impl Formatter<'_> {
             Stmt::Const(const_stmt) => self.const_stmt_requires_raw_fallback(const_stmt),
             Stmt::Break(break_stmt) => self.value_stmt_requires_raw_fallback(
                 stmt.syntax(),
-                self.token_range(stmt.syntax(), TokenKind::BreakKw)
-                    .map(range_end),
-                break_stmt.value().map(|expr| expr.syntax().range()),
+                self.token(stmt.syntax(), TokenKind::BreakKw),
+                break_stmt.value(),
                 break_stmt.value().is_some(),
             ),
             Stmt::Continue(_) => self.continue_stmt_requires_raw_fallback(stmt.syntax()),
             Stmt::Return(return_stmt) => self.value_stmt_requires_raw_fallback(
                 stmt.syntax(),
-                self.token_range(stmt.syntax(), TokenKind::ReturnKw)
-                    .map(range_end),
-                return_stmt.value().map(|expr| expr.syntax().range()),
+                self.token(stmt.syntax(), TokenKind::ReturnKw),
+                return_stmt.value(),
                 return_stmt.value().is_some(),
             ),
             Stmt::Throw(throw_stmt) => self.value_stmt_requires_raw_fallback(
                 stmt.syntax(),
-                self.token_range(stmt.syntax(), TokenKind::ThrowKw)
-                    .map(range_end),
-                throw_stmt.value().map(|expr| expr.syntax().range()),
+                self.token(stmt.syntax(), TokenKind::ThrowKw),
+                throw_stmt.value(),
                 throw_stmt.value().is_some(),
             ),
             Stmt::Expr(expr_stmt) => self.expr_stmt_requires_raw_fallback(expr_stmt),
@@ -646,123 +704,102 @@ impl Formatter<'_> {
         let Some(params) = function.params() else {
             return self.node_has_unowned_comments(function.syntax());
         };
-        let params_end = u32::from(params.syntax().range().end()) as usize;
         let signature_tokens = self.function_signature_tokens(function);
-        let params_start = u32::from(params.syntax().range().start()) as usize;
-        let mut allowed_ranges = signature_tokens
+        let mut allowed_boundaries = signature_tokens
             .windows(2)
-            .map(|pair| (range_end(pair[0].range()), range_start(pair[1].range())))
+            .map(|pair| TriviaBoundary::TokenToken(pair[0], pair[1]))
             .collect::<Vec<_>>();
         if let Some(last_token) = signature_tokens.last().copied() {
-            allowed_ranges.push((range_end(last_token.range()), params_start));
+            allowed_boundaries.push(TriviaBoundary::TokenNode(last_token, params.syntax()));
         }
         if let Some(body) = function.body() {
-            allowed_ranges.push((
-                params_end,
-                u32::from(body.syntax().range().start()) as usize,
-            ));
+            allowed_boundaries.push(TriviaBoundary::NodeNode(params.syntax(), body.syntax()));
         }
 
-        self.node_has_unowned_comments_outside(function.syntax(), &allowed_ranges)
+        self.node_has_unowned_comments_outside_boundaries(function.syntax(), &allowed_boundaries)
     }
 
     fn try_stmt_requires_raw_fallback(&self, try_stmt: rhai_syntax::TryStmt<'_>) -> bool {
-        let body_start = try_stmt
-            .body()
-            .map(|body| u32::from(body.syntax().range().start()) as usize)
-            .unwrap_or_else(|| u32::from(try_stmt.syntax().range().end()) as usize);
-        let body_end = try_stmt
-            .body()
-            .map(|body| u32::from(body.syntax().range().end()) as usize)
-            .unwrap_or(body_start);
-        let try_kw_end = self
-            .token_range(try_stmt.syntax(), TokenKind::TryKw)
-            .map(range_end)
-            .unwrap_or(body_start);
+        let Some(body) = try_stmt.body() else {
+            return self.node_has_unowned_comments(try_stmt.syntax());
+        };
+        let Some(try_kw) = self.token(try_stmt.syntax(), TokenKind::TryKw) else {
+            return self.node_has_unowned_comments(try_stmt.syntax());
+        };
 
-        let mut allowed_ranges = vec![(try_kw_end, body_start)];
+        let mut allowed_boundaries = vec![TriviaBoundary::TokenNode(try_kw, body.syntax())];
         if let Some(catch_clause) = try_stmt.catch_clause() {
-            let catch_start = self
-                .token_range(catch_clause.syntax(), TokenKind::CatchKw)
-                .map(range_start)
-                .unwrap_or_else(|| u32::from(catch_clause.syntax().range().start()) as usize);
-            allowed_ranges.push((body_end, catch_start));
+            allowed_boundaries.push(TriviaBoundary::NodeNode(
+                body.syntax(),
+                catch_clause.syntax(),
+            ));
 
             if self.catch_clause_requires_raw_fallback(catch_clause) {
                 return true;
             }
         }
 
-        self.node_has_unowned_comments_outside(try_stmt.syntax(), &allowed_ranges)
+        self.node_has_unowned_comments_outside_boundaries(try_stmt.syntax(), &allowed_boundaries)
     }
 
     fn catch_clause_requires_raw_fallback(
         &self,
         catch_clause: rhai_syntax::CatchClause<'_>,
     ) -> bool {
-        let body_start = catch_clause
-            .body()
-            .map(|body| u32::from(body.syntax().range().start()) as usize)
-            .unwrap_or_else(|| u32::from(catch_clause.syntax().range().end()) as usize);
-        let catch_head_end = self
-            .token_range(catch_clause.syntax(), TokenKind::CloseParen)
-            .map(range_end)
-            .or_else(|| {
-                self.token_range(catch_clause.syntax(), TokenKind::CatchKw)
-                    .map(range_end)
-            })
-            .unwrap_or(body_start);
+        let Some(body) = catch_clause.body() else {
+            return self.node_has_unowned_comments(catch_clause.syntax());
+        };
+        let Some(catch_head_token) = self
+            .token(catch_clause.syntax(), TokenKind::CloseParen)
+            .or_else(|| self.token(catch_clause.syntax(), TokenKind::CatchKw))
+        else {
+            return self.node_has_unowned_comments(catch_clause.syntax());
+        };
 
-        self.node_has_unowned_comments_outside(
+        self.node_has_unowned_comments_outside_boundaries(
             catch_clause.syntax(),
-            &[(catch_head_end, body_start)],
+            &[TriviaBoundary::TokenNode(catch_head_token, body.syntax())],
         )
     }
 
     fn import_stmt_requires_raw_fallback(&self, import_stmt: ImportStmt<'_>) -> bool {
-        let mut allowed_ranges = Vec::new();
+        let mut allowed_boundaries = Vec::new();
         if let (Some(module), Some(alias)) = (import_stmt.module(), import_stmt.alias()) {
-            allowed_ranges.push((
-                range_end(module.syntax().range()),
-                range_start(alias.syntax().range()),
-            ));
+            allowed_boundaries.push(TriviaBoundary::NodeNode(module.syntax(), alias.syntax()));
             if self.alias_clause_requires_raw_fallback(alias) {
                 return true;
             }
         }
 
-        self.node_has_unowned_comments_outside(import_stmt.syntax(), &allowed_ranges)
+        self.node_has_unowned_comments_outside_boundaries(import_stmt.syntax(), &allowed_boundaries)
     }
 
     fn export_stmt_requires_raw_fallback(&self, export_stmt: rhai_syntax::ExportStmt<'_>) -> bool {
-        let mut allowed_ranges = Vec::new();
+        let mut allowed_boundaries = Vec::new();
         if let Some(alias) = export_stmt.alias() {
             if self.alias_clause_requires_raw_fallback(alias) {
                 return true;
             }
 
             if let Some(target) = export_stmt.target() {
-                allowed_ranges.push((
-                    range_end(target.syntax().range()),
-                    range_start(alias.syntax().range()),
-                ));
+                allowed_boundaries.push(TriviaBoundary::NodeNode(target.syntax(), alias.syntax()));
             }
         }
 
-        self.node_has_unowned_comments_outside(export_stmt.syntax(), &allowed_ranges)
+        self.node_has_unowned_comments_outside_boundaries(export_stmt.syntax(), &allowed_boundaries)
     }
 
     fn alias_clause_requires_raw_fallback(&self, alias: rhai_syntax::AliasClause<'_>) -> bool {
-        let Some(as_range) = self.token_range(alias.syntax(), TokenKind::AsKw) else {
+        let Some(as_token) = self.token(alias.syntax(), TokenKind::AsKw) else {
             return self.node_has_unowned_comments(alias.syntax());
         };
         let Some(alias_name) = alias.alias_token() else {
             return self.node_has_unowned_comments(alias.syntax());
         };
 
-        self.node_has_unowned_comments_outside(
+        self.node_has_unowned_comments_outside_boundaries(
             alias.syntax(),
-            &[(range_end(as_range), range_start(alias_name.range()))],
+            &[TriviaBoundary::TokenToken(as_token, alias_name)],
         )
     }
 
@@ -770,7 +807,7 @@ impl Formatter<'_> {
         self.assignment_stmt_requires_raw_fallback(
             let_stmt.syntax(),
             name_or_stmt_end(let_stmt.name_token(), let_stmt.syntax()),
-            let_stmt.initializer().map(|expr| expr.syntax().range()),
+            let_stmt.initializer(),
             let_stmt.initializer().is_some(),
         )
     }
@@ -779,7 +816,7 @@ impl Formatter<'_> {
         self.assignment_stmt_requires_raw_fallback(
             const_stmt.syntax(),
             name_or_stmt_end(const_stmt.name_token(), const_stmt.syntax()),
-            const_stmt.value().map(|expr| expr.syntax().range()),
+            const_stmt.value(),
             const_stmt.value().is_some(),
         )
     }
@@ -788,18 +825,19 @@ impl Formatter<'_> {
         &self,
         stmt: &rhai_syntax::SyntaxNode,
         head_end_range: rhai_syntax::TextRange,
-        value_range: Option<rhai_syntax::TextRange>,
+        value_expr: Option<Expr<'_>>,
         has_value: bool,
     ) -> bool {
-        let Some(eq_range) = self.token_range(stmt, TokenKind::Eq) else {
+        let Some(eq_token) = self.token(stmt, TokenKind::Eq) else {
             return self.node_has_unowned_comments(stmt);
         };
 
-        let mut allowed_ranges = vec![(range_end(head_end_range), range_start(eq_range))];
-        if let Some(value_range) = value_range {
-            allowed_ranges.push((range_end(eq_range), range_start(value_range)));
-            if let Some(semicolon_range) = self.token_range(stmt, TokenKind::Semicolon) {
-                allowed_ranges.push((range_end(value_range), range_start(semicolon_range)));
+        let mut allowed_ranges = vec![(range_end(head_end_range), range_start(eq_token.range()))];
+        if let Some(value_expr) = value_expr {
+            allowed_ranges.push(self.range_after_token_before_node(eq_token, value_expr.syntax()));
+            if let Some(semicolon_token) = self.token(stmt, TokenKind::Semicolon) {
+                allowed_ranges
+                    .push(self.range_after_node_before_token(value_expr.syntax(), semicolon_token));
             }
         } else if has_value {
             return self.node_has_unowned_comments(stmt);
@@ -811,45 +849,54 @@ impl Formatter<'_> {
     fn value_stmt_requires_raw_fallback(
         &self,
         stmt: &rhai_syntax::SyntaxNode,
-        keyword_end: Option<usize>,
-        value_range: Option<rhai_syntax::TextRange>,
+        keyword_token: Option<SyntaxToken>,
+        value_expr: Option<Expr<'_>>,
         has_value: bool,
     ) -> bool {
-        let mut allowed_ranges = Vec::new();
-        if let (Some(keyword_end), Some(value_range)) = (keyword_end, value_range) {
-            allowed_ranges.push((keyword_end, range_start(value_range)));
-            if let Some(semicolon_range) = self.token_range(stmt, TokenKind::Semicolon) {
-                allowed_ranges.push((range_end(value_range), range_start(semicolon_range)));
+        let mut allowed_boundaries = Vec::new();
+        if let (Some(keyword_token), Some(value_expr)) = (keyword_token, value_expr) {
+            allowed_boundaries.push(TriviaBoundary::TokenNode(
+                keyword_token,
+                value_expr.syntax(),
+            ));
+            if let Some(semicolon_token) = self.token(stmt, TokenKind::Semicolon) {
+                allowed_boundaries.push(TriviaBoundary::NodeToken(
+                    value_expr.syntax(),
+                    semicolon_token,
+                ));
             }
         } else if has_value {
             return self.node_has_unowned_comments(stmt);
         }
 
-        self.node_has_unowned_comments_outside(stmt, &allowed_ranges)
+        self.node_has_unowned_comments_outside_boundaries(stmt, &allowed_boundaries)
     }
 
     fn expr_stmt_requires_raw_fallback(&self, expr_stmt: ExprStmt<'_>) -> bool {
-        let Some(expr_range) = expr_stmt.expr().map(|expr| expr.syntax().range()) else {
+        let Some(expr) = expr_stmt.expr() else {
             return self.node_has_unowned_comments(expr_stmt.syntax());
         };
 
-        let mut allowed_ranges = Vec::new();
-        if let Some(semicolon_range) = self.token_range(expr_stmt.syntax(), TokenKind::Semicolon) {
-            allowed_ranges.push((range_end(expr_range), range_start(semicolon_range)));
+        let mut allowed_boundaries = Vec::new();
+        if let Some(semicolon_token) = self.token(expr_stmt.syntax(), TokenKind::Semicolon) {
+            allowed_boundaries.push(TriviaBoundary::NodeToken(expr.syntax(), semicolon_token));
         }
 
-        self.node_has_unowned_comments_outside(expr_stmt.syntax(), &allowed_ranges)
+        self.node_has_unowned_comments_outside_boundaries(expr_stmt.syntax(), &allowed_boundaries)
     }
 
     fn continue_stmt_requires_raw_fallback(&self, stmt: &rhai_syntax::SyntaxNode) -> bool {
-        let Some(keyword_end) = self.token_range(stmt, TokenKind::ContinueKw).map(range_end) else {
+        let Some(keyword_token) = self.token(stmt, TokenKind::ContinueKw) else {
             return self.node_has_unowned_comments(stmt);
         };
-        let Some(semicolon_range) = self.token_range(stmt, TokenKind::Semicolon) else {
+        let Some(semicolon_token) = self.token(stmt, TokenKind::Semicolon) else {
             return self.node_has_unowned_comments(stmt);
         };
 
-        self.node_has_unowned_comments_outside(stmt, &[(keyword_end, range_start(semicolon_range))])
+        self.node_has_unowned_comments_outside_boundaries(
+            stmt,
+            &[TriviaBoundary::TokenToken(keyword_token, semicolon_token)],
+        )
     }
 
     fn format_assignment_statement_doc(
@@ -955,18 +1002,15 @@ impl Formatter<'_> {
     }
 
     fn function_params_separator_doc(&self, function: FnItem<'_>) -> Doc {
-        let Some(params_start) = function
-            .params()
-            .map(|params| range_start(params.syntax().range()))
-        else {
+        let Some(params) = function.params() else {
             return Doc::nil();
         };
         let Some(last_token) = self.function_signature_tokens(function).last().copied() else {
             return Doc::nil();
         };
 
-        if self.range_has_comments(range_end(last_token.range()), params_start) {
-            self.tight_comment_gap_doc(range_end(last_token.range()), params_start)
+        if self.has_comments_after_token_before_node(last_token, params.syntax()) {
+            self.tight_comment_gap_after_token_before_node(last_token, params.syntax())
         } else {
             Doc::nil()
         }
@@ -975,7 +1019,7 @@ impl Formatter<'_> {
     fn function_signature_tokens(&self, function: FnItem<'_>) -> Vec<SyntaxToken> {
         let mut tokens = Vec::new();
 
-        for child in function.syntax().children() {
+        for child in function.syntax().significant_children() {
             match child {
                 SyntaxElement::Node(node) if node.kind() == rhai_syntax::SyntaxKind::ParamList => {
                     break;
@@ -1012,14 +1056,18 @@ impl Formatter<'_> {
         let Some(alias_name) = alias.alias_token() else {
             return Doc::text(self.raw(alias.syntax()));
         };
-        let Some(as_range) = self.token_range(alias.syntax(), TokenKind::AsKw) else {
+        let Some(as_token) = alias
+            .syntax()
+            .significant_tokens()
+            .find(|token| token.kind() == TokenKind::AsKw)
+        else {
             return Doc::text(self.raw(alias.syntax()));
         };
 
         Doc::concat(vec![
             Doc::text("as"),
             self.space_or_tight_statement_gap_doc(
-                range_end(as_range),
+                range_end(as_token.range()),
                 range_start(alias_name.range()),
             ),
             Doc::text(alias_name.text(self.source)),

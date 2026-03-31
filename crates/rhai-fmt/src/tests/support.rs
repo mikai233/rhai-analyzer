@@ -23,7 +23,9 @@ fn run() {
     let parse = parse_text(source);
     let root = Root::cast(parse.root()).expect("expected root");
     let function = root
-        .items()
+        .item_list()
+        .into_iter()
+        .flat_map(|items| items.items())
         .find_map(|item| match item {
             Item::Fn(function) => Some(function),
             Item::Stmt(_) => None,
@@ -32,7 +34,9 @@ fn run() {
     let body = function.body().expect("expected function body");
 
     let levels = body
-        .items()
+        .item_list()
+        .into_iter()
+        .flat_map(|items| items.items())
         .filter_map(|item| match item {
             Item::Stmt(Stmt::Expr(expr_stmt)) => expr_stmt.expr(),
             _ => None,
@@ -115,7 +119,10 @@ let root_value = compute();
 
     let parse = parse_text(source);
     let root = Root::cast(parse.root()).expect("expected root");
-    let items = root.items().collect::<Vec<_>>();
+    let items = root
+        .item_list()
+        .map(|items| items.items().collect::<Vec<_>>())
+        .unwrap_or_default();
 
     assert!(matches!(items[0], Item::Fn(_)));
     assert_eq!(item_support(items[0]).level, FormatSupportLevel::Structural);
@@ -128,12 +135,17 @@ let root_value = compute();
     };
     let body = function.body().expect("expected function body");
     let body_statements = body
-        .items()
-        .filter_map(|item| match item {
-            Item::Stmt(stmt) => Some(stmt),
-            Item::Fn(_) => None,
+        .item_list()
+        .map(|items| {
+            items
+                .items()
+                .filter_map(|item| match item {
+                    Item::Stmt(stmt) => Some(stmt),
+                    Item::Fn(_) => None,
+                })
+                .collect::<Vec<_>>()
         })
-        .collect::<Vec<_>>();
+        .unwrap_or_default();
 
     assert!(matches!(body_statements[0], Stmt::Let(_)));
     assert_eq!(

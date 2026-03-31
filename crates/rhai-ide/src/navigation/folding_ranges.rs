@@ -17,8 +17,10 @@ pub(crate) fn folding_ranges(snapshot: &DatabaseSnapshot, file_id: FileId) -> Ve
         return ranges;
     };
 
-    for item in root.items() {
-        collect_item_folding_ranges(item, &mut ranges);
+    if let Some(items) = root.item_list() {
+        for item in items.items() {
+            collect_item_folding_ranges(item, &mut ranges);
+        }
     }
 
     ranges.sort_by_key(|range| (u32::from(range.range.start()), u32::from(range.range.end())));
@@ -193,13 +195,17 @@ fn collect_expr_folding_ranges(expr: Expr<'_>, ranges: &mut Vec<FoldingRange>) {
         }
         Expr::InterpolatedString(string) => {
             push_region_range(ranges, string.syntax().range());
-            for part in string.parts() {
-                if let rhai_syntax::StringPart::Interpolation(interpolation) = part
-                    && let Some(body) = interpolation.body()
-                {
-                    push_region_range(ranges, body.syntax().range());
-                    for item in body.items() {
-                        collect_item_folding_ranges(item, ranges);
+            if let Some(parts) = string.part_list() {
+                for part in parts.parts() {
+                    if let rhai_syntax::StringPart::Interpolation(interpolation) = part
+                        && let Some(body) = interpolation.body()
+                    {
+                        push_region_range(ranges, body.syntax().range());
+                        if let Some(items) = body.item_list() {
+                            for item in items.items() {
+                                collect_item_folding_ranges(item, ranges);
+                            }
+                        }
                     }
                 }
             }
@@ -278,9 +284,11 @@ fn collect_array_folding_ranges(array: ArrayExpr<'_>, ranges: &mut Vec<FoldingRa
 fn collect_object_folding_ranges(object: ObjectExpr<'_>, ranges: &mut Vec<FoldingRange>) {
     push_region_range(ranges, object.syntax().range());
 
-    for field in object.fields() {
-        if let Some(value) = field.value() {
-            collect_expr_folding_ranges(value, ranges);
+    if let Some(fields) = object.field_list() {
+        for field in fields.fields() {
+            if let Some(value) = field.value() {
+                collect_expr_folding_ranges(value, ranges);
+            }
         }
     }
 }
@@ -306,15 +314,17 @@ fn collect_switch_folding_ranges(switch_expr: SwitchExpr<'_>, ranges: &mut Vec<F
         collect_expr_folding_ranges(scrutinee, ranges);
     }
 
-    for arm in switch_expr.arms() {
-        push_region_range(ranges, arm.syntax().range());
-        if let Some(patterns) = arm.patterns() {
-            for pattern in patterns.exprs() {
-                collect_expr_folding_ranges(pattern, ranges);
+    if let Some(arm_list) = switch_expr.arm_list() {
+        for arm in arm_list.arms() {
+            push_region_range(ranges, arm.syntax().range());
+            if let Some(patterns) = arm.patterns() {
+                for pattern in patterns.exprs() {
+                    collect_expr_folding_ranges(pattern, ranges);
+                }
             }
-        }
-        if let Some(value) = arm.value() {
-            collect_expr_folding_ranges(value, ranges);
+            if let Some(value) = arm.value() {
+                collect_expr_folding_ranges(value, ranges);
+            }
         }
     }
 }
@@ -344,8 +354,10 @@ fn collect_for_folding_ranges(for_expr: ForExpr<'_>, ranges: &mut Vec<FoldingRan
 fn collect_block_folding_ranges(block: BlockExpr<'_>, ranges: &mut Vec<FoldingRange>) {
     push_region_range(ranges, block.syntax().range());
 
-    for item in block.items() {
-        collect_item_folding_ranges(item, ranges);
+    if let Some(items) = block.item_list() {
+        for item in items.items() {
+            collect_item_folding_ranges(item, ranges);
+        }
     }
 }
 

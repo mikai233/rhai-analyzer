@@ -252,7 +252,15 @@ impl<'a> LoweringContext<'a> {
         let mut terminated = false;
         let mut may_fall_through = true;
         let mut tail_value = None;
-        for item in block.items() {
+        let Some(items) = block.item_list() else {
+            if let Some(body) = self.current_body_mut() {
+                body.may_fall_through = true;
+                body.tail_value = None;
+            }
+            return;
+        };
+
+        for item in items.items() {
             if terminated && let Some(body) = self.current_body_mut() {
                 body.unreachable_ranges.push(item.syntax().range());
             }

@@ -17,7 +17,7 @@ pub struct AstChildren<'a, N> {
 impl<'a, N> AstChildren<'a, N> {
     pub(crate) fn new(node: &'a SyntaxNode) -> Self {
         Self {
-            inner: node.children().iter(),
+            inner: node.raw_children().iter(),
             marker: PhantomData,
         }
     }
@@ -59,6 +59,7 @@ macro_rules! simple_ast_node {
 }
 
 simple_ast_node!(Root, SyntaxKind::Root);
+simple_ast_node!(RootItemList, SyntaxKind::RootItemList);
 simple_ast_node!(FnItem, SyntaxKind::ItemFn);
 simple_ast_node!(LetStmt, SyntaxKind::StmtLet);
 simple_ast_node!(ConstStmt, SyntaxKind::StmtConst);
@@ -94,10 +95,14 @@ simple_ast_node!(ArgList, SyntaxKind::ArgList);
 simple_ast_node!(ParamList, SyntaxKind::ParamList);
 simple_ast_node!(ClosureParamList, SyntaxKind::ClosureParamList);
 simple_ast_node!(ArrayItemList, SyntaxKind::ArrayItemList);
+simple_ast_node!(ObjectFieldList, SyntaxKind::ObjectFieldList);
 simple_ast_node!(ObjectField, SyntaxKind::ObjectField);
+simple_ast_node!(SwitchArmList, SyntaxKind::SwitchArmList);
+simple_ast_node!(StringPartList, SyntaxKind::StringPartList);
 simple_ast_node!(StringSegment, SyntaxKind::StringSegment);
 simple_ast_node!(StringInterpolation, SyntaxKind::StringInterpolation);
 simple_ast_node!(InterpolationBody, SyntaxKind::InterpolationBody);
+simple_ast_node!(InterpolationItemList, SyntaxKind::InterpolationItemList);
 simple_ast_node!(ElseBranch, SyntaxKind::ElseBranch);
 simple_ast_node!(ForBindings, SyntaxKind::ForBindings);
 simple_ast_node!(AliasClause, SyntaxKind::AliasClause);
@@ -106,6 +111,7 @@ simple_ast_node!(SwitchPatternList, SyntaxKind::SwitchPatternList);
 simple_ast_node!(DoCondition, SyntaxKind::DoCondition);
 simple_ast_node!(CatchClause, SyntaxKind::CatchClause);
 simple_ast_node!(BlockExpr, SyntaxKind::Block);
+simple_ast_node!(BlockItemList, SyntaxKind::BlockItemList);
 simple_ast_node!(ErrorNode, SyntaxKind::Error);
 
 mod expr;
@@ -138,7 +144,7 @@ where
 }
 
 pub(crate) fn token_children(node: &SyntaxNode) -> impl Iterator<Item = SyntaxToken> + '_ {
-    node.children().iter().filter_map(SyntaxElement::as_token)
+    node.significant_tokens()
 }
 
 pub(crate) fn token_by_kind(node: &SyntaxNode, kind: TokenKind) -> Option<SyntaxToken> {

@@ -1,16 +1,17 @@
 use rhai_syntax::{
     ArgList, ArrayExpr, ArrayItemList, AstNode, BinaryExpr, CallExpr, ClosureExpr,
     ClosureParamList, DoCondition, DoExpr, ElseBranch, Expr, FieldExpr, ForBindings, ForExpr,
-    IfExpr, IndexExpr, InterpolatedStringExpr, LoopExpr, ObjectExpr, ObjectField, ParamList,
-    ParenExpr, PathExpr, StringPart, SwitchArm, SwitchExpr, SwitchPatternList, SyntaxNode,
-    TextRange, TokenKind, WhileExpr,
+    GapTrivia, IfExpr, IndexExpr, InterpolatedStringExpr, InterpolationItemList, LoopExpr,
+    ObjectExpr, ObjectField, ObjectFieldList, ParamList, ParenExpr, PathExpr, StringPart,
+    StringPartList, SwitchArm, SwitchArmList, SwitchExpr, SwitchPatternList, SyntaxNode, TextRange,
+    TokenKind, TriviaBoundary, WhileExpr,
 };
 
 use crate::ContainerLayoutStyle;
 use crate::formatter::Formatter;
 use crate::formatter::layout::doc::Doc;
 use crate::formatter::support::coverage::{FormatSupportLevel, expr_support};
-use crate::formatter::trivia::comments::{GapSeparatorOptions, GapTrivia};
+use crate::formatter::trivia::comments::GapSeparatorOptions;
 
 impl Formatter<'_> {
     pub(crate) fn format_expr_doc(&self, expr: Expr<'_>, indent: usize) -> Doc {
@@ -71,12 +72,16 @@ impl Formatter<'_> {
             Expr::Closure(closure) => self.closure_requires_raw_fallback(closure),
             Expr::InterpolatedString(string) => {
                 self.node_has_unowned_comments(expr.syntax())
-                    || string.parts().any(|part| match part {
-                        StringPart::Segment(_) => false,
-                        StringPart::Interpolation(interpolation) => interpolation
-                            .body()
-                            .is_some_and(|body| self.node_has_unowned_comments(body.syntax())),
-                    })
+                    || string
+                        .part_list()
+                        .into_iter()
+                        .flat_map(|parts| parts.parts())
+                        .any(|part| match part {
+                            StringPart::Segment(_) => false,
+                            StringPart::Interpolation(interpolation) => interpolation
+                                .body()
+                                .is_some_and(|body| self.node_has_unowned_comments(body.syntax())),
+                        })
             }
             Expr::Unary(unary) => self.unary_requires_raw_fallback(unary),
             Expr::Binary(binary) => self.binary_requires_raw_fallback(binary),
@@ -98,40 +103,43 @@ impl Formatter<'_> {
         let Some(callee) = call.callee() else {
             return self.node_has_unowned_comments(call.syntax());
         };
-        let Some(args_open_range) = self.token_range(call.syntax(), TokenKind::OpenParen) else {
+        let Some(args) = call.args() else {
+            return self.node_has_unowned_comments(call.syntax());
+        };
+        let Some(args_open_token) = self.token(args.syntax(), TokenKind::OpenParen) else {
             return self.node_has_unowned_comments(call.syntax());
         };
 
-        let callee_end = u32::from(callee.syntax().range().end()) as usize;
-        let mut allowed_ranges = Vec::new();
-        let args_open_start = range_start(args_open_range);
-        let call_end = range_end(call.syntax().range());
+        let mut allowed_boundaries = Vec::new();
+        let call_end = range_end(args.syntax().range());
 
-        if let Some(bang_range) = self.token_range(call.syntax(), TokenKind::Bang) {
-            allowed_ranges.push((callee_end, range_start(bang_range)));
-            allowed_ranges.push((range_end(bang_range), args_open_start));
+        if let Some(bang_token) = self.token(call.syntax(), TokenKind::Bang) {
+            allowed_boundaries.push(TriviaBoundary::NodeToken(callee.syntax(), bang_token));
+            allowed_boundaries.push(TriviaBoundary::TokenNode(bang_token, args.syntax()));
         } else {
-            allowed_ranges.push((callee_end, args_open_start));
+            allowed_boundaries.push(TriviaBoundary::NodeNode(callee.syntax(), args.syntax()));
         }
-        allowed_ranges.push((args_open_start, call_end));
+        if self.node_has_unowned_comments_outside_boundaries(call.syntax(), &allowed_boundaries) {
+            return true;
+        }
 
-        self.node_has_unowned_comments_outside(call.syntax(), &allowed_ranges)
+        self.node_has_unowned_comments_outside(
+            args.syntax(),
+            &[(range_start(args_open_token.range()), call_end)],
+        )
     }
 
     fn unary_requires_raw_fallback(&self, unary: rhai_syntax::UnaryExpr<'_>) -> bool {
-        let Some(operator_range) = unary.operator_token().map(|token| token.range()) else {
+        let Some(operator_token) = unary.operator_token() else {
             return self.node_has_unowned_comments(unary.syntax());
         };
         let Some(inner) = unary.expr() else {
             return self.node_has_unowned_comments(unary.syntax());
         };
 
-        self.node_has_unowned_comments_outside(
+        self.node_has_unowned_comments_outside_boundaries(
             unary.syntax(),
-            &[(
-                range_end(operator_range),
-                range_start(inner.syntax().range()),
-            )],
+            &[TriviaBoundary::TokenNode(operator_token, inner.syntax())],
         )
     }
 
@@ -142,15 +150,15 @@ impl Formatter<'_> {
         let Some(rhs) = binary.rhs() else {
             return self.node_has_unowned_comments(binary.syntax());
         };
-        let Some(operator_range) = binary.operator_token().map(|token| token.range()) else {
+        let Some(operator_token) = binary.operator_token() else {
             return self.node_has_unowned_comments(binary.syntax());
         };
 
-        self.node_has_unowned_comments_outside(
+        self.node_has_unowned_comments_outside_boundaries(
             binary.syntax(),
             &[
-                (range_end(lhs.syntax().range()), range_start(operator_range)),
-                (range_end(operator_range), range_start(rhs.syntax().range())),
+                TriviaBoundary::NodeToken(lhs.syntax(), operator_token),
+                TriviaBoundary::TokenNode(operator_token, rhs.syntax()),
             ],
         )
     }
@@ -162,15 +170,15 @@ impl Formatter<'_> {
         let Some(rhs) = assign.rhs() else {
             return self.node_has_unowned_comments(assign.syntax());
         };
-        let Some(operator_range) = assign.operator_token().map(|token| token.range()) else {
+        let Some(operator_token) = assign.operator_token() else {
             return self.node_has_unowned_comments(assign.syntax());
         };
 
-        self.node_has_unowned_comments_outside(
+        self.node_has_unowned_comments_outside_boundaries(
             assign.syntax(),
             &[
-                (range_end(lhs.syntax().range()), range_start(operator_range)),
-                (range_end(operator_range), range_start(rhs.syntax().range())),
+                TriviaBoundary::NodeToken(lhs.syntax(), operator_token),
+                TriviaBoundary::TokenNode(operator_token, rhs.syntax()),
             ],
         )
     }
@@ -179,18 +187,26 @@ impl Formatter<'_> {
         let Some(inner) = paren.expr() else {
             return self.node_has_unowned_comments(paren.syntax());
         };
-        let Some(open_range) = self.token_range(paren.syntax(), TokenKind::OpenParen) else {
+        let Some(open_token) = paren
+            .syntax()
+            .significant_tokens()
+            .find(|token| token.kind() == TokenKind::OpenParen)
+        else {
             return self.node_has_unowned_comments(paren.syntax());
         };
-        let Some(close_range) = self.token_range(paren.syntax(), TokenKind::CloseParen) else {
+        let Some(close_token) = paren
+            .syntax()
+            .significant_tokens()
+            .find(|token| token.kind() == TokenKind::CloseParen)
+        else {
             return self.node_has_unowned_comments(paren.syntax());
         };
 
-        self.node_has_unowned_comments_outside(
+        self.node_has_unowned_comments_outside_boundaries(
             paren.syntax(),
             &[
-                (range_end(open_range), range_start(inner.syntax().range())),
-                (range_end(inner.syntax().range()), range_start(close_range)),
+                TriviaBoundary::TokenNode(open_token, inner.syntax()),
+                TriviaBoundary::NodeToken(inner.syntax(), close_token),
             ],
         )
     }
@@ -208,20 +224,14 @@ impl Formatter<'_> {
         let Some(inner_expr) = inner_expr else {
             return Doc::concat(vec![Doc::text(operator), inner]);
         };
-        let Some(operator_range) = unary.operator_token().map(|token| token.range()) else {
+        let Some(operator_token) = unary.operator_token() else {
             return Doc::concat(vec![Doc::text(operator), inner]);
         };
 
-        if self.range_has_comments(
-            range_end(operator_range),
-            range_start(inner_expr.syntax().range()),
-        ) {
+        if self.has_comments_after_token_before_node(operator_token, inner_expr.syntax()) {
             return Doc::concat(vec![
                 Doc::text(operator),
-                self.tight_comment_gap_doc(
-                    range_end(operator_range),
-                    range_start(inner_expr.syntax().range()),
-                ),
+                self.tight_comment_gap_after_token_before_node(operator_token, inner_expr.syntax()),
                 inner,
             ]);
         }
@@ -315,31 +325,25 @@ impl Formatter<'_> {
         let Some(rhs_expr) = rhs_expr else {
             return Doc::concat(vec![lhs, Doc::text(format!(" {operator} ")), rhs]);
         };
-        let Some(operator_range) = assign.operator_token().map(|token| token.range()) else {
+        let Some(operator_token) = assign.operator_token() else {
             return Doc::concat(vec![lhs, Doc::text(format!(" {operator} ")), rhs]);
         };
 
-        let before_operator_has_comments = self.range_has_comments(
-            range_end(lhs_expr.syntax().range()),
-            range_start(operator_range),
-        );
-        let after_operator_has_comments = self.range_has_comments(
-            range_end(operator_range),
-            range_start(rhs_expr.syntax().range()),
-        );
+        let before_operator_has_comments =
+            self.has_comments_after_node_before_token(lhs_expr.syntax(), operator_token);
+        let after_operator_has_comments =
+            self.has_comments_after_token_before_node(operator_token, rhs_expr.syntax());
 
         if before_operator_has_comments || after_operator_has_comments {
+            let (lhs_to_operator_start, lhs_to_operator_end) =
+                self.range_after_node_before_token(lhs_expr.syntax(), operator_token);
+            let (operator_to_rhs_start, operator_to_rhs_end) =
+                self.range_after_token_before_node(operator_token, rhs_expr.syntax());
             return Doc::concat(vec![
                 lhs,
-                self.space_or_tight_gap_doc(
-                    range_end(lhs_expr.syntax().range()),
-                    range_start(operator_range),
-                ),
+                self.space_or_tight_gap_doc(lhs_to_operator_start, lhs_to_operator_end),
                 Doc::text(operator),
-                self.space_or_tight_gap_doc(
-                    range_end(operator_range),
-                    range_start(rhs_expr.syntax().range()),
-                ),
+                self.space_or_tight_gap_doc(operator_to_rhs_start, operator_to_rhs_end),
                 rhs,
             ]);
         }
@@ -414,21 +418,19 @@ impl Formatter<'_> {
         let Some(rhs_expr) = rhs_expr else {
             return Doc::concat(vec![lhs, Doc::text(format!(" {operator} ")), rhs]);
         };
-        let Some(operator_range) = binary.operator_token().map(|token| token.range()) else {
+        let Some(operator_token) = binary.operator_token() else {
             return Doc::concat(vec![lhs, Doc::text(format!(" {operator} ")), rhs]);
         };
 
+        let (lhs_to_operator_start, lhs_to_operator_end) =
+            self.range_after_node_before_token(lhs_expr.syntax(), operator_token);
+        let (operator_to_rhs_start, operator_to_rhs_end) =
+            self.range_after_token_before_node(operator_token, rhs_expr.syntax());
         Doc::concat(vec![
             lhs,
-            self.space_or_tight_gap_doc(
-                range_end(lhs_expr.syntax().range()),
-                range_start(operator_range),
-            ),
+            self.space_or_tight_gap_doc(lhs_to_operator_start, lhs_to_operator_end),
             Doc::text(operator),
-            self.space_or_tight_gap_doc(
-                range_end(operator_range),
-                range_start(rhs_expr.syntax().range()),
-            ),
+            self.space_or_tight_gap_doc(operator_to_rhs_start, operator_to_rhs_end),
             rhs,
         ])
     }
@@ -442,24 +444,26 @@ impl Formatter<'_> {
             .expr()
             .map(|expr| self.format_expr_doc(expr, indent))
             .unwrap_or_else(|| Doc::text(""));
-        let Some(open_range) = self.token_range(paren.syntax(), TokenKind::OpenParen) else {
+        let Some(open_token) = paren
+            .syntax()
+            .significant_tokens()
+            .find(|token| token.kind() == TokenKind::OpenParen)
+        else {
             return Doc::concat(vec![Doc::text("("), inner, Doc::text(")")]);
         };
-        let Some(close_range) = self.token_range(paren.syntax(), TokenKind::CloseParen) else {
+        let Some(close_token) = paren
+            .syntax()
+            .significant_tokens()
+            .find(|token| token.kind() == TokenKind::CloseParen)
+        else {
             return Doc::concat(vec![Doc::text("("), inner, Doc::text(")")]);
         };
 
         Doc::concat(vec![
             Doc::text("("),
-            self.tight_comment_gap_doc(
-                range_end(open_range),
-                range_start(inner_expr.syntax().range()),
-            ),
+            self.tight_comment_gap_after_token_before_node(open_token, inner_expr.syntax()),
             inner,
-            self.tight_comment_gap_doc(
-                range_end(inner_expr.syntax().range()),
-                range_start(close_range),
-            ),
+            self.tight_comment_gap_after_node_before_token(inner_expr.syntax(), close_token),
             Doc::text(")"),
         ])
     }
@@ -469,40 +473,53 @@ impl Formatter<'_> {
             .callee()
             .map(|callee| self.format_expr_doc(callee, indent))
             .unwrap_or_else(|| Doc::text(""));
-        let args = self.format_arg_list_doc(call, indent);
+        let args = call
+            .args()
+            .map(|args| self.format_arg_list_doc(args, indent))
+            .unwrap_or_else(|| Doc::text("()"));
         let Some(callee_expr) = call.callee() else {
             return Doc::concat(vec![callee, args]);
         };
-        let Some(args_open_range) = self.token_range(call.syntax(), TokenKind::OpenParen) else {
+        let Some(arg_list) = call.args() else {
+            return Doc::concat(vec![callee, args]);
+        };
+        let Some(args_open_token) = arg_list
+            .syntax()
+            .significant_tokens()
+            .find(|token| token.kind() == TokenKind::OpenParen)
+        else {
             return Doc::concat(vec![callee, args]);
         };
 
-        let callee_end = u32::from(callee_expr.syntax().range().end()) as usize;
-        if let Some(bang_range) = self.token_range(call.syntax(), TokenKind::Bang) {
+        if let Some(bang_token) = call
+            .syntax()
+            .significant_tokens()
+            .find(|token| token.kind() == TokenKind::Bang)
+        {
             Doc::concat(vec![
                 callee,
-                self.tight_comment_gap_doc(callee_end, range_start(bang_range)),
+                self.tight_comment_gap_after_node_before_token(callee_expr.syntax(), bang_token),
                 Doc::text("!"),
-                self.tight_comment_gap_doc(range_end(bang_range), range_start(args_open_range)),
+                self.tight_comment_gap_after_token_before_token(bang_token, args_open_token),
                 args,
             ])
         } else {
             Doc::concat(vec![
                 callee,
-                self.tight_comment_gap_doc(callee_end, range_start(args_open_range)),
+                self.tight_comment_gap_after_node_before_token(
+                    callee_expr.syntax(),
+                    args_open_token,
+                ),
                 args,
             ])
         }
     }
 
-    fn format_arg_list_doc(&self, call: CallExpr<'_>, indent: usize) -> Doc {
-        let values = call
-            .args()
-            .map(|args| self.arg_list_items(args, indent))
-            .unwrap_or_default();
+    fn format_arg_list_doc(&self, args: ArgList<'_>, indent: usize) -> Doc {
+        let values = self.arg_list_items(args, indent);
         self.format_delimited_node_doc(
             DelimitedNodeSpec {
-                node: call.syntax(),
+                node: args.syntax(),
                 open_kind: TokenKind::OpenParen,
                 close_kind: TokenKind::CloseParen,
                 open: "(",
@@ -514,8 +531,7 @@ impl Formatter<'_> {
     }
 
     pub(crate) fn format_arg_list_body_doc(&self, args: ArgList<'_>, indent: usize) -> Doc {
-        let items = self.arg_list_items(args, indent);
-        self.format_comma_separated_body_doc(args.syntax(), items)
+        self.format_arg_list_doc(args, indent)
     }
 
     pub(crate) fn format_array_item_list_body_doc(
@@ -523,26 +539,48 @@ impl Formatter<'_> {
         items: ArrayItemList<'_>,
         indent: usize,
     ) -> Doc {
-        let item_docs = self.array_item_list_items(items, indent);
-        self.format_comma_separated_body_doc(items.syntax(), item_docs)
+        self.format_array_item_list_doc(items, indent)
+    }
+
+    pub(crate) fn format_interpolation_item_list_body_doc(
+        &self,
+        items: InterpolationItemList<'_>,
+        indent: usize,
+    ) -> Doc {
+        self.format_interpolation_item_docs(items.items().collect::<Vec<_>>(), indent)
+    }
+
+    pub(crate) fn format_string_part_list_body_doc(
+        &self,
+        parts: StringPartList<'_>,
+        indent: usize,
+    ) -> Doc {
+        self.format_string_part_docs(parts.parts().collect::<Vec<_>>(), indent)
+    }
+
+    pub(crate) fn format_object_field_list_body_doc(
+        &self,
+        fields: ObjectFieldList<'_>,
+        indent: usize,
+    ) -> Doc {
+        let item_docs = self.object_field_list_items(fields, indent);
+        self.format_comma_separated_body_doc(fields.syntax(), item_docs)
+    }
+
+    pub(crate) fn format_switch_arm_list_body_doc(
+        &self,
+        arms: SwitchArmList<'_>,
+        indent: usize,
+    ) -> Doc {
+        let item_docs = self.switch_arm_list_items(arms, indent);
+        self.format_comma_separated_body_doc(arms.syntax(), item_docs)
     }
 
     fn format_array_doc(&self, array: ArrayExpr<'_>, indent: usize) -> Doc {
-        let items = array
+        array
             .items()
-            .map(|items| self.array_item_list_items(items, indent))
-            .unwrap_or_default();
-        self.format_delimited_node_doc(
-            DelimitedNodeSpec {
-                node: array.syntax(),
-                open_kind: TokenKind::OpenBracket,
-                close_kind: TokenKind::CloseBracket,
-                open: "[",
-                close: "]",
-            },
-            items,
-            None,
-        )
+            .map(|items| self.format_array_item_list_doc(items, indent))
+            .unwrap_or_else(|| Doc::text("[]"))
     }
 
     fn format_index_doc(&self, index: IndexExpr<'_>, indent: usize) -> Doc {
@@ -554,13 +592,17 @@ impl Formatter<'_> {
         let inner = inner_expr
             .map(|inner| self.format_expr_doc(inner, indent))
             .unwrap_or_else(|| Doc::text(""));
-        let open_range = self
-            .token_range(index.syntax(), TokenKind::QuestionOpenBracket)
-            .or_else(|| self.token_range(index.syntax(), TokenKind::OpenBracket));
-        let close_range = self.token_range(index.syntax(), TokenKind::CloseBracket);
-        let open = if self
-            .token_range(index.syntax(), TokenKind::QuestionOpenBracket)
-            .is_some()
+        let open_token = index.syntax().significant_tokens().find(|token| {
+            matches!(
+                token.kind(),
+                TokenKind::QuestionOpenBracket | TokenKind::OpenBracket
+            )
+        });
+        let close_token = index
+            .syntax()
+            .significant_tokens()
+            .find(|token| token.kind() == TokenKind::CloseBracket);
+        let open = if open_token.is_some_and(|token| token.kind() == TokenKind::QuestionOpenBracket)
         {
             "?["
         } else {
@@ -579,30 +621,24 @@ impl Formatter<'_> {
         let Some(inner_expr) = inner_expr else {
             return self.group_tight_suffix_doc(receiver, suffix);
         };
-        let Some(open_range) = open_range else {
+        let Some(open_token) = open_token else {
             return self.group_tight_suffix_doc(receiver, suffix);
         };
-        let Some(close_range) = close_range else {
+        let Some(close_token) = close_token else {
             return self.group_tight_suffix_doc(receiver, suffix);
         };
 
-        let receiver_end = u32::from(receiver_expr.syntax().range().end()) as usize;
-        let open_end = range_end(open_range);
-        let inner_start = range_start(inner_expr.syntax().range());
-        let inner_end = range_end(inner_expr.syntax().range());
-        let close_start = range_start(close_range);
-
-        if self.range_has_comments(receiver_end, range_start(open_range))
-            || self.range_has_comments(open_end, inner_start)
-            || self.range_has_comments(inner_end, close_start)
+        if self.has_comments_after_node_before_token(receiver_expr.syntax(), open_token)
+            || self.has_comments_after_token_before_node(open_token, inner_expr.syntax())
+            || self.has_comments_after_node_before_token(inner_expr.syntax(), close_token)
         {
             Doc::concat(vec![
                 receiver,
-                self.tight_comment_gap_doc(receiver_end, range_start(open_range)),
+                self.tight_comment_gap_after_node_before_token(receiver_expr.syntax(), open_token),
                 Doc::text(open),
-                self.tight_comment_gap_doc(open_end, inner_start),
+                self.tight_comment_gap_after_token_before_node(open_token, inner_expr.syntax()),
                 inner,
-                self.tight_comment_gap_doc(inner_end, close_start),
+                self.tight_comment_gap_after_node_before_token(inner_expr.syntax(), close_token),
                 Doc::text("]"),
             ])
         } else {
@@ -619,12 +655,11 @@ impl Formatter<'_> {
             .name_token()
             .map(|name| name.text(self.source).to_owned())
             .unwrap_or_default();
-        let accessor_range = self
-            .token_range(field.syntax(), TokenKind::QuestionDot)
-            .or_else(|| self.token_range(field.syntax(), TokenKind::Dot));
-        let accessor = if self
-            .token_range(field.syntax(), TokenKind::QuestionDot)
-            .is_some()
+        let accessor_token = field
+            .syntax()
+            .significant_tokens()
+            .find(|token| matches!(token.kind(), TokenKind::QuestionDot | TokenKind::Dot));
+        let accessor = if accessor_token.is_some_and(|token| token.kind() == TokenKind::QuestionDot)
         {
             "?."
         } else {
@@ -634,25 +669,27 @@ impl Formatter<'_> {
         let Some(receiver_expr) = receiver_expr else {
             return self.group_tight_suffix_doc(receiver, Doc::text(format!("{accessor}{name}")));
         };
-        let Some(accessor_range) = accessor_range else {
+        let Some(accessor_token) = accessor_token else {
             return self.group_tight_suffix_doc(receiver, Doc::text(format!("{accessor}{name}")));
         };
-        let Some(name_range) = field.name_token().map(|token| token.range()) else {
+        let Some(name_token) = field.name_token() else {
             return self.group_tight_suffix_doc(receiver, Doc::text(format!("{accessor}{name}")));
         };
 
-        let receiver_end = u32::from(receiver_expr.syntax().range().end()) as usize;
         let before_accessor_has_comments =
-            self.range_has_comments(receiver_end, range_start(accessor_range));
+            self.has_comments_after_node_before_token(receiver_expr.syntax(), accessor_token);
         let after_accessor_has_comments =
-            self.range_has_comments(range_end(accessor_range), range_start(name_range));
+            self.has_comments_after_token_before_token(accessor_token, name_token);
 
         if before_accessor_has_comments || after_accessor_has_comments {
             Doc::concat(vec![
                 receiver,
-                self.tight_comment_gap_doc(receiver_end, range_start(accessor_range)),
+                self.tight_comment_gap_after_node_before_token(
+                    receiver_expr.syntax(),
+                    accessor_token,
+                ),
                 Doc::text(accessor),
-                self.tight_comment_gap_doc(range_end(accessor_range), range_start(name_range)),
+                self.tight_comment_gap_after_token_before_token(accessor_token, name_token),
                 Doc::text(name),
             ])
         } else {
@@ -667,22 +704,19 @@ impl Formatter<'_> {
         let Some(rhs) = binary.rhs() else {
             return false;
         };
-        let Some(operator_range) = binary.operator_token().map(|token| token.range()) else {
+        let Some(operator_token) = binary.operator_token() else {
             return false;
         };
 
-        self.range_has_comments(range_end(lhs.syntax().range()), range_start(operator_range))
-            || self.range_has_comments(range_end(operator_range), range_start(rhs.syntax().range()))
+        self.has_comments_after_node_before_token(lhs.syntax(), operator_token)
+            || self.has_comments_after_token_before_node(operator_token, rhs.syntax())
     }
 
     fn format_object_doc(&self, object: ObjectExpr<'_>, indent: usize) -> Doc {
         let fields = object
-            .fields()
-            .map(|field| DelimitedItemDoc {
-                range: field.syntax().range(),
-                doc: self.format_object_field_doc(field, indent + 1),
-            })
-            .collect::<Vec<_>>();
+            .field_list()
+            .map(|fields| self.object_field_list_items(fields, indent + 1))
+            .unwrap_or_default();
         self.format_delimited_node_doc(
             DelimitedNodeSpec {
                 node: object.syntax(),
@@ -694,6 +728,33 @@ impl Formatter<'_> {
             fields,
             Some(60),
         )
+    }
+
+    fn object_field_list_items(
+        &self,
+        fields: ObjectFieldList<'_>,
+        indent: usize,
+    ) -> Vec<DelimitedItemDoc> {
+        fields
+            .fields()
+            .map(|field| DelimitedItemDoc {
+                range: field.syntax().range(),
+                doc: self.format_object_field_doc(field, indent),
+            })
+            .collect()
+    }
+
+    fn switch_arm_list_items(
+        &self,
+        arms: SwitchArmList<'_>,
+        indent: usize,
+    ) -> Vec<DelimitedItemDoc> {
+        arms.arms()
+            .map(|arm| DelimitedItemDoc {
+                range: arm.syntax().range(),
+                doc: self.format_switch_arm_doc(arm, indent),
+            })
+            .collect()
     }
 
     fn format_object_field_doc(&self, field: ObjectField<'_>, indent: usize) -> Doc {
@@ -710,31 +771,32 @@ impl Formatter<'_> {
         let value = value_expr
             .map(|value| self.format_expr_doc(value, indent))
             .unwrap_or_else(|| Doc::text(""));
-        let Some(name_range) = name_token.map(|token| token.range()) else {
+        let Some(name_token) = name_token else {
             return Doc::concat(vec![Doc::text(format!("{name}: ")), value]);
         };
-        let Some(colon_range) = self.token_range(field.syntax(), TokenKind::Colon) else {
+        let Some(colon_token) = field
+            .syntax()
+            .significant_tokens()
+            .find(|token| token.kind() == TokenKind::Colon)
+        else {
             return Doc::concat(vec![Doc::text(format!("{name}: ")), value]);
         };
         let Some(value_expr) = value_expr else {
             return Doc::concat(vec![Doc::text(format!("{name}: ")), value]);
         };
 
-        if self.range_has_comments(range_end(name_range), range_start(colon_range))
-            || self.range_has_comments(
-                range_end(colon_range),
-                range_start(value_expr.syntax().range()),
-            )
+        if self.has_comments_after_token_before_token(name_token, colon_token)
+            || self.has_comments_after_token_before_node(colon_token, value_expr.syntax())
         {
             return Doc::concat(vec![
                 Doc::text(name),
                 self.tight_comment_gap_doc_without_trailing_space(
-                    range_end(name_range),
-                    range_start(colon_range),
+                    range_end(name_token.range()),
+                    range_start(colon_token.range()),
                 ),
                 Doc::text(":"),
                 self.space_or_tight_gap_doc(
-                    range_end(colon_range),
+                    range_end(colon_token.range()),
                     range_start(value_expr.syntax().range()),
                 ),
                 value,
@@ -799,7 +861,10 @@ impl Formatter<'_> {
             .scrutinee()
             .map(|expr| self.format_expr_doc(expr, indent))
             .unwrap_or_else(|| Doc::text(""));
-        let arms = switch_expr.arms().collect::<Vec<_>>();
+        let arms = switch_expr
+            .arm_list()
+            .map(|arms| arms.arms().collect::<Vec<_>>())
+            .unwrap_or_default();
         let open_brace_end = self
             .token_range(switch_expr.syntax(), TokenKind::OpenBrace)
             .map(|range| u32::from(range.end()) as usize)
@@ -1191,23 +1256,12 @@ impl Formatter<'_> {
         indent: usize,
     ) -> Doc {
         let mut parts = vec![Doc::text("`")];
-
-        for part in string.parts() {
-            match part {
-                StringPart::Segment(segment) => {
-                    if let Some(token) = segment.text_token() {
-                        parts.push(Doc::text(token.text(self.source)));
-                    }
-                }
-                StringPart::Interpolation(interpolation) => {
-                    let body = interpolation
-                        .body()
-                        .map(|body| self.format_interpolation_body_doc(body, indent))
-                        .unwrap_or_else(Doc::nil);
-                    parts.push(Doc::concat(vec![Doc::text("${"), body, Doc::text("}")]));
-                }
-            }
-        }
+        parts.push(
+            string
+                .part_list()
+                .map(|part_list| self.format_string_part_list_body_doc(part_list, indent))
+                .unwrap_or_else(Doc::nil),
+        );
 
         parts.push(Doc::text("`"));
         Doc::concat(parts)
@@ -1288,7 +1342,16 @@ impl Formatter<'_> {
             return Doc::text(self.raw(body.syntax()));
         }
 
-        let items = body.items().collect::<Vec<_>>();
+        body.item_list()
+            .map(|items| self.format_interpolation_item_list_body_doc(items, indent))
+            .unwrap_or_else(Doc::nil)
+    }
+
+    fn format_interpolation_item_docs(
+        &self,
+        items: Vec<rhai_syntax::Item<'_>>,
+        indent: usize,
+    ) -> Doc {
         if items.is_empty() {
             return Doc::nil();
         }
@@ -1318,6 +1381,29 @@ impl Formatter<'_> {
         parts.push(Doc::hard_line());
 
         Doc::indent(1, Doc::concat(parts))
+    }
+
+    fn format_string_part_docs(&self, parts: Vec<StringPart<'_>>, indent: usize) -> Doc {
+        let mut docs = Vec::new();
+
+        for part in parts {
+            match part {
+                StringPart::Segment(segment) => {
+                    if let Some(token) = segment.text_token() {
+                        docs.push(Doc::text(token.text(self.source)));
+                    }
+                }
+                StringPart::Interpolation(interpolation) => {
+                    let body = interpolation
+                        .body()
+                        .map(|body| self.format_interpolation_body_doc(body, indent))
+                        .unwrap_or_else(Doc::nil);
+                    docs.push(Doc::concat(vec![Doc::text("${"), body, Doc::text("}")]));
+                }
+            }
+        }
+
+        Doc::concat(docs)
     }
 
     fn format_delimited_doc_with_limit(
@@ -1448,6 +1534,21 @@ impl Formatter<'_> {
                 doc: self.format_expr_doc(expr, indent + 1),
             })
             .collect::<Vec<_>>()
+    }
+
+    fn format_array_item_list_doc(&self, items: ArrayItemList<'_>, indent: usize) -> Doc {
+        let item_docs = self.array_item_list_items(items, indent);
+        self.format_delimited_node_doc(
+            DelimitedNodeSpec {
+                node: items.syntax(),
+                open_kind: TokenKind::OpenBracket,
+                close_kind: TokenKind::CloseBracket,
+                open: "[",
+                close: "]",
+            },
+            item_docs,
+            None,
+        )
     }
 
     fn format_delimited_node_doc(
@@ -1616,56 +1717,45 @@ impl Formatter<'_> {
         let Some(condition) = while_expr.condition() else {
             return self.node_has_unowned_comments(while_expr.syntax());
         };
-        let body_start = while_expr
-            .body()
-            .map(|body| u32::from(body.syntax().range().start()) as usize)
-            .unwrap_or_else(|| u32::from(while_expr.syntax().range().end()) as usize);
+        let Some(body) = while_expr.body() else {
+            return self.node_has_unowned_comments(while_expr.syntax());
+        };
 
         self.node_has_unowned_comments_outside(
             while_expr.syntax(),
-            &[(
-                u32::from(condition.syntax().range().end()) as usize,
-                body_start,
-            )],
+            &[self.range_after_node_before_node(condition.syntax(), body.syntax())],
         )
     }
 
     fn loop_requires_raw_fallback(&self, loop_expr: LoopExpr<'_>) -> bool {
-        let body_start = loop_expr
-            .body()
-            .map(|body| u32::from(body.syntax().range().start()) as usize)
-            .unwrap_or_else(|| u32::from(loop_expr.syntax().range().end()) as usize);
-        let loop_kw_end = self
-            .token_range(loop_expr.syntax(), TokenKind::LoopKw)
-            .map(range_end)
-            .unwrap_or(body_start);
+        let Some(body) = loop_expr.body() else {
+            return self.node_has_unowned_comments(loop_expr.syntax());
+        };
+        let Some(loop_kw) = self.token(loop_expr.syntax(), TokenKind::LoopKw) else {
+            return self.node_has_unowned_comments(loop_expr.syntax());
+        };
 
-        self.node_has_unowned_comments_outside(loop_expr.syntax(), &[(loop_kw_end, body_start)])
+        self.node_has_unowned_comments_outside(
+            loop_expr.syntax(),
+            &[self.range_after_token_before_node(loop_kw, body.syntax())],
+        )
     }
 
     fn if_requires_raw_fallback(&self, if_expr: IfExpr<'_>) -> bool {
         let Some(condition) = if_expr.condition() else {
             return self.node_has_unowned_comments(if_expr.syntax());
         };
-        let then_start = if_expr
-            .then_branch()
-            .map(|body| u32::from(body.syntax().range().start()) as usize)
-            .unwrap_or_else(|| u32::from(if_expr.syntax().range().end()) as usize);
-        let mut allowed_ranges = vec![(
-            u32::from(condition.syntax().range().end()) as usize,
-            then_start,
-        )];
+        let Some(then_branch) = if_expr.then_branch() else {
+            return self.node_has_unowned_comments(if_expr.syntax());
+        };
+        let mut allowed_ranges =
+            vec![self.range_after_node_before_node(condition.syntax(), then_branch.syntax())];
 
         if let Some(else_branch) = if_expr.else_branch() {
-            let else_start = self
-                .token_range(else_branch.syntax(), TokenKind::ElseKw)
-                .map(range_start)
-                .unwrap_or_else(|| u32::from(else_branch.syntax().range().start()) as usize);
-            let then_end = if_expr
-                .then_branch()
-                .map(|body| u32::from(body.syntax().range().end()) as usize)
-                .unwrap_or(else_start);
-            allowed_ranges.push((then_end, else_start));
+            let Some(else_kw) = self.token(else_branch.syntax(), TokenKind::ElseKw) else {
+                return self.node_has_unowned_comments(if_expr.syntax());
+            };
+            allowed_ranges.push(self.range_after_node_before_token(then_branch.syntax(), else_kw));
 
             if self.else_branch_requires_raw_fallback(else_branch) {
                 return true;
@@ -1676,104 +1766,107 @@ impl Formatter<'_> {
     }
 
     fn else_branch_requires_raw_fallback(&self, else_branch: rhai_syntax::ElseBranch<'_>) -> bool {
-        let body_start = else_branch
-            .body()
-            .map(|body| u32::from(body.syntax().range().start()) as usize)
-            .unwrap_or_else(|| u32::from(else_branch.syntax().range().end()) as usize);
-        let else_kw_end = self
-            .token_range(else_branch.syntax(), TokenKind::ElseKw)
-            .map(range_end)
-            .unwrap_or(body_start);
+        let Some(body) = else_branch.body() else {
+            return self.node_has_unowned_comments(else_branch.syntax());
+        };
+        let Some(else_kw) = self.token(else_branch.syntax(), TokenKind::ElseKw) else {
+            return self.node_has_unowned_comments(else_branch.syntax());
+        };
 
-        self.node_has_unowned_comments_outside(else_branch.syntax(), &[(else_kw_end, body_start)])
+        self.node_has_unowned_comments_outside(
+            else_branch.syntax(),
+            &[self.range_after_token_before_node(else_kw, body.syntax())],
+        )
     }
 
     fn for_requires_raw_fallback(&self, for_expr: ForExpr<'_>) -> bool {
         let Some(iterable) = for_expr.iterable() else {
             return self.node_has_unowned_comments(for_expr.syntax());
         };
-        let body_start = for_expr
-            .body()
-            .map(|body| u32::from(body.syntax().range().start()) as usize)
-            .unwrap_or_else(|| u32::from(for_expr.syntax().range().end()) as usize);
+        let Some(body) = for_expr.body() else {
+            return self.node_has_unowned_comments(for_expr.syntax());
+        };
 
         self.node_has_unowned_comments_outside(
             for_expr.syntax(),
-            &[(
-                u32::from(iterable.syntax().range().end()) as usize,
-                body_start,
-            )],
+            &[self.range_after_node_before_node(iterable.syntax(), body.syntax())],
         ) || for_expr
             .bindings()
             .is_some_and(|bindings| self.for_bindings_requires_raw_fallback(bindings))
     }
 
     fn do_requires_raw_fallback(&self, do_expr: DoExpr<'_>) -> bool {
-        let body_end = do_expr
-            .body()
-            .map(|body| u32::from(body.syntax().range().end()) as usize)
-            .unwrap_or_else(|| u32::from(do_expr.syntax().range().start()) as usize);
-        let body_start = do_expr
-            .body()
-            .map(|body| u32::from(body.syntax().range().start()) as usize)
-            .unwrap_or(body_end);
-        let do_kw_end = self
-            .token_range(do_expr.syntax(), TokenKind::DoKw)
-            .map(range_end)
-            .unwrap_or(body_start);
-        let Some(condition) = do_expr.condition() else {
-            return self
-                .node_has_unowned_comments_outside(do_expr.syntax(), &[(do_kw_end, body_start)]);
+        let Some(body) = do_expr.body() else {
+            return self.node_has_unowned_comments(do_expr.syntax());
         };
-        let condition_start = u32::from(condition.syntax().range().start()) as usize;
-        let condition_kw_end = condition
-            .keyword_token()
-            .map(|token| u32::from(token.range().end()) as usize)
-            .unwrap_or(condition_start);
-        let expr_start = condition
-            .expr()
-            .map(|expr| u32::from(expr.syntax().range().start()) as usize)
-            .unwrap_or(condition_kw_end);
+        let Some(do_kw) = self.token(do_expr.syntax(), TokenKind::DoKw) else {
+            return self.node_has_unowned_comments(do_expr.syntax());
+        };
+        let Some(condition) = do_expr.condition() else {
+            return self.node_has_unowned_comments_outside(
+                do_expr.syntax(),
+                &[self.range_after_token_before_node(do_kw, body.syntax())],
+            );
+        };
+        let Some(condition_kw) = condition.keyword_token() else {
+            return self.node_has_unowned_comments(do_expr.syntax())
+                || self.node_has_unowned_comments(condition.syntax());
+        };
+        let Some(condition_expr) = condition.expr() else {
+            return self.node_has_unowned_comments(do_expr.syntax())
+                || self.node_has_unowned_comments(condition.syntax());
+        };
 
         self.node_has_unowned_comments_outside(
             do_expr.syntax(),
-            &[(do_kw_end, body_start), (body_end, condition_start)],
+            &[
+                self.range_after_token_before_node(do_kw, body.syntax()),
+                self.range_after_node_before_node(body.syntax(), condition.syntax()),
+            ],
         ) || self.node_has_unowned_comments_outside(
             condition.syntax(),
-            &[(condition_kw_end, expr_start)],
+            &[self.range_after_token_before_node(condition_kw, condition_expr.syntax())],
         )
     }
 
     fn path_requires_raw_fallback(&self, path: PathExpr<'_>) -> bool {
         let segments = path.segments().collect::<Vec<_>>();
         let separators = self
-            .token_ranges(path.syntax(), TokenKind::ColonColon)
+            .tokens(path.syntax(), TokenKind::ColonColon)
             .collect::<Vec<_>>();
         let mut allowed_ranges = Vec::new();
 
-        let (segment_start_index, mut previous_end) = if let Some(base) = path.base() {
+        let (segment_start_index, mut previous_token) = if path.base().is_some() {
             if separators.len() != segments.len() {
                 return self.node_has_unowned_comments(path.syntax());
             }
 
-            (0, u32::from(base.syntax().range().end()) as usize)
+            (0, None)
         } else if let Some(first) = segments.first() {
             if separators.len() + 1 != segments.len() {
                 return self.node_has_unowned_comments(path.syntax());
             }
 
-            (1, range_end(first.range()))
+            (1, Some(*first))
         } else {
             return self.node_has_unowned_comments(path.syntax());
         };
 
-        for (separator_range, segment) in separators
+        let mut previous_node = path.base().map(|base| base.syntax());
+        for (separator_token, segment) in separators
             .into_iter()
             .zip(segments.into_iter().skip(segment_start_index))
         {
-            allowed_ranges.push((previous_end, range_start(separator_range)));
-            allowed_ranges.push((range_end(separator_range), range_start(segment.range())));
-            previous_end = range_end(segment.range());
+            if let Some(previous_node) = previous_node {
+                allowed_ranges
+                    .push(self.range_after_node_before_token(previous_node, separator_token));
+            } else if let Some(previous_token) = previous_token {
+                allowed_ranges
+                    .push(self.range_after_token_before_token(previous_token, separator_token));
+            }
+            allowed_ranges.push(self.range_after_token_before_token(separator_token, segment));
+            previous_node = None;
+            previous_token = Some(segment);
         }
 
         self.node_has_unowned_comments_outside(path.syntax(), &allowed_ranges)
@@ -1786,25 +1879,22 @@ impl Formatter<'_> {
         let Some(inner) = index.index() else {
             return self.node_has_unowned_comments(index.syntax());
         };
-        let Some(open_range) = self
-            .token_range(index.syntax(), TokenKind::QuestionOpenBracket)
-            .or_else(|| self.token_range(index.syntax(), TokenKind::OpenBracket))
+        let Some(open_token) = self
+            .token(index.syntax(), TokenKind::QuestionOpenBracket)
+            .or_else(|| self.token(index.syntax(), TokenKind::OpenBracket))
         else {
             return self.node_has_unowned_comments(index.syntax());
         };
-        let Some(close_range) = self.token_range(index.syntax(), TokenKind::CloseBracket) else {
+        let Some(close_token) = self.token(index.syntax(), TokenKind::CloseBracket) else {
             return self.node_has_unowned_comments(index.syntax());
         };
 
         self.node_has_unowned_comments_outside(
             index.syntax(),
             &[
-                (
-                    u32::from(receiver.syntax().range().end()) as usize,
-                    range_start(open_range),
-                ),
-                (range_end(open_range), range_start(inner.syntax().range())),
-                (range_end(inner.syntax().range()), range_start(close_range)),
+                self.range_after_node_before_token(receiver.syntax(), open_token),
+                self.range_after_token_before_node(open_token, inner.syntax()),
+                self.range_after_node_before_token(inner.syntax(), close_token),
             ],
         )
     }
@@ -1817,10 +1907,8 @@ impl Formatter<'_> {
             }
 
             if let Some(body) = closure.body() {
-                allowed_ranges.push((
-                    range_end(params.syntax().range()),
-                    range_start(body.syntax().range()),
-                ));
+                allowed_ranges
+                    .push(self.range_after_node_before_node(params.syntax(), body.syntax()));
             }
         }
 
@@ -1836,35 +1924,35 @@ impl Formatter<'_> {
         }
 
         let names = params.params().collect::<Vec<_>>();
-        let Some(open_range) = self.token_ranges(params.syntax(), TokenKind::Pipe).next() else {
+        let Some(open_token) = self.tokens(params.syntax(), TokenKind::Pipe).next() else {
             return self.node_has_unowned_comments(params.syntax());
         };
-        let Some(close_range) = self.token_ranges(params.syntax(), TokenKind::Pipe).last() else {
+        let Some(close_token) = self.tokens(params.syntax(), TokenKind::Pipe).last() else {
             return self.node_has_unowned_comments(params.syntax());
         };
 
         if names.is_empty() {
             return self.node_has_unowned_comments_outside(
                 params.syntax(),
-                &[(range_end(open_range), range_start(close_range))],
+                &[self.range_after_token_before_token(open_token, close_token)],
             );
         }
 
         let commas = self
-            .token_ranges(params.syntax(), TokenKind::Comma)
+            .tokens(params.syntax(), TokenKind::Comma)
             .collect::<Vec<_>>();
         if commas.len() + 1 != names.len() {
             return self.node_has_unowned_comments(params.syntax());
         }
 
-        let mut allowed_ranges = vec![(range_end(open_range), range_start(names[0].range()))];
-        let mut previous_end = range_end(names[0].range());
-        for (comma_range, next_name) in commas.into_iter().zip(names.iter().skip(1)) {
-            allowed_ranges.push((previous_end, range_start(comma_range)));
-            allowed_ranges.push((range_end(comma_range), range_start(next_name.range())));
-            previous_end = range_end(next_name.range());
+        let mut allowed_ranges = vec![self.range_after_token_before_token(open_token, names[0])];
+        let mut previous_name = names[0];
+        for (comma_token, next_name) in commas.into_iter().zip(names.iter().skip(1)) {
+            allowed_ranges.push(self.range_after_token_before_token(previous_name, comma_token));
+            allowed_ranges.push(self.range_after_token_before_token(comma_token, *next_name));
+            previous_name = *next_name;
         }
-        allowed_ranges.push((previous_end, range_start(close_range)));
+        allowed_ranges.push(self.range_after_token_before_token(previous_name, close_token));
 
         self.node_has_unowned_comments_outside(params.syntax(), &allowed_ranges)
     }
@@ -1874,26 +1962,23 @@ impl Formatter<'_> {
         match names.as_slice() {
             [] | [_] => self.node_has_unowned_comments(bindings.syntax()),
             [first, second] => {
-                let Some(open_range) = self.token_range(bindings.syntax(), TokenKind::OpenParen)
-                else {
+                let Some(open_token) = self.token(bindings.syntax(), TokenKind::OpenParen) else {
                     return self.node_has_unowned_comments(bindings.syntax());
                 };
-                let Some(comma_range) = self.token_range(bindings.syntax(), TokenKind::Comma)
-                else {
+                let Some(comma_token) = self.token(bindings.syntax(), TokenKind::Comma) else {
                     return self.node_has_unowned_comments(bindings.syntax());
                 };
-                let Some(close_range) = self.token_range(bindings.syntax(), TokenKind::CloseParen)
-                else {
+                let Some(close_token) = self.token(bindings.syntax(), TokenKind::CloseParen) else {
                     return self.node_has_unowned_comments(bindings.syntax());
                 };
 
                 self.node_has_unowned_comments_outside(
                     bindings.syntax(),
                     &[
-                        (range_end(open_range), range_start(first.range())),
-                        (range_end(first.range()), range_start(comma_range)),
-                        (range_end(comma_range), range_start(second.range())),
-                        (range_end(second.range()), range_start(close_range)),
+                        self.range_after_token_before_token(open_token, *first),
+                        self.range_after_token_before_token(*first, comma_token),
+                        self.range_after_token_before_token(comma_token, *second),
+                        self.range_after_token_before_token(*second, close_token),
                     ],
                 )
             }
@@ -1902,10 +1987,10 @@ impl Formatter<'_> {
     }
 
     fn object_field_requires_raw_fallback(&self, field: ObjectField<'_>) -> bool {
-        let Some(name_range) = field.name_token().map(|token| token.range()) else {
+        let Some(name_token) = field.name_token() else {
             return self.node_has_unowned_comments(field.syntax());
         };
-        let Some(colon_range) = self.token_range(field.syntax(), TokenKind::Colon) else {
+        let Some(colon_token) = self.token(field.syntax(), TokenKind::Colon) else {
             return self.node_has_unowned_comments(field.syntax());
         };
         let Some(value) = field.value() else {
@@ -1915,8 +2000,8 @@ impl Formatter<'_> {
         self.node_has_unowned_comments_outside(
             field.syntax(),
             &[
-                (range_end(name_range), range_start(colon_range)),
-                (range_end(colon_range), range_start(value.syntax().range())),
+                self.range_after_token_before_token(name_token, colon_token),
+                self.range_after_token_before_node(colon_token, value.syntax()),
             ],
         )
     }
@@ -1928,7 +2013,7 @@ impl Formatter<'_> {
         let Some(value) = arm.value() else {
             return self.node_has_unowned_comments(arm.syntax());
         };
-        let Some(arrow_range) = self.token_range(arm.syntax(), TokenKind::FatArrow) else {
+        let Some(arrow_token) = self.token(arm.syntax(), TokenKind::FatArrow) else {
             return self.node_has_unowned_comments(arm.syntax());
         };
 
@@ -1936,11 +2021,8 @@ impl Formatter<'_> {
             || self.node_has_unowned_comments_outside(
                 arm.syntax(),
                 &[
-                    (
-                        range_end(patterns.syntax().range()),
-                        range_start(arrow_range),
-                    ),
-                    (range_end(arrow_range), range_start(value.syntax().range())),
+                    self.range_after_node_before_token(patterns.syntax(), arrow_token),
+                    self.range_after_token_before_node(arrow_token, value.syntax()),
                 ],
             )
     }
@@ -2018,21 +2100,20 @@ impl Formatter<'_> {
         }
 
         let separators = self
-            .token_ranges(patterns.syntax(), TokenKind::Pipe)
+            .tokens(patterns.syntax(), TokenKind::Pipe)
             .collect::<Vec<_>>();
         if separators.len() + 1 != values.len() {
             return self.node_has_unowned_comments(patterns.syntax());
         }
 
         let mut allowed_ranges = Vec::new();
-        let mut previous_end = range_end(values[0].syntax().range());
-        for (separator_range, next_value) in separators.into_iter().zip(values.iter().skip(1)) {
-            allowed_ranges.push((previous_end, range_start(separator_range)));
-            allowed_ranges.push((
-                range_end(separator_range),
-                range_start(next_value.syntax().range()),
-            ));
-            previous_end = range_end(next_value.syntax().range());
+        let mut previous_value = values[0];
+        for (separator_token, next_value) in separators.into_iter().zip(values.iter().skip(1)) {
+            allowed_ranges
+                .push(self.range_after_node_before_token(previous_value.syntax(), separator_token));
+            allowed_ranges
+                .push(self.range_after_token_before_node(separator_token, next_value.syntax()));
+            previous_value = *next_value;
         }
 
         self.node_has_unowned_comments_outside(patterns.syntax(), &allowed_ranges)
@@ -2064,24 +2145,21 @@ impl Formatter<'_> {
         let Some(receiver) = field.receiver() else {
             return self.node_has_unowned_comments(field.syntax());
         };
-        let Some(accessor_range) = self
-            .token_range(field.syntax(), TokenKind::QuestionDot)
-            .or_else(|| self.token_range(field.syntax(), TokenKind::Dot))
+        let Some(accessor_token) = self
+            .token(field.syntax(), TokenKind::QuestionDot)
+            .or_else(|| self.token(field.syntax(), TokenKind::Dot))
         else {
             return self.node_has_unowned_comments(field.syntax());
         };
-        let Some(name_range) = field.name_token().map(|token| token.range()) else {
+        let Some(name_token) = field.name_token() else {
             return self.node_has_unowned_comments(field.syntax());
         };
 
         self.node_has_unowned_comments_outside(
             field.syntax(),
             &[
-                (
-                    u32::from(receiver.syntax().range().end()) as usize,
-                    range_start(accessor_range),
-                ),
-                (range_end(accessor_range), range_start(name_range)),
+                self.range_after_node_before_token(receiver.syntax(), accessor_token),
+                self.range_after_token_before_token(accessor_token, name_token),
             ],
         )
     }
@@ -2187,9 +2265,7 @@ impl Formatter<'_> {
         node: &'a SyntaxNode,
         kind: TokenKind,
     ) -> impl Iterator<Item = TextRange> + 'a {
-        node.children()
-            .iter()
-            .filter_map(|child| child.as_token())
+        node.significant_tokens()
             .filter(move |token| token.kind() == kind)
             .map(|token| token.range())
     }
