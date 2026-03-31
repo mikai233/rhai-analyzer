@@ -65,7 +65,7 @@ npm run package
 
 The packaging step will:
 
-- build the TypeScript client
+- type-check and bundle the TypeScript client with esbuild
 - stage one or more `rhai-lsp` binaries into `clients/vscode/server/<target>/`
 - produce a `.vsix` package
 

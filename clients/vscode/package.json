@@ -24,7 +24,6 @@
   "main": "./out/extension.js",
   "files": [
     "out/**/*",
-    "node_modules/**/*",
     "server/**/*",
     "language-configuration.json",
     "LICENSE",
@@ -175,8 +174,10 @@
     ]
   },
   "scripts": {
-    "build": "npm exec -- tsc -p ./",
-    "watch": "npm exec -- tsc -w -p ./",
+    "typecheck": "npm exec -- tsc -p ./ --noEmit",
+    "bundle": "node ./scripts/build-extension.mjs",
+    "build": "npm run typecheck && npm run bundle",
+    "watch": "node ./scripts/build-extension.mjs --watch",
     "vscode:prepublish": "npm run build",
     "prepare-server": "node ./scripts/prepare-server.mjs",
     "package": "npm run build && npm run prepare-server && node ./scripts/package-extension.mjs"
@@ -189,6 +190,7 @@
     "@vscode/vsce": "^3.6.2",
     "@types/node": "^20.16.10",
     "@types/vscode": "^1.96.0",
+    "esbuild": "^0.27.0",
     "typescript": "^5.6.3"
   }
 }
