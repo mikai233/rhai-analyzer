@@ -1,8 +1,9 @@
 use anyhow::{Result, anyhow};
 use lsp_types::{
-    FoldingRange, FoldingRangeKind, Position, Range, SemanticToken, SemanticTokenModifier,
-    SemanticTokenType, SemanticTokens, SemanticTokensLegend, TextEdit, Uri,
+    FoldingRange, FoldingRangeKind, FormattingOptions, Position, Range, SemanticToken,
+    SemanticTokenModifier, SemanticTokenType, SemanticTokens, SemanticTokensLegend, TextEdit, Uri,
 };
+use rhai_fmt::{FormatOptions as RhaiFormatOptions, IndentStyle};
 use rhai_ide::{
     CallHierarchyItem, CompletionItem, DocumentHighlight, DocumentSymbol, FilePosition,
     FoldingRange as IdeFoldingRange, HoverResult, IncomingCall, InlayHint, InlayHintSource,
@@ -87,19 +88,29 @@ impl ServerState {
             .collect())
     }
 
-    pub fn format_document(&self, uri: &Uri) -> Result<Option<Vec<TextEdit>>> {
+    pub fn format_document(
+        &self,
+        uri: &Uri,
+        options: FormattingOptions,
+    ) -> Result<Option<Vec<TextEdit>>> {
         let (analysis, file_id) = self.analysis_for_open_document(uri)?;
         let text = analysis
             .file_text(file_id)
             .ok_or_else(|| anyhow!("document `{}` is missing file text", uri.as_str()))?;
-        let Some(change) = analysis.format_document(file_id) else {
+        let format_options = self.formatter_options(&options);
+        let Some(change) = analysis.format_document_with_options(file_id, &format_options) else {
             return Ok(None);
         };
 
         Ok(source_change_to_lsp_text_edits(text.as_ref(), change))
     }
 
-    pub fn format_range(&self, uri: &Uri, range: Range) -> Result<Option<Vec<TextEdit>>> {
+    pub fn format_range(
+        &self,
+        uri: &Uri,
+        range: Range,
+        options: FormattingOptions,
+    ) -> Result<Option<Vec<TextEdit>>> {
         let (analysis, file_id) = self.analysis_for_open_document(uri)?;
         let text = analysis
             .file_text(file_id)
@@ -110,8 +121,10 @@ impl ServerState {
         let end = position_to_offset(text.as_ref(), &line_starts, range.end)
             .ok_or_else(|| anyhow!("range end is outside document `{}`", uri.as_str()))?;
         let rhai_range = rhai_syntax::TextRange::new((start as u32).into(), (end as u32).into());
+        let format_options = self.formatter_options(&options);
 
-        let Some(change) = analysis.format_range(file_id, rhai_range) else {
+        let Some(change) = analysis.format_range_with_options(file_id, rhai_range, &format_options)
+        else {
             return Ok(None);
         };
 
@@ -198,6 +211,23 @@ impl ServerState {
             InlayHintSource::Variable => self.settings.inlay_hints.variables,
             InlayHintSource::Parameter => self.settings.inlay_hints.parameters,
             InlayHintSource::ReturnType => self.settings.inlay_hints.return_types,
+        }
+    }
+
+    fn formatter_options(&self, options: &FormattingOptions) -> RhaiFormatOptions {
+        RhaiFormatOptions {
+            indent_style: if options.insert_spaces {
+                IndentStyle::Spaces
+            } else {
+                IndentStyle::Tabs
+            },
+            indent_width: options.tab_size as usize,
+            max_line_length: self.settings.formatter.max_line_length,
+            trailing_commas: self.settings.formatter.trailing_commas,
+            final_newline: self.settings.formatter.final_newline,
+            container_layout: self.settings.formatter.container_layout,
+            import_sort_order: self.settings.formatter.import_sort_order,
+            ..RhaiFormatOptions::default()
         }
     }
 }

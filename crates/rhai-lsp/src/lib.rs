@@ -8,8 +8,8 @@ mod state;
 mod tests;
 
 pub use crate::state::{
-    CodeActionEdit, DiagnosticUpdate, InlayHintSettings, ManagedDocument, Server, ServerSettings,
-    ServerState, WorkspaceSymbolMatch,
+    CodeActionEdit, DiagnosticUpdate, FormatterSettings, InlayHintSettings, ManagedDocument,
+    Server, ServerSettings, ServerState, WorkspaceSymbolMatch,
 };
 
 pub use crate::runtime::run_from_env;

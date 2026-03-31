@@ -2,13 +2,14 @@ use anyhow::Result;
 use clap::{Parser, ValueEnum};
 use lsp_server::Connection;
 use lsp_types::InitializeParams;
+use rhai_fmt::{ContainerLayoutStyle, ImportSortOrder};
 use serde::Deserialize;
 use tracing::info;
 
 use crate::runtime::notifications::publish_diagnostics_updates;
 use crate::runtime::progress::WorkDoneProgressHandle;
 use crate::state::path_from_uri;
-use crate::state::{InlayHintSettings, ServerSettings, ServerState};
+use crate::state::{FormatterSettings, InlayHintSettings, ServerSettings, ServerState};
 
 use super::event_loop::event_loop;
 use super::logging::{LogLevel, LogTarget, init_logging};
@@ -121,6 +122,8 @@ fn client_supports_work_done_progress(params: &InitializeParams) -> bool {
 struct InitializeOptions {
     #[serde(default)]
     inlay_hints: InitializeInlayHintOptions,
+    #[serde(default)]
+    formatting: InitializeFormattingOptions,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -144,8 +147,56 @@ impl Default for InitializeInlayHintOptions {
     }
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct InitializeFormattingOptions {
+    #[serde(default = "default_max_line_length")]
+    max_line_length: usize,
+    #[serde(default = "default_true")]
+    trailing_commas: bool,
+    #[serde(default = "default_true")]
+    final_newline: bool,
+    #[serde(default)]
+    container_layout: InitializeContainerLayoutStyle,
+    #[serde(default)]
+    import_sort_order: InitializeImportSortOrder,
+}
+
+impl Default for InitializeFormattingOptions {
+    fn default() -> Self {
+        Self {
+            max_line_length: default_max_line_length(),
+            trailing_commas: true,
+            final_newline: true,
+            container_layout: InitializeContainerLayoutStyle::Auto,
+            import_sort_order: InitializeImportSortOrder::Preserve,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+enum InitializeContainerLayoutStyle {
+    #[default]
+    Auto,
+    PreferSingleLine,
+    PreferMultiLine,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+enum InitializeImportSortOrder {
+    #[default]
+    Preserve,
+    ModulePath,
+}
+
 fn default_true() -> bool {
     true
+}
+
+fn default_max_line_length() -> usize {
+    100
 }
 
 fn server_settings_from_initialize(params: &InitializeParams) -> ServerSettings {
@@ -160,6 +211,24 @@ fn server_settings_from_initialize(params: &InitializeParams) -> ServerSettings 
             variables: options.inlay_hints.variables,
             parameters: options.inlay_hints.parameters,
             return_types: options.inlay_hints.return_types,
+        },
+        formatter: FormatterSettings {
+            max_line_length: options.formatting.max_line_length,
+            trailing_commas: options.formatting.trailing_commas,
+            final_newline: options.formatting.final_newline,
+            container_layout: match options.formatting.container_layout {
+                InitializeContainerLayoutStyle::Auto => ContainerLayoutStyle::Auto,
+                InitializeContainerLayoutStyle::PreferSingleLine => {
+                    ContainerLayoutStyle::PreferSingleLine
+                }
+                InitializeContainerLayoutStyle::PreferMultiLine => {
+                    ContainerLayoutStyle::PreferMultiLine
+                }
+            },
+            import_sort_order: match options.formatting.import_sort_order {
+                InitializeImportSortOrder::Preserve => ImportSortOrder::Preserve,
+                InitializeImportSortOrder::ModulePath => ImportSortOrder::ModulePath,
+            },
         },
     }
 }
@@ -191,10 +260,11 @@ fn workspace_roots_from_initialize(params: &InitializeParams) -> Vec<std::path::
 mod tests {
     use clap::Parser;
     use lsp_types::{ClientCapabilities, InitializeParams, WindowClientCapabilities};
+    use rhai_fmt::{ContainerLayoutStyle, ImportSortOrder};
     use serde_json::json;
 
     use crate::runtime::logging::{LogLevel, LogTarget};
-    use crate::state::ServerSettings;
+    use crate::state::{FormatterSettings, ServerSettings};
 
     use super::{
         LaunchOptions, TransportKind, client_supports_work_done_progress, resolve_log_target,
@@ -261,13 +331,20 @@ mod tests {
     }
 
     #[test]
-    fn initialization_options_override_inlay_hint_settings() {
+    fn initialization_options_override_inlay_hint_and_formatter_settings() {
         let params = InitializeParams {
             initialization_options: Some(json!({
                 "inlayHints": {
                     "variables": false,
                     "parameters": true,
                     "returnTypes": false
+                },
+                "formatting": {
+                    "maxLineLength": 72,
+                    "trailingCommas": false,
+                    "finalNewline": false,
+                    "containerLayout": "preferMultiLine",
+                    "importSortOrder": "modulePath"
                 }
             })),
             ..InitializeParams::default()
@@ -281,6 +358,13 @@ mod tests {
                     variables: false,
                     parameters: true,
                     return_types: false,
+                },
+                formatter: FormatterSettings {
+                    max_line_length: 72,
+                    trailing_commas: false,
+                    final_newline: false,
+                    container_layout: ContainerLayoutStyle::PreferMultiLine,
+                    import_sort_order: ImportSortOrder::ModulePath,
                 },
             }
         );

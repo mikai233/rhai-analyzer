@@ -51,7 +51,7 @@ impl RenderState<'_> {
                 self.column = 0;
                 self.pending_indent = false;
             } else {
-                self.column += 1;
+                self.column = advance_column(self.column, ch, self.options.indent_width.max(1));
             }
         }
     }
@@ -73,7 +73,7 @@ impl RenderState<'_> {
             crate::IndentStyle::Tabs => {
                 let tabs = "\t".repeat(levels);
                 self.out.push_str(&tabs);
-                self.column += tabs.chars().count();
+                self.column += levels * self.options.indent_width.max(1);
             }
         }
         self.pending_indent = false;
@@ -84,6 +84,10 @@ fn render_into(doc: &Doc, state: &mut RenderState<'_>, mode: RenderMode) {
     match doc {
         Doc::Nil => {}
         Doc::Text(text) => state.write_text(text),
+        Doc::Line => match mode {
+            RenderMode::Flat => {}
+            RenderMode::Break => state.write_line(),
+        },
         Doc::HardLine => state.write_line(),
         Doc::SoftLine => match mode {
             RenderMode::Flat => state.write_text(" "),
@@ -101,7 +105,12 @@ fn render_into(doc: &Doc, state: &mut RenderState<'_>, mode: RenderMode) {
         }
         Doc::Group(content) => {
             let available = state.options.max_line_length.saturating_sub(state.column);
-            let next_mode = if fits(content, available) {
+            let next_mode = if fits(
+                content,
+                state.column,
+                available,
+                state.options.indent_width.max(1),
+            ) {
                 RenderMode::Flat
             } else {
                 RenderMode::Break
@@ -111,33 +120,59 @@ fn render_into(doc: &Doc, state: &mut RenderState<'_>, mode: RenderMode) {
     }
 }
 
-fn fits(doc: &Doc, remaining: usize) -> bool {
-    match flat_width(doc) {
+fn fits(doc: &Doc, start_column: usize, remaining: usize, tab_width: usize) -> bool {
+    match flat_width(doc, start_column, remaining, tab_width) {
         Some(width) => width <= remaining,
         None => false,
     }
 }
 
-fn flat_width(doc: &Doc) -> Option<usize> {
+fn flat_width(doc: &Doc, column: usize, max_remaining: usize, tab_width: usize) -> Option<usize> {
     match doc {
         Doc::Nil => Some(0),
         Doc::Text(text) => {
             if text.contains('\n') {
                 None
             } else {
-                Some(text.chars().count())
+                let width = text_width(text, column, tab_width);
+                (width <= max_remaining).then_some(width)
             }
         }
+        Doc::Line => Some(0),
         Doc::HardLine => None,
         Doc::SoftLine => Some(1),
         Doc::Concat(parts) => {
             let mut total = 0usize;
             for part in parts {
-                total += flat_width(part)?;
+                let part_width = flat_width(
+                    part,
+                    column + total,
+                    max_remaining.saturating_sub(total),
+                    tab_width,
+                )?;
+                total += part_width;
             }
             Some(total)
         }
-        Doc::Indent { content, .. } => flat_width(content),
-        Doc::Group(content) => flat_width(content),
+        Doc::Indent { content, .. } => flat_width(content, column, max_remaining, tab_width),
+        Doc::Group(content) => flat_width(content, column, max_remaining, tab_width),
+    }
+}
+
+fn text_width(text: &str, mut column: usize, tab_width: usize) -> usize {
+    let start = column;
+    for ch in text.chars() {
+        column = advance_column(column, ch, tab_width);
+    }
+    column - start
+}
+
+fn advance_column(column: usize, ch: char, tab_width: usize) -> usize {
+    match ch {
+        '\t' => {
+            let advance = tab_width - (column % tab_width);
+            column + advance.max(1)
+        }
+        _ => column + 1,
     }
 }

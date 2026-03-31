@@ -119,6 +119,41 @@
           "default": true,
           "description": "Show inferred return type inlay hints for functions and closures."
         },
+        "rhai.format.maxLineLength": {
+          "type": "number",
+          "default": 100,
+          "minimum": 20,
+          "description": "Preferred maximum line length used by the Rhai formatter."
+        },
+        "rhai.format.trailingCommas": {
+          "type": "boolean",
+          "default": true,
+          "description": "Keep trailing commas when the formatter expands arrays, objects, calls, and other delimited lists."
+        },
+        "rhai.format.finalNewline": {
+          "type": "boolean",
+          "default": true,
+          "description": "Ensure formatted Rhai files end with a trailing newline."
+        },
+        "rhai.format.containerLayout": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "preferSingleLine",
+            "preferMultiLine"
+          ],
+          "default": "auto",
+          "description": "Control whether the formatter prefers inline or expanded layouts for arrays, objects, parameters, and arguments."
+        },
+        "rhai.format.importSortOrder": {
+          "type": "string",
+          "enum": [
+            "preserve",
+            "modulePath"
+          ],
+          "default": "preserve",
+          "description": "Control whether contiguous top-level import sections keep source order or are sorted by module path when they can be safely reordered."
+        },
         "rhai.trace.server": {
           "type": "string",
           "enum": [

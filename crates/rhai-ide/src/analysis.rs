@@ -2,6 +2,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use rhai_db::{AnalyzerDatabase, ChangeImpact, ChangeSet, DatabaseSnapshot};
+use rhai_fmt::FormatOptions;
 use rhai_hir::Symbol;
 use rhai_syntax::TextRange;
 use rhai_vfs::FileId;
@@ -233,10 +234,27 @@ impl Analysis {
     }
 
     pub fn format_document(&self, file_id: FileId) -> Option<SourceChange> {
-        format_document(&self.db, file_id)
+        self.format_document_with_options(file_id, &FormatOptions::default())
+    }
+
+    pub fn format_document_with_options(
+        &self,
+        file_id: FileId,
+        options: &FormatOptions,
+    ) -> Option<SourceChange> {
+        format_document(&self.db, file_id, options)
     }
 
     pub fn format_range(&self, file_id: FileId, range: TextRange) -> Option<SourceChange> {
-        format_range(&self.db, file_id, range)
+        self.format_range_with_options(file_id, range, &FormatOptions::default())
+    }
+
+    pub fn format_range_with_options(
+        &self,
+        file_id: FileId,
+        range: TextRange,
+        options: &FormatOptions,
+    ) -> Option<SourceChange> {
+        format_range(&self.db, file_id, range, options)
     }
 }

@@ -4,7 +4,10 @@ pub(crate) mod syntax;
 pub(crate) mod trivia;
 
 use crate::{FormatOptions, FormatResult, RangeFormatResult};
-use rhai_syntax::{AstNode, Root, TextRange, TextSize, parse_text};
+use rhai_syntax::{
+    AstNode, BlockExpr, Item, Root, SyntaxKind, SyntaxNode, SyntaxToken, TextRange, TextSize,
+    parse_text,
+};
 
 use crate::formatter::layout::doc::Doc;
 use crate::formatter::layout::render::{render_doc, render_doc_with_indent};
@@ -28,9 +31,12 @@ pub fn format_text(text: &str, options: &FormatOptions) -> FormatResult {
 
     let formatter = Formatter {
         source: text,
+        tokens: parse.tokens(),
+        line_starts: collect_line_starts(text),
         options,
     };
-    let formatted = render_doc(&formatter.format_root(root), options);
+    let formatted =
+        normalize_document_output(render_doc(&formatter.format_root(root), options), options);
 
     FormatResult {
         changed: formatted != text,
@@ -43,19 +49,56 @@ pub fn format_range(
     requested_range: TextRange,
     options: &FormatOptions,
 ) -> Option<RangeFormatResult> {
-    let formatted = format_text(text, options);
-    if !formatted.changed {
+    let parse = parse_text(text);
+    if !parse.errors().is_empty() {
         return None;
     }
 
-    let (start, end, replacement) = minimal_changed_region(text, &formatted.text)?;
-    let changed_range = TextRange::new(TextSize::from(start as u32), TextSize::from(end as u32));
-    if !ranges_intersect(changed_range, requested_range) {
+    let root = Root::cast(parse.root())?;
+    let structural_range = intersect_ranges(root.syntax().range(), requested_range)?;
+    if !ranges_intersect(structural_range, requested_range) {
+        return None;
+    }
+
+    let formatter = Formatter {
+        source: text,
+        tokens: parse.tokens(),
+        line_starts: collect_line_starts(text),
+        options,
+    };
+    let owner = select_range_owner(root, structural_range)?;
+    let replacement = match owner.kind {
+        RangeOwnerKind::Root(root) => {
+            normalize_document_output(render_doc(&formatter.format_root(root), options), options)
+        }
+        RangeOwnerKind::Item(item) => formatter.render_fragment(
+            &formatter.format_item(item, owner.base_indent),
+            owner.base_indent,
+        ),
+        RangeOwnerKind::Block(block) => formatter.render_fragment(
+            &formatter.format_block_doc(block, owner.base_indent),
+            owner.base_indent,
+        ),
+    };
+    let start = u32::from(owner.range.start()) as usize;
+    let end = u32::from(owner.range.end()) as usize;
+    let original = &text[start..end];
+    let (local_start, local_end, replacement) = minimal_changed_region(original, &replacement)?;
+
+    let local_range = TextRange::new(
+        TextSize::from(local_start as u32),
+        TextSize::from(local_end as u32),
+    );
+    let absolute_range = TextRange::new(
+        owner.range.start() + local_range.start(),
+        owner.range.start() + local_range.end(),
+    );
+    if !ranges_intersect(absolute_range, requested_range) {
         return None;
     }
 
     Some(RangeFormatResult {
-        range: changed_range,
+        range: absolute_range,
         text: replacement.to_owned(),
         changed: true,
     })
@@ -63,6 +106,8 @@ pub fn format_range(
 
 pub(crate) struct Formatter<'a> {
     source: &'a str,
+    tokens: &'a [SyntaxToken],
+    line_starts: Vec<usize>,
     options: &'a FormatOptions,
 }
 
@@ -70,4 +115,108 @@ impl Formatter<'_> {
     pub(crate) fn render_fragment(&self, doc: &Doc, base_indent: usize) -> String {
         render_doc_with_indent(doc, self.options, base_indent)
     }
+}
+
+fn collect_line_starts(text: &str) -> Vec<usize> {
+    let mut starts = vec![0usize];
+    for (index, ch) in text.char_indices() {
+        if ch == '\n' {
+            starts.push(index + 1);
+        }
+    }
+    starts
+}
+
+#[derive(Clone, Copy)]
+struct RangeOwner<'a> {
+    range: TextRange,
+    base_indent: usize,
+    kind: RangeOwnerKind<'a>,
+}
+
+#[derive(Clone, Copy)]
+enum RangeOwnerKind<'a> {
+    Root(Root<'a>),
+    Item(Item<'a>),
+    Block(BlockExpr<'a>),
+}
+
+fn select_range_owner<'a>(root: Root<'a>, requested_range: TextRange) -> Option<RangeOwner<'a>> {
+    let mut owner = RangeOwner {
+        range: root.syntax().range(),
+        base_indent: 0,
+        kind: RangeOwnerKind::Root(root),
+    };
+
+    if let Some(nested_owner) = find_nested_range_owner(root.syntax(), requested_range, 0) {
+        owner = nested_owner;
+    }
+
+    Some(owner)
+}
+
+fn find_nested_range_owner<'a>(
+    node: &'a SyntaxNode,
+    requested_range: TextRange,
+    block_depth: usize,
+) -> Option<RangeOwner<'a>> {
+    if !range_contains(node.range(), requested_range) {
+        return None;
+    }
+
+    let mut best = range_owner_for_node(node, block_depth);
+    let child_block_depth = if node.kind() == SyntaxKind::Block {
+        block_depth + 1
+    } else {
+        block_depth
+    };
+
+    for child in node.children().iter().filter_map(|child| child.as_node()) {
+        if let Some(child_owner) =
+            find_nested_range_owner(child, requested_range, child_block_depth)
+        {
+            best = Some(child_owner);
+        }
+    }
+
+    best
+}
+
+fn range_owner_for_node<'a>(node: &'a SyntaxNode, block_depth: usize) -> Option<RangeOwner<'a>> {
+    if let Some(item) = Item::cast(node) {
+        return Some(RangeOwner {
+            range: node.range(),
+            base_indent: block_depth,
+            kind: RangeOwnerKind::Item(item),
+        });
+    }
+
+    BlockExpr::cast(node).map(|block| RangeOwner {
+        range: node.range(),
+        base_indent: block_depth,
+        kind: RangeOwnerKind::Block(block),
+    })
+}
+
+fn intersect_ranges(left: TextRange, right: TextRange) -> Option<TextRange> {
+    let start = u32::from(left.start()).max(u32::from(right.start()));
+    let end = u32::from(left.end()).min(u32::from(right.end()));
+    if start >= end {
+        return None;
+    }
+
+    Some(TextRange::new(TextSize::from(start), TextSize::from(end)))
+}
+
+fn range_contains(container: TextRange, candidate: TextRange) -> bool {
+    u32::from(container.start()) <= u32::from(candidate.start())
+        && u32::from(candidate.end()) <= u32::from(container.end())
+}
+
+fn normalize_document_output(mut text: String, options: &FormatOptions) -> String {
+    if !options.final_newline && text.ends_with('\n') {
+        text.pop();
+    }
+
+    text
 }

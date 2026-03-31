@@ -2,6 +2,7 @@
 pub(crate) enum Doc {
     Nil,
     Text(String),
+    Line,
     HardLine,
     SoftLine,
     Concat(Vec<Doc>),
@@ -22,12 +23,29 @@ impl Doc {
         Self::HardLine
     }
 
+    pub(crate) fn line() -> Self {
+        Self::Line
+    }
+
     pub(crate) fn soft_line() -> Self {
         Self::SoftLine
     }
 
     pub(crate) fn concat(parts: Vec<Doc>) -> Self {
         Self::Concat(parts)
+    }
+
+    pub(crate) fn join(parts: Vec<Doc>, separator: Doc) -> Self {
+        let mut docs = Vec::new();
+
+        for (index, part) in parts.into_iter().enumerate() {
+            if index > 0 {
+                docs.push(separator.clone());
+            }
+            docs.push(part);
+        }
+
+        Self::Concat(docs)
     }
 
     pub(crate) fn indent(levels: usize, content: Doc) -> Self {

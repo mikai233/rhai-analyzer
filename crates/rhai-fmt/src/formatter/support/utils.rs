@@ -1,13 +1,4 @@
-use rhai_syntax::{SyntaxNode, TextRange, TokenKind};
-
-pub(crate) fn contains_token(node: &SyntaxNode, kind: TokenKind) -> bool {
-    node.children().iter().any(|child| {
-        child.as_token().is_some_and(|token| token.kind() == kind)
-            || child
-                .as_node()
-                .is_some_and(|child_node| contains_token(child_node, kind))
-    })
-}
+use rhai_syntax::TextRange;
 
 pub(crate) fn minimal_changed_region<'a>(
     original: &'a str,

@@ -1,6 +1,6 @@
-use crate::{FormatOptions, format_text};
+use crate::{ContainerLayoutStyle, FormatOptions, ImportSortOrder, format_text};
 
-use crate::tests::assert_formats_to;
+use crate::tests::{assert_formats_to, assert_formats_to_with_options};
 
 #[test]
 fn formatter_rewrites_basic_functions_blocks_and_binary_spacing() {
@@ -103,4 +103,284 @@ do { mapper(items[0]) } while items.len()<3;
 "#;
 
     assert_formats_to(source, expected);
+}
+
+#[test]
+fn formatter_rewrites_safe_access_chains_and_multiline_interpolations() {
+    let source = r#"
+fn render(user,items){
+let safe=user?.profile?[index+1].name;
+let summary=`user=${user?.profile.name} total=${items.len()+1}`;
+let detailed=`result=${let total=items.len()+1;
+if total>10 { `many:${total}` } else { `few:${total}` }}`;
+}
+"#;
+
+    let expected = r#"fn render(user, items) {
+    let safe = user?.profile?[index + 1].name;
+    let summary = `user=${user?.profile.name} total=${items.len() + 1}`;
+    let detailed = `result=${
+        let total = items.len() + 1;
+        if total > 10 {
+            `many:${total}`
+        } else {
+            `few:${total}`
+        }
+    }`;
+}
+"#;
+
+    assert_formats_to(source, expected);
+}
+
+#[test]
+fn formatter_normalizes_import_export_sections() {
+    let source = r#"import   "pkg"  as pkg;
+import "tools";
+export const CONFIG=#{name:"Ada",values:[1,2,3,4,5,6,7,8,9,10,11,12]};
+export   helper   as public_helper;
+fn run(){pkg::boot(); tools::boot();}
+"#;
+
+    let expected = r#"import "pkg" as pkg;
+import "tools";
+
+export const CONFIG = #{
+    name: "Ada",
+    values: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
+};
+export helper as public_helper;
+
+fn run() {
+    pkg::boot();
+    tools::boot();
+}
+"#;
+
+    assert_formats_to(source, expected);
+}
+
+#[test]
+fn formatter_respects_final_newline_policy() {
+    let source = "fn run(){let value=1+2;value}\n";
+    let expected = "fn run() {\n    let value = 1 + 2;\n    value\n}";
+
+    assert_formats_to_with_options(
+        source,
+        expected,
+        &FormatOptions {
+            final_newline: false,
+            ..FormatOptions::default()
+        },
+    );
+}
+
+#[test]
+fn formatter_can_prefer_multiline_containers_even_when_they_fit() {
+    let source = "fn run(){let values=[1,2,3]; helper(alpha,beta);}\n";
+    let expected = r#"fn run() {
+    let values = [
+        1,
+        2,
+        3,
+    ];
+    helper(
+        alpha,
+        beta,
+    );
+}
+"#;
+
+    assert_formats_to_with_options(
+        source,
+        expected,
+        &FormatOptions {
+            container_layout: ContainerLayoutStyle::PreferMultiLine,
+            ..FormatOptions::default()
+        },
+    );
+}
+
+#[test]
+fn formatter_can_prefer_single_line_objects_within_max_width() {
+    let source =
+        "fn run(){let user=#{first_name:\"Ada\",last_name:\"Lovelace\",city:\"London\"};}\n";
+    let expected = "fn run() {\n    let user = #{first_name: \"Ada\", last_name: \"Lovelace\", city: \"London\"};\n}\n";
+
+    assert_formats_to_with_options(
+        source,
+        expected,
+        &FormatOptions {
+            max_line_length: 100,
+            container_layout: ContainerLayoutStyle::PreferSingleLine,
+            ..FormatOptions::default()
+        },
+    );
+}
+
+#[test]
+fn formatter_can_sort_top_level_import_runs_by_module_path() {
+    let source = r#"import "zebra" as zebra;
+import "alpha";
+import "beta" as beta;
+fn run(){}
+"#;
+    let expected = r#"import "alpha";
+import "beta" as beta;
+import "zebra" as zebra;
+
+fn run() {}
+"#;
+
+    assert_formats_to_with_options(
+        source,
+        expected,
+        &FormatOptions {
+            import_sort_order: ImportSortOrder::ModulePath,
+            ..FormatOptions::default()
+        },
+    );
+}
+
+#[test]
+fn formatter_preserves_blank_line_separated_import_groups_when_sorting() {
+    let source = r#"import "zebra";
+import "alpha";
+
+import "delta";
+import "beta";
+fn run(){}
+"#;
+    let expected = r#"import "alpha";
+import "zebra";
+
+import "beta";
+import "delta";
+
+fn run() {}
+"#;
+
+    assert_formats_to_with_options(
+        source,
+        expected,
+        &FormatOptions {
+            import_sort_order: ImportSortOrder::ModulePath,
+            ..FormatOptions::default()
+        },
+    );
+}
+
+#[test]
+fn formatter_formats_try_catch_bindings_with_parentheses() {
+    let source = r#"
+fn run(){
+try { work(); } catch (err){ throw err; }
+}
+"#;
+
+    let expected = r#"fn run() {
+    try {
+        work();
+    } catch (err) {
+        throw err;
+    }
+}
+"#;
+
+    assert_formats_to(source, expected);
+}
+
+#[test]
+fn formatter_formats_private_typed_functions_and_caller_scope_calls() {
+    let source = r#"
+private fn int.do_update(left,right){helper!(left,right)}
+fn "Custom-Type".refresh(){call!(worker,2);}
+"#;
+
+    let expected = r#"private fn int.do_update(left, right) {
+    helper!(left, right)
+}
+
+fn "Custom-Type".refresh() {
+    call!(worker, 2);
+}
+"#;
+
+    assert_formats_to(source, expected);
+}
+
+#[test]
+fn formatter_formats_do_until_loops() {
+    let source = r#"
+fn run(){
+do { step() } until ready()
+}
+"#;
+
+    let expected = r#"fn run() {
+    do {
+        step()
+    } until ready()
+}
+"#;
+
+    assert_formats_to(source, expected);
+}
+
+#[test]
+fn formatter_wraps_long_binary_assignments_under_width_constraints() {
+    let source = r#"
+fn run(){
+let total=alpha+beta+gamma+delta;
+target=left+middle+right+tail;
+}
+"#;
+
+    let expected = r#"fn run() {
+    let total = alpha
+        + beta
+        + gamma
+        + delta;
+    target = left
+        + middle
+        + right
+        + tail;
+}
+"#;
+
+    assert_formats_to_with_options(
+        source,
+        expected,
+        &FormatOptions {
+            max_line_length: 20,
+            ..FormatOptions::default()
+        },
+    );
+}
+
+#[test]
+fn formatter_wraps_long_access_chains_under_width_constraints() {
+    let source = r#"
+fn run(){
+let value=module::service::profile?[index+offset].display_name;
+}
+"#;
+
+    let expected = r#"fn run() {
+    let value = module
+        ::service
+        ::profile
+        ?[index + offset]
+        .display_name;
+}
+"#;
+
+    assert_formats_to_with_options(
+        source,
+        expected,
+        &FormatOptions {
+            max_line_length: 24,
+            ..FormatOptions::default()
+        },
+    );
 }

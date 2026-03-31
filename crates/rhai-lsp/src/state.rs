@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Result, anyhow};
 use lsp_types::Uri;
 use rhai_db::{ChangeImpact, ChangeSet, FileChange};
+use rhai_fmt::{ContainerLayoutStyle, ImportSortOrder};
 use rhai_ide::AnalysisHost;
 use rhai_syntax::{AstNode, Expr, Item, Root, Stmt, TokenKind, parse_text};
 use rhai_vfs::{DocumentVersion, FileId, normalize_path};
@@ -64,9 +65,31 @@ impl Default for InlayHintSettings {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FormatterSettings {
+    pub max_line_length: usize,
+    pub trailing_commas: bool,
+    pub final_newline: bool,
+    pub container_layout: ContainerLayoutStyle,
+    pub import_sort_order: ImportSortOrder,
+}
+
+impl Default for FormatterSettings {
+    fn default() -> Self {
+        Self {
+            max_line_length: 100,
+            trailing_commas: true,
+            final_newline: true,
+            container_layout: ContainerLayoutStyle::Auto,
+            import_sort_order: ImportSortOrder::Preserve,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct ServerSettings {
     pub inlay_hints: InlayHintSettings,
+    pub formatter: FormatterSettings,
 }
 
 #[derive(Debug)]

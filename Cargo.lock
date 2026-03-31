@@ -435,6 +435,7 @@ dependencies = [
  "lsp-server",
  "lsp-types",
  "rhai-db",
+ "rhai-fmt",
  "rhai-hir",
  "rhai-ide",
  "rhai-project",

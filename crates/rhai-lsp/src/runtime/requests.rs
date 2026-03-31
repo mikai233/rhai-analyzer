@@ -214,13 +214,14 @@ pub(crate) fn handle_request(
         Formatting::METHOD => {
             let params: lsp_types::DocumentFormattingParams =
                 serde_json::from_value(request.params)?;
-            let result = server.format_document(&params.text_document.uri)?;
+            let result = server.format_document(&params.text_document.uri, params.options)?;
             send_ok(connection, request.id, result)?;
         }
         RangeFormatting::METHOD => {
             let params: lsp_types::DocumentRangeFormattingParams =
                 serde_json::from_value(request.params)?;
-            let result = server.format_range(&params.text_document.uri, params.range)?;
+            let result =
+                server.format_range(&params.text_document.uri, params.range, params.options)?;
             send_ok(connection, request.id, result)?;
         }
         CodeActionRequest::METHOD => {

@@ -8,9 +8,10 @@ use crate::{SourceChange, TextEdit};
 pub(crate) fn format_document(
     snapshot: &DatabaseSnapshot,
     file_id: FileId,
+    options: &FormatOptions,
 ) -> Option<SourceChange> {
     let text = snapshot.file_text(file_id)?;
-    let formatted = format_text(text.as_ref(), &FormatOptions::default());
+    let formatted = format_text(text.as_ref(), options);
     if !formatted.changed {
         return None;
     }
@@ -26,9 +27,10 @@ pub(crate) fn format_range(
     snapshot: &DatabaseSnapshot,
     file_id: FileId,
     range: TextRange,
+    options: &FormatOptions,
 ) -> Option<SourceChange> {
     let text = snapshot.file_text(file_id)?;
-    let formatted = format_range_text(text.as_ref(), range, &FormatOptions::default())?;
+    let formatted = format_range_text(text.as_ref(), range, options)?;
     if !formatted.changed {
         return None;
     }

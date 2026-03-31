@@ -9,6 +9,14 @@ export interface RhaiInlayHintConfig {
     readonly returnTypes: boolean;
 }
 
+export interface RhaiFormattingConfig {
+    readonly maxLineLength: number;
+    readonly trailingCommas: boolean;
+    readonly finalNewline: boolean;
+    readonly containerLayout: "auto" | "preferSingleLine" | "preferMultiLine";
+    readonly importSortOrder: "preserve" | "modulePath";
+}
+
 export interface RhaiExtensionConfig {
     readonly serverPath: string | undefined;
     readonly transport: RhaiServerTransport;
@@ -16,6 +24,7 @@ export interface RhaiExtensionConfig {
     readonly logLevel: string;
     readonly trace: Trace;
     readonly inlayHints: RhaiInlayHintConfig;
+    readonly formatting: RhaiFormattingConfig;
 }
 
 export function loadConfig(): RhaiExtensionConfig {
@@ -30,6 +39,19 @@ export function loadConfig(): RhaiExtensionConfig {
         parameters: config.get<boolean>("inlayHints.parameters", true),
         returnTypes: config.get<boolean>("inlayHints.returnTypes", true),
     };
+    const formatting = {
+        maxLineLength: config.get<number>("format.maxLineLength", 100),
+        trailingCommas: config.get<boolean>("format.trailingCommas", true),
+        finalNewline: config.get<boolean>("format.finalNewline", true),
+        containerLayout: config.get<"auto" | "preferSingleLine" | "preferMultiLine">(
+            "format.containerLayout",
+            "auto",
+        ),
+        importSortOrder: config.get<"preserve" | "modulePath">(
+            "format.importSortOrder",
+            "preserve",
+        ),
+    };
 
     return {
         serverPath: serverPath && serverPath.length > 0 ? serverPath : undefined,
@@ -38,6 +60,7 @@ export function loadConfig(): RhaiExtensionConfig {
         logLevel,
         trace: traceFromConfig(traceSetting),
         inlayHints,
+        formatting,
     };
 }
 

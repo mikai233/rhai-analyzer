@@ -77,6 +77,7 @@ async function startClient(
             },
             initializationOptions: {
                 inlayHints: config.inlayHints,
+                formatting: config.formatting,
             },
             outputChannel,
             traceOutputChannel: traceChannel,

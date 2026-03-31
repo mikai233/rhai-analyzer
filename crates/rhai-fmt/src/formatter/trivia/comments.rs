@@ -1,64 +1,124 @@
-use crate::{FormatOptions, IndentStyle};
 use rhai_syntax::{AliasClause, SyntaxNode, TextRange, TokenKind};
 
 use crate::formatter::Formatter;
 use crate::formatter::layout::doc::Doc;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CommentKind {
+    Line,
+    DocLine,
+    Block,
+    DocBlock,
+    Shebang,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AttachedComment {
+    pub(crate) kind: CommentKind,
+    pub(crate) text: String,
+    pub(crate) blank_lines_before: usize,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct GapTrivia {
+    pub(crate) trailing_comments: Vec<AttachedComment>,
+    pub(crate) line_comments: Vec<AttachedComment>,
+    pub(crate) trailing_blank_lines_before_next: usize,
+}
 
 impl Formatter<'_> {
     pub(crate) fn alias_name(&self, alias: AliasClause<'_>) -> Option<&str> {
         alias.alias_token().map(|token| token.text(self.source))
     }
 
-    pub(crate) fn format_comment_region(
-        &self,
-        start: usize,
-        end: usize,
-        indent: usize,
-    ) -> Option<String> {
+    pub(crate) fn node_has_comments(&self, node: &SyntaxNode) -> bool {
+        let start = u32::from(node.range().start()) as usize;
+        let end = u32::from(node.range().end()) as usize;
+
+        self.range_has_comments(start, end)
+    }
+
+    pub(crate) fn node_has_unowned_comments(&self, node: &SyntaxNode) -> bool {
+        let child_ranges = node
+            .children()
+            .iter()
+            .filter_map(|child| child.as_node())
+            .map(|child| child.range())
+            .collect::<Vec<_>>();
+
+        let start = u32::from(node.range().start()) as usize;
+        let end = u32::from(node.range().end()) as usize;
+
+        self.tokens
+            .iter()
+            .copied()
+            .filter(|token| self.token_in_range(*token, start, end))
+            .any(|token| {
+                self.comment_kind(token.kind()).is_some()
+                    && !child_ranges
+                        .iter()
+                        .any(|range| range_contains(*range, token.range()))
+            })
+    }
+
+    pub(crate) fn range_has_comments(&self, start: usize, end: usize) -> bool {
+        self.tokens
+            .iter()
+            .copied()
+            .filter(|token| self.token_in_range(*token, start, end))
+            .any(|token| self.comment_kind(token.kind()).is_some())
+    }
+
+    pub(crate) fn comment_gap(&self, start: usize, end: usize, has_previous: bool) -> GapTrivia {
         if start >= end || end > self.source.len() {
-            return None;
+            return GapTrivia::default();
         }
 
-        let slice = &self.source[start..end];
-        let mut lines = Vec::<String>::new();
-        let mut in_block_comment = false;
-        let mut pending_blank = false;
+        let start_line = self.line_index(start);
+        let mut cursor_line = start_line;
+        let mut trailing_comments = Vec::new();
+        let mut line_comments = Vec::new();
 
-        for raw_line in slice.lines() {
-            let trimmed = raw_line.trim();
-            let trimmed_start = raw_line.trim_start();
-            let is_comment_line = in_block_comment
-                || trimmed_start.starts_with("//")
-                || trimmed_start.starts_with("#!")
-                || trimmed_start.starts_with("/*");
+        for token in self
+            .tokens
+            .iter()
+            .copied()
+            .filter(|token| self.token_in_range(*token, start, end))
+        {
+            let Some(kind) = self.comment_kind(token.kind()) else {
+                continue;
+            };
 
-            if is_comment_line {
-                if pending_blank && !lines.is_empty() {
-                    lines.push(String::new());
-                    pending_blank = false;
-                }
-                lines.push(format!(
-                    "{}{}",
-                    indent_text(self.options, indent),
-                    trimmed_start.trim_end()
-                ));
-            } else if trimmed.is_empty() && !lines.is_empty() {
-                pending_blank = true;
+            let comment_start_line = self.line_index(u32::from(token.range().start()) as usize);
+            let comment_end_line = self.line_index_for_end(u32::from(token.range().end()) as usize);
+            let text = token.text(self.source).to_owned();
+
+            if has_previous && comment_start_line == start_line && line_comments.is_empty() {
+                trailing_comments.push(AttachedComment {
+                    kind,
+                    text,
+                    blank_lines_before: 0,
+                });
+                cursor_line = comment_end_line;
+                continue;
             }
 
-            if in_block_comment {
-                if trimmed_start.contains("*/") {
-                    in_block_comment = false;
-                }
-            } else if trimmed_start.starts_with("/*") && !trimmed_start.contains("*/") {
-                in_block_comment = true;
-            }
+            let blank_lines_before = comment_start_line.saturating_sub(cursor_line + 1);
+            line_comments.push(AttachedComment {
+                kind,
+                text,
+                blank_lines_before,
+            });
+            cursor_line = comment_end_line;
         }
 
-        if lines.is_empty() {
-            None
-        } else {
-            Some(lines.join("\n"))
+        let next_line = self.line_index(end);
+        let trailing_blank_lines_before_next = next_line.saturating_sub(cursor_line + 1);
+
+        GapTrivia {
+            trailing_comments,
+            line_comments,
+            trailing_blank_lines_before_next,
         }
     }
 
@@ -70,47 +130,113 @@ impl Formatter<'_> {
             .map(|token| token.range())
     }
 
-    pub(crate) fn indent(&self, level: usize) -> String {
-        indent_text(self.options, level)
-    }
+    pub(crate) fn gap_separator_doc(
+        &self,
+        gap: &GapTrivia,
+        minimum_newlines: usize,
+        has_previous: bool,
+        include_terminal_newline: bool,
+    ) -> Doc {
+        let mut parts = Vec::new();
 
-    pub(crate) fn separator_doc(&self, minimum_newlines: usize, start: usize, end: usize) -> Doc {
-        Doc::concat(vec![
-            Doc::hard_line();
-            self.separator_count(minimum_newlines, start, end)
-        ])
-    }
-
-    fn separator_count(&self, minimum_newlines: usize, start: usize, end: usize) -> usize {
-        minimum_newlines.max(self.extra_blank_line_count(start, end) + 1)
-    }
-
-    fn extra_blank_line_count(&self, start: usize, end: usize) -> usize {
-        if start >= end || end > self.source.len() {
-            return 0;
+        if !gap.trailing_comments.is_empty() {
+            parts.push(self.render_trailing_comments_doc(&gap.trailing_comments));
         }
 
-        let slice = &self.source[start..end];
-        let mut lines = slice.lines().collect::<Vec<_>>();
-        if lines.is_empty() {
-            return 0;
+        if !gap.line_comments.is_empty() {
+            let prefix_newlines = if has_previous {
+                minimum_newlines.max(gap.line_comments[0].blank_lines_before + 1)
+            } else {
+                gap.line_comments[0].blank_lines_before
+            };
+            parts.push(hard_lines(prefix_newlines));
+            parts.push(self.render_line_comments_doc(&gap.line_comments));
+
+            let suffix_newlines = if include_terminal_newline {
+                gap.trailing_blank_lines_before_next + 1
+            } else {
+                gap.trailing_blank_lines_before_next
+            };
+            if suffix_newlines > 0 {
+                parts.push(hard_lines(suffix_newlines));
+            }
+        } else if has_previous {
+            let suffix_newlines = if include_terminal_newline {
+                minimum_newlines.max(gap.trailing_blank_lines_before_next + 1)
+            } else {
+                gap.trailing_blank_lines_before_next
+            };
+            if suffix_newlines > 0 {
+                parts.push(hard_lines(suffix_newlines));
+            }
         }
 
-        lines.remove(0);
-        if !slice.ends_with('\n') && lines.last().is_some_and(|line| line.trim().is_empty()) {
-            lines.pop();
+        Doc::concat(parts)
+    }
+
+    pub(crate) fn render_line_comments_doc(&self, comments: &[AttachedComment]) -> Doc {
+        let mut parts = Vec::new();
+
+        for (index, comment) in comments.iter().enumerate() {
+            if index > 0 {
+                parts.push(hard_lines(comment.blank_lines_before + 1));
+            }
+            parts.push(Doc::text(render_comment_text(comment)));
         }
 
-        lines
-            .into_iter()
-            .filter(|line| line.trim().is_empty())
-            .count()
+        Doc::concat(parts)
+    }
+
+    fn render_trailing_comments_doc(&self, comments: &[AttachedComment]) -> Doc {
+        let parts = comments
+            .iter()
+            .flat_map(|comment| [Doc::text(" "), Doc::text(render_comment_text(comment))])
+            .collect::<Vec<_>>();
+        Doc::concat(parts)
+    }
+
+    fn comment_kind(&self, kind: TokenKind) -> Option<CommentKind> {
+        match kind {
+            TokenKind::LineComment => Some(CommentKind::Line),
+            TokenKind::DocLineComment => Some(CommentKind::DocLine),
+            TokenKind::BlockComment => Some(CommentKind::Block),
+            TokenKind::DocBlockComment => Some(CommentKind::DocBlock),
+            TokenKind::Shebang => Some(CommentKind::Shebang),
+            _ => None,
+        }
+    }
+
+    fn token_in_range(&self, token: rhai_syntax::SyntaxToken, start: usize, end: usize) -> bool {
+        let token_start = u32::from(token.range().start()) as usize;
+        let token_end = u32::from(token.range().end()) as usize;
+        token_start >= start && token_end <= end
+    }
+
+    fn line_index(&self, offset: usize) -> usize {
+        self.line_starts
+            .partition_point(|line_start| *line_start <= offset)
+            .saturating_sub(1)
+    }
+
+    fn line_index_for_end(&self, offset: usize) -> usize {
+        self.line_index(offset.saturating_sub(1))
     }
 }
 
-fn indent_text(options: &FormatOptions, level: usize) -> String {
-    match options.indent_style {
-        IndentStyle::Spaces => " ".repeat(level * options.indent_width),
-        IndentStyle::Tabs => "\t".repeat(level),
+fn render_comment_text(comment: &AttachedComment) -> String {
+    match comment.kind {
+        CommentKind::Block | CommentKind::DocBlock => comment.text.clone(),
+        CommentKind::Line | CommentKind::DocLine | CommentKind::Shebang => {
+            comment.text.trim().to_owned()
+        }
     }
+}
+
+fn hard_lines(count: usize) -> Doc {
+    Doc::concat(vec![Doc::hard_line(); count])
+}
+
+fn range_contains(container: TextRange, candidate: TextRange) -> bool {
+    u32::from(container.start()) <= u32::from(candidate.start())
+        && u32::from(candidate.end()) <= u32::from(container.end())
 }
