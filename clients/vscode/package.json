@@ -24,6 +24,7 @@
   "main": "./out/extension.js",
   "files": [
     "out/**/*",
+    "node_modules/**/*",
     "server/**/*",
     "language-configuration.json",
     "LICENSE",
