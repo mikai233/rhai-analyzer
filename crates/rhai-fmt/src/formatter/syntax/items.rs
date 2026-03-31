@@ -318,32 +318,7 @@ impl Formatter<'_> {
                             include_terminal_newline: true,
                         },
                     ));
-
-                    let mut catch_head = String::from("catch");
-                    if let Some(binding) = catch_clause.binding_token() {
-                        catch_head.push_str(" (");
-                        catch_head.push_str(binding.text(self.source));
-                        catch_head.push(')');
-                    }
-                    let catch_body = catch_clause
-                        .body()
-                        .map(|body| self.format_block_doc(body, indent))
-                        .unwrap_or_else(|| Doc::text("{}"));
-                    let catch_body_start = catch_clause
-                        .body()
-                        .map(|body| u32::from(body.syntax().range().start()) as usize)
-                        .unwrap_or_else(|| u32::from(catch_clause.syntax().range().end()) as usize);
-                    let catch_head_end = self
-                        .token_range(catch_clause.syntax(), TokenKind::CloseParen)
-                        .map(range_end)
-                        .or_else(|| {
-                            self.token_range(catch_clause.syntax(), TokenKind::CatchKw)
-                                .map(range_end)
-                        })
-                        .unwrap_or(catch_body_start);
-                    parts.push(Doc::text(catch_head));
-                    parts.push(self.head_body_separator_doc(catch_head_end, catch_body_start));
-                    parts.push(catch_body);
+                    parts.push(self.format_catch_clause_doc(catch_clause, indent));
                 }
                 Doc::concat(parts)
             }
@@ -407,20 +382,42 @@ impl Formatter<'_> {
             return Doc::text(self.raw(import_stmt.syntax()));
         }
 
-        let mut parts = vec![Doc::text("import ")];
         let module = import_stmt.module();
-        if let Some(module) = module {
-            parts.push(self.format_expr_doc(module, indent));
-        }
-        if let (Some(module), Some(alias)) = (module, import_stmt.alias()) {
-            parts.push(self.space_or_tight_statement_gap_doc(
+        let Some(module) = module else {
+            return Doc::text("import;");
+        };
+
+        let mut tail_parts = vec![self.format_expr_doc(module, indent)];
+        if let Some(alias) = import_stmt.alias() {
+            tail_parts.push(self.space_or_tight_statement_gap_doc(
                 range_end(module.syntax().range()),
                 range_start(alias.syntax().range()),
             ));
-            parts.push(self.format_alias_clause_doc(alias));
+            tail_parts.push(self.format_alias_clause_doc(alias));
         }
-        parts.push(Doc::text(";"));
-        Doc::concat(parts)
+        let tail = Doc::concat(tail_parts);
+        let module_start = range_start(module.syntax().range());
+        let keyword_end = self
+            .token_range(import_stmt.syntax(), TokenKind::ImportKw)
+            .map(range_end)
+            .unwrap_or(module_start);
+
+        if !self.range_has_comments(keyword_end, module_start)
+            && self.statement_tail_renders_single_line(&tail, indent)
+        {
+            return Doc::group(Doc::concat(vec![
+                Doc::text("import"),
+                Doc::indent(1, Doc::concat(vec![Doc::soft_line(), tail])),
+                Doc::text(";"),
+            ]));
+        }
+
+        Doc::concat(vec![
+            Doc::text("import"),
+            self.space_or_tight_statement_gap_doc(keyword_end, module_start),
+            tail,
+            Doc::text(";"),
+        ])
     }
 
     fn format_export_stmt(&self, export_stmt: rhai_syntax::ExportStmt<'_>, indent: usize) -> Doc {
@@ -428,23 +425,63 @@ impl Formatter<'_> {
             return Doc::text(self.raw(export_stmt.syntax()));
         }
 
-        let mut parts = vec![Doc::text("export ")];
         if let Some(declaration) = export_stmt.declaration() {
-            parts.push(self.format_stmt(declaration, indent));
+            let declaration_doc = self.format_stmt(declaration, indent);
+            let declaration_start = range_start(declaration.syntax().range());
+            let keyword_end = self
+                .token_range(export_stmt.syntax(), TokenKind::ExportKw)
+                .map(range_end)
+                .unwrap_or(declaration_start);
+
+            if !self.range_has_comments(keyword_end, declaration_start)
+                && self.statement_tail_renders_single_line(&declaration_doc, indent)
+            {
+                return Doc::group(Doc::concat(vec![
+                    Doc::text("export"),
+                    Doc::indent(1, Doc::concat(vec![Doc::soft_line(), declaration_doc])),
+                ]));
+            }
+
+            return Doc::concat(vec![
+                Doc::text("export"),
+                self.space_or_tight_statement_gap_doc(keyword_end, declaration_start),
+                declaration_doc,
+            ]);
         } else if let Some(target) = export_stmt.target() {
-            parts.push(self.format_expr_doc(target, indent));
+            let mut tail_parts = vec![self.format_expr_doc(target, indent)];
             if let Some(alias) = export_stmt.alias() {
-                parts.push(self.space_or_tight_statement_gap_doc(
+                tail_parts.push(self.space_or_tight_statement_gap_doc(
                     range_end(target.syntax().range()),
                     range_start(alias.syntax().range()),
                 ));
-                parts.push(self.format_alias_clause_doc(alias));
+                tail_parts.push(self.format_alias_clause_doc(alias));
             }
-            parts.push(Doc::text(";"));
-        } else {
-            parts.push(Doc::text(";"));
+            let tail = Doc::concat(tail_parts);
+            let target_start = range_start(target.syntax().range());
+            let keyword_end = self
+                .token_range(export_stmt.syntax(), TokenKind::ExportKw)
+                .map(range_end)
+                .unwrap_or(target_start);
+
+            if !self.range_has_comments(keyword_end, target_start)
+                && self.statement_tail_renders_single_line(&tail, indent)
+            {
+                return Doc::group(Doc::concat(vec![
+                    Doc::text("export"),
+                    Doc::indent(1, Doc::concat(vec![Doc::soft_line(), tail])),
+                    Doc::text(";"),
+                ]));
+            }
+
+            return Doc::concat(vec![
+                Doc::text("export"),
+                self.space_or_tight_statement_gap_doc(keyword_end, target_start),
+                tail,
+                Doc::text(";"),
+            ]);
         }
-        Doc::concat(parts)
+
+        Doc::text("export;")
     }
 
     fn format_expr_stmt(&self, expr_stmt: ExprStmt<'_>, indent: usize) -> Doc {
@@ -914,7 +951,7 @@ impl Formatter<'_> {
             parts.push(Doc::text(token.text(self.source)));
         }
 
-        Doc::concat(parts)
+        Doc::group(Doc::concat(parts))
     }
 
     fn function_params_separator_doc(&self, function: FnItem<'_>) -> Doc {
@@ -928,7 +965,11 @@ impl Formatter<'_> {
             return Doc::nil();
         };
 
-        self.function_signature_separator_doc(range_end(last_token.range()), params_start, "")
+        if self.range_has_comments(range_end(last_token.range()), params_start) {
+            self.tight_comment_gap_doc(range_end(last_token.range()), params_start)
+        } else {
+            Doc::nil()
+        }
     }
 
     fn function_signature_tokens(&self, function: FnItem<'_>) -> Vec<SyntaxToken> {
@@ -957,13 +998,17 @@ impl Formatter<'_> {
 
     fn function_signature_separator_doc(&self, start: usize, end: usize, inline_text: &str) -> Doc {
         if !self.range_has_comments(start, end) {
-            return Doc::text(inline_text);
+            return if inline_text.is_empty() {
+                Doc::text("")
+            } else {
+                Doc::soft_line()
+            };
         }
 
         self.tight_comment_gap_doc(start, end)
     }
 
-    fn format_alias_clause_doc(&self, alias: rhai_syntax::AliasClause<'_>) -> Doc {
+    pub(crate) fn format_alias_clause_doc(&self, alias: rhai_syntax::AliasClause<'_>) -> Doc {
         let Some(alias_name) = alias.alias_token() else {
             return Doc::text(self.raw(alias.syntax()));
         };
@@ -978,6 +1023,41 @@ impl Formatter<'_> {
                 range_start(alias_name.range()),
             ),
             Doc::text(alias_name.text(self.source)),
+        ])
+    }
+
+    pub(crate) fn format_catch_clause_doc(
+        &self,
+        catch_clause: rhai_syntax::CatchClause<'_>,
+        indent: usize,
+    ) -> Doc {
+        let mut catch_head = String::from("catch");
+        if let Some(binding) = catch_clause.binding_token() {
+            catch_head.push_str(" (");
+            catch_head.push_str(binding.text(self.source));
+            catch_head.push(')');
+        }
+        let catch_body = catch_clause
+            .body()
+            .map(|body| self.format_block_doc(body, indent))
+            .unwrap_or_else(|| Doc::text("{}"));
+        let catch_body_start = catch_clause
+            .body()
+            .map(|body| u32::from(body.syntax().range().start()) as usize)
+            .unwrap_or_else(|| u32::from(catch_clause.syntax().range().end()) as usize);
+        let catch_head_end = self
+            .token_range(catch_clause.syntax(), TokenKind::CloseParen)
+            .map(range_end)
+            .or_else(|| {
+                self.token_range(catch_clause.syntax(), TokenKind::CatchKw)
+                    .map(range_end)
+            })
+            .unwrap_or(catch_body_start);
+
+        Doc::concat(vec![
+            Doc::text(catch_head),
+            self.head_body_separator_doc(catch_head_end, catch_body_start),
+            catch_body,
         ])
     }
 }

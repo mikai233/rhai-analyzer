@@ -5,7 +5,8 @@ pub(crate) mod trivia;
 
 use crate::{FormatOptions, FormatResult, RangeFormatResult};
 use rhai_syntax::{
-    ArgList, ArrayItemList, AstNode, BlockExpr, ClosureParamList, Expr, Item, ParamList, Root,
+    AliasClause, ArgList, ArrayItemList, AstNode, BlockExpr, CatchClause, ClosureParamList,
+    DoCondition, ElseBranch, Expr, ForBindings, Item, ParamList, Root, SwitchPatternList,
     SyntaxKind, SyntaxNode, SyntaxToken, TextRange, TextSize, parse_text,
 };
 
@@ -100,6 +101,29 @@ pub fn format_range(
             &formatter.format_array_item_list_body_doc(items, owner.base_indent),
             owner.base_indent,
         ),
+        RangeOwnerKind::SwitchPatternList(patterns) => formatter.render_fragment(
+            &formatter.format_switch_patterns_doc(patterns, owner.base_indent),
+            owner.base_indent,
+        ),
+        RangeOwnerKind::ForBindings(bindings) => formatter.render_fragment(
+            &formatter.format_for_bindings_doc(Some(bindings)),
+            owner.base_indent,
+        ),
+        RangeOwnerKind::DoCondition(condition) => formatter.render_fragment(
+            &formatter.format_do_condition_doc(condition, owner.base_indent),
+            owner.base_indent,
+        ),
+        RangeOwnerKind::CatchClause(catch_clause) => formatter.render_fragment(
+            &formatter.format_catch_clause_doc(catch_clause, owner.base_indent),
+            owner.base_indent,
+        ),
+        RangeOwnerKind::AliasClause(alias) => {
+            formatter.render_fragment(&formatter.format_alias_clause_doc(alias), owner.base_indent)
+        }
+        RangeOwnerKind::ElseBranch(else_branch) => formatter.render_fragment(
+            &formatter.format_else_branch_doc(else_branch, owner.base_indent),
+            owner.base_indent,
+        ),
     };
     let start = u32::from(owner.range.start()) as usize;
     let end = u32::from(owner.range.end()) as usize;
@@ -165,6 +189,12 @@ enum RangeOwnerKind<'a> {
     ClosureParamList(ClosureParamList<'a>),
     ArgList(ArgList<'a>),
     ArrayItemList(ArrayItemList<'a>),
+    SwitchPatternList(SwitchPatternList<'a>),
+    ForBindings(ForBindings<'a>),
+    DoCondition(DoCondition<'a>),
+    CatchClause(CatchClause<'a>),
+    AliasClause(AliasClause<'a>),
+    ElseBranch(ElseBranch<'a>),
 }
 
 fn select_range_owner<'a>(root: Root<'a>, requested_range: TextRange) -> Option<RangeOwner<'a>> {
@@ -254,6 +284,54 @@ fn range_owner_for_node<'a>(node: &'a SyntaxNode, block_depth: usize) -> Option<
             range: node.range(),
             base_indent: block_depth,
             kind: RangeOwnerKind::ArrayItemList(items),
+        });
+    }
+
+    if let Some(patterns) = SwitchPatternList::cast(node) {
+        return Some(RangeOwner {
+            range: node.range(),
+            base_indent: block_depth,
+            kind: RangeOwnerKind::SwitchPatternList(patterns),
+        });
+    }
+
+    if let Some(bindings) = ForBindings::cast(node) {
+        return Some(RangeOwner {
+            range: node.range(),
+            base_indent: block_depth,
+            kind: RangeOwnerKind::ForBindings(bindings),
+        });
+    }
+
+    if let Some(condition) = DoCondition::cast(node) {
+        return Some(RangeOwner {
+            range: node.range(),
+            base_indent: block_depth,
+            kind: RangeOwnerKind::DoCondition(condition),
+        });
+    }
+
+    if let Some(catch_clause) = CatchClause::cast(node) {
+        return Some(RangeOwner {
+            range: node.range(),
+            base_indent: block_depth,
+            kind: RangeOwnerKind::CatchClause(catch_clause),
+        });
+    }
+
+    if let Some(alias) = AliasClause::cast(node) {
+        return Some(RangeOwner {
+            range: node.range(),
+            base_indent: block_depth,
+            kind: RangeOwnerKind::AliasClause(alias),
+        });
+    }
+
+    if let Some(else_branch) = ElseBranch::cast(node) {
+        return Some(RangeOwner {
+            range: node.range(),
+            base_indent: block_depth,
+            kind: RangeOwnerKind::ElseBranch(else_branch),
         });
     }
 

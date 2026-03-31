@@ -445,3 +445,126 @@ switch mode { very_long_pattern_name => module::service::profile, _ => fallback(
         },
     );
 }
+
+#[test]
+fn formatter_wraps_long_control_flow_heads_under_width_constraints() {
+    let source = r#"
+fn run(items){
+if module::service::profile { step() } else { fallback() }
+while module::service::ready { tick() }
+for (very_long_item_name,very_long_index_name) in module::service::items { consume(very_long_item_name,very_long_index_name); }
+do { tick() } until module::service::ready
+}
+"#;
+
+    let expected = r#"fn run(items) {
+    if module::service
+            ::profile {
+        step()
+    } else {
+        fallback()
+    }
+    while module::service
+            ::ready {
+        tick()
+    }
+    for
+        (
+            very_long_item_name,
+            very_long_index_name
+        )
+        in module::service
+            ::items {
+        consume(
+            very_long_item_name,
+            very_long_index_name,
+        );
+    }
+    do {
+        tick()
+    } until
+        module::service::ready
+}
+"#;
+
+    assert_formats_to_with_options(
+        source,
+        expected,
+        &FormatOptions {
+            max_line_length: 28,
+            ..FormatOptions::default()
+        },
+    );
+}
+
+#[test]
+fn formatter_wraps_long_closure_heads_under_width_constraints() {
+    let source = r#"
+fn run(){
+let mapper=|very_long_value_name| value;
+}
+"#;
+
+    let expected = r#"fn run() {
+    let mapper
+        = |very_long_value_name|
+            value;
+}
+"#;
+
+    assert_formats_to_with_options(
+        source,
+        expected,
+        &FormatOptions {
+            max_line_length: 34,
+            ..FormatOptions::default()
+        },
+    );
+}
+
+#[test]
+fn formatter_wraps_long_import_export_heads_under_width_constraints() {
+    let source = r#"
+import "very_long_module_path_name" as profile_name;
+export helper_with_a_really_long_public_name as public_name;
+"#;
+
+    let expected = r#"import
+    "very_long_module_path_name" as profile_name;
+
+export
+    helper_with_a_really_long_public_name as public_name;
+"#;
+
+    assert_formats_to_with_options(
+        source,
+        expected,
+        &FormatOptions {
+            max_line_length: 40,
+            ..FormatOptions::default()
+        },
+    );
+}
+
+#[test]
+fn formatter_wraps_long_function_signatures_under_width_constraints() {
+    let source = r#"
+private fn "Custom-Type".very_long_method_name(left,right,third){left+right+third}
+"#;
+
+    let expected = r#"private
+fn
+"Custom-Type".very_long_method_name(left, right, third) {
+    left + right + third
+}
+"#;
+
+    assert_formats_to_with_options(
+        source,
+        expected,
+        &FormatOptions {
+            max_line_length: 22,
+            ..FormatOptions::default()
+        },
+    );
+}

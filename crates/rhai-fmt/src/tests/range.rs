@@ -138,3 +138,120 @@ fn range_formatter_can_target_call_argument_lists() {
         "fn run(){helper(\n        alpha,\n        beta,\n        gamma,\n        delta,\n);}\n"
     );
 }
+
+#[test]
+fn range_formatter_can_target_switch_pattern_lists() {
+    let source = "fn run(kind){switch kind {foo|bar=>1}}\n";
+    let selection_start =
+        u32::try_from(source.find("foo").expect("expected pattern start")).expect("offset");
+    let selection_end =
+        u32::try_from(source.find("=>").expect("expected arrow start")).expect("offset");
+    let result = format_range(
+        source,
+        TextRange::new(selection_start.into(), selection_end.into()),
+        &FormatOptions::default(),
+    )
+    .expect("expected range formatting result");
+
+    assert_eq!(
+        apply_range_edit(source, result.range, &result.text),
+        "fn run(kind){switch kind {foo | bar=>1}}\n"
+    );
+}
+
+#[test]
+fn range_formatter_can_target_for_bindings() {
+    let source = "fn run(){for (item,index) in values {index}}\n";
+    let selection_start =
+        u32::try_from(source.find("item").expect("expected bindings")).expect("offset");
+    let selection_end =
+        u32::try_from(source.find(") in").expect("expected binding end") + 1).expect("offset");
+    let result = format_range(
+        source,
+        TextRange::new(selection_start.into(), selection_end.into()),
+        &FormatOptions::default(),
+    )
+    .expect("expected range formatting result");
+
+    assert_eq!(
+        apply_range_edit(source, result.range, &result.text),
+        "fn run(){for (item, index) in values {index}}\n"
+    );
+}
+
+#[test]
+fn range_formatter_can_target_do_conditions() {
+    let source = "fn run(){do { work() } while ready&&steady}\n";
+    let selection_start =
+        u32::try_from(source.find("while").expect("expected do condition")).expect("offset");
+    let selection_end = u32::try_from(source.len() - 2).expect("offset");
+    let result = format_range(
+        source,
+        TextRange::new(selection_start.into(), selection_end.into()),
+        &FormatOptions::default(),
+    )
+    .expect("expected range formatting result");
+
+    assert_eq!(
+        apply_range_edit(source, result.range, &result.text),
+        "fn run(){do { work() } while ready && steady}\n"
+    );
+}
+
+#[test]
+fn range_formatter_can_target_catch_clauses() {
+    let source = "fn run(){try { work() } catch (err){handle(err+1)}}\n";
+    let selection_start =
+        u32::try_from(source.find("catch").expect("expected catch clause")).expect("offset");
+    let selection_end = u32::try_from(source.len() - 2).expect("offset");
+    let result = format_range(
+        source,
+        TextRange::new(selection_start.into(), selection_end.into()),
+        &FormatOptions::default(),
+    )
+    .expect("expected range formatting result");
+
+    assert_eq!(
+        apply_range_edit(source, result.range, &result.text),
+        "fn run(){try { work() } catch (err) {\n        handle(err + 1)\n    }}\n"
+    );
+}
+
+#[test]
+fn range_formatter_can_target_alias_clauses() {
+    let source = "import \"pkg\" as   helper;\n";
+    let selection_start =
+        u32::try_from(source.find("as").expect("expected alias clause")).expect("offset");
+    let selection_end =
+        u32::try_from(source.find(";").expect("expected alias end")).expect("offset");
+    let result = format_range(
+        source,
+        TextRange::new(selection_start.into(), selection_end.into()),
+        &FormatOptions::default(),
+    )
+    .expect("expected range formatting result");
+
+    assert_eq!(
+        apply_range_edit(source, result.range, &result.text),
+        "import \"pkg\" as helper;\n"
+    );
+}
+
+#[test]
+fn range_formatter_can_target_else_branches() {
+    let source = "fn run(){if ready { work() } else { fallback(1+2) }}\n";
+    let selection_start =
+        u32::try_from(source.find("else").expect("expected else branch")).expect("offset");
+    let selection_end = u32::try_from(source.len() - 2).expect("offset");
+    let result = format_range(
+        source,
+        TextRange::new(selection_start.into(), selection_end.into()),
+        &FormatOptions::default(),
+    )
+    .expect("expected range formatting result");
+
+    assert_eq!(
+        apply_range_edit(source, result.range, &result.text),
+        "fn run(){if ready { work() } else {\n        fallback(1 + 2)\n    }}\n"
+    );
+}

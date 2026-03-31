@@ -1,8 +1,9 @@
 use rhai_syntax::{
     ArgList, ArrayExpr, ArrayItemList, AstNode, BinaryExpr, CallExpr, ClosureExpr,
-    ClosureParamList, DoExpr, Expr, FieldExpr, ForBindings, ForExpr, IfExpr, IndexExpr,
-    InterpolatedStringExpr, LoopExpr, ObjectExpr, ObjectField, ParamList, ParenExpr, PathExpr,
-    StringPart, SwitchArm, SwitchExpr, SyntaxNode, TextRange, TokenKind, WhileExpr,
+    ClosureParamList, DoCondition, DoExpr, ElseBranch, Expr, FieldExpr, ForBindings, ForExpr,
+    IfExpr, IndexExpr, InterpolatedStringExpr, LoopExpr, ObjectExpr, ObjectField, ParamList,
+    ParenExpr, PathExpr, StringPart, SwitchArm, SwitchExpr, SwitchPatternList, SyntaxNode,
+    TextRange, TokenKind, WhileExpr,
 };
 
 use crate::ContainerLayoutStyle;
@@ -763,8 +764,7 @@ impl Formatter<'_> {
             .map(|body| u32::from(body.syntax().range().start()) as usize)
             .unwrap_or_else(|| u32::from(if_expr.syntax().range().end()) as usize);
         let mut parts = vec![
-            Doc::text("if "),
-            condition,
+            self.group_keyword_clause_doc("if", condition),
             self.head_body_separator_doc(condition_end, then_start),
             then_branch,
         ];
@@ -788,23 +788,7 @@ impl Formatter<'_> {
                     include_terminal_newline: true,
                 },
             ));
-            parts.push(Doc::text("else"));
-
-            let else_body = else_branch.body();
-            let else_body_start = else_body
-                .map(|body| u32::from(body.syntax().range().start()) as usize)
-                .unwrap_or_else(|| u32::from(else_branch.syntax().range().end()) as usize);
-            let else_kw_end = self
-                .token_range(else_branch.syntax(), TokenKind::ElseKw)
-                .map(range_end)
-                .unwrap_or(else_body_start);
-            parts.push(self.head_body_separator_doc(else_kw_end, else_body_start));
-            parts.push(match else_body {
-                Some(Expr::If(nested_if)) => self.format_if_expr_doc(nested_if, indent),
-                Some(Expr::Block(block)) => self.format_block_doc(block, indent),
-                Some(other) => self.format_expr_doc(other, indent),
-                None => Doc::text("{}"),
-            });
+            parts.push(self.format_else_branch_doc(else_branch, indent));
         }
 
         Doc::concat(parts)
@@ -832,7 +816,10 @@ impl Formatter<'_> {
             self.comment_gap(open_brace_end, first_arm_start, false, !arms.is_empty());
 
         if arms.is_empty() && !leading_gap.has_vertical_comments() {
-            return Doc::concat(vec![Doc::text("switch "), scrutinee, Doc::text(" {}")]);
+            return Doc::concat(vec![
+                self.group_keyword_clause_doc("switch", scrutinee),
+                Doc::text(" {}"),
+            ]);
         }
 
         let mut body_parts = Vec::new();
@@ -881,8 +868,7 @@ impl Formatter<'_> {
         }
 
         Doc::concat(vec![
-            Doc::text("switch "),
-            scrutinee,
+            self.group_keyword_clause_doc("switch", scrutinee),
             Doc::text(" {"),
             Doc::indent(
                 1,
@@ -967,8 +953,7 @@ impl Formatter<'_> {
             .map(|body| u32::from(body.syntax().range().start()) as usize)
             .unwrap_or_else(|| u32::from(while_expr.syntax().range().end()) as usize);
         Doc::concat(vec![
-            Doc::text("while "),
-            condition,
+            self.group_keyword_clause_doc("while", condition),
             self.head_body_separator_doc(condition_end, body_start),
             body,
         ])
@@ -1009,17 +994,27 @@ impl Formatter<'_> {
         let body_start = body_expr
             .map(|body| u32::from(body.syntax().range().start()) as usize)
             .unwrap_or_else(|| u32::from(for_expr.syntax().range().end()) as usize);
+        let head = Doc::group(Doc::concat(vec![
+            Doc::text("for"),
+            Doc::indent(
+                1,
+                Doc::concat(vec![
+                    Doc::soft_line(),
+                    bindings,
+                    Doc::soft_line(),
+                    Doc::text("in "),
+                    iterable,
+                ]),
+            ),
+        ]));
         Doc::concat(vec![
-            Doc::text("for "),
-            bindings,
-            Doc::text(" in "),
-            iterable,
+            head,
             self.head_body_separator_doc(iterable_end, body_start),
             body,
         ])
     }
 
-    fn format_for_bindings_doc(&self, bindings: Option<ForBindings<'_>>) -> Doc {
+    pub(crate) fn format_for_bindings_doc(&self, bindings: Option<ForBindings<'_>>) -> Doc {
         let Some(bindings) = bindings else {
             return Doc::text("_");
         };
@@ -1070,11 +1065,21 @@ impl Formatter<'_> {
                         Doc::text(")"),
                     ])
                 } else {
-                    Doc::text(format!(
-                        "({}, {})",
-                        first.text(self.source),
-                        second.text(self.source)
-                    ))
+                    Doc::group(Doc::concat(vec![
+                        Doc::text("("),
+                        Doc::indent(
+                            1,
+                            Doc::concat(vec![
+                                Doc::line(),
+                                Doc::text(first.text(self.source)),
+                                Doc::text(","),
+                                Doc::soft_line(),
+                                Doc::text(second.text(self.source)),
+                            ]),
+                        ),
+                        Doc::line(),
+                        Doc::text(")"),
+                    ]))
                 }
             }
             _ => Doc::text(self.raw(bindings.syntax())),
@@ -1087,14 +1092,6 @@ impl Formatter<'_> {
             .map(|body| self.format_block_doc(body, indent))
             .unwrap_or_else(|| Doc::text("{}"));
         let condition = do_expr.condition();
-        let keyword = condition
-            .and_then(|condition| condition.keyword_token())
-            .map(|token| token.text(self.source))
-            .unwrap_or("while");
-        let expr = condition
-            .and_then(|condition| condition.expr())
-            .map(|expr| self.format_expr_doc(expr, indent))
-            .unwrap_or_else(|| Doc::text(""));
         let do_kw_end = self
             .token_range(do_expr.syntax(), TokenKind::DoKw)
             .map(range_end)
@@ -1108,14 +1105,9 @@ impl Formatter<'_> {
         let condition_start = condition
             .map(|condition| u32::from(condition.syntax().range().start()) as usize)
             .unwrap_or(body_end);
-        let condition_kw_end = condition
-            .and_then(|condition| condition.keyword_token())
-            .map(|token| u32::from(token.range().end()) as usize)
-            .unwrap_or(condition_start);
-        let expr_start = condition
-            .and_then(|condition| condition.expr())
-            .map(|expr| u32::from(expr.syntax().range().start()) as usize)
-            .unwrap_or(condition_kw_end);
+        let condition_doc = condition
+            .map(|condition| self.format_do_condition_doc(condition, indent))
+            .unwrap_or_else(|| Doc::text("while"));
         Doc::concat(vec![
             Doc::text("do"),
             self.head_body_separator_doc(do_kw_end, body_start),
@@ -1131,10 +1123,33 @@ impl Formatter<'_> {
                     include_terminal_newline: true,
                 },
             ),
-            Doc::text(keyword),
-            self.head_body_separator_doc(condition_kw_end, expr_start),
-            expr,
+            condition_doc,
         ])
+    }
+
+    pub(crate) fn format_do_condition_doc(&self, condition: DoCondition<'_>, indent: usize) -> Doc {
+        let keyword = condition
+            .keyword_token()
+            .map(|token| token.text(self.source))
+            .unwrap_or("while");
+        let expr = condition
+            .expr()
+            .map(|expr| self.format_expr_doc(expr, indent))
+            .unwrap_or_else(|| Doc::text(""));
+        let keyword_end = condition
+            .keyword_token()
+            .map(|token| u32::from(token.range().end()) as usize)
+            .unwrap_or_else(|| u32::from(condition.syntax().range().start()) as usize);
+        let expr_start = condition
+            .expr()
+            .map(|expr| u32::from(expr.syntax().range().start()) as usize)
+            .unwrap_or(keyword_end);
+
+        if condition.expr().is_none() {
+            return Doc::text(keyword);
+        }
+
+        self.group_keyword_with_gap_doc(keyword, keyword_end, expr_start, expr)
     }
 
     fn format_closure_expr_doc(&self, closure: ClosureExpr<'_>, indent: usize) -> Doc {
@@ -1144,6 +1159,21 @@ impl Formatter<'_> {
         let body = body_expr
             .map(|body| self.format_expr_doc(body, indent))
             .unwrap_or_else(|| Doc::text(""));
+        let has_head_comments = match (params_node, body_expr) {
+            (Some(params), Some(body)) => self.range_has_comments(
+                range_end(params.syntax().range()),
+                range_start(body.syntax().range()),
+            ),
+            _ => false,
+        };
+
+        if !has_head_comments && self.doc_renders_single_line(&body, indent) {
+            return Doc::group(Doc::concat(vec![
+                params,
+                Doc::indent(1, Doc::concat(vec![Doc::soft_line(), body])),
+            ]));
+        }
+
         let separator = match (params_node, body_expr) {
             (Some(params), Some(body)) => self.space_or_tight_gap_doc(
                 range_end(params.syntax().range()),
@@ -1915,9 +1945,9 @@ impl Formatter<'_> {
             )
     }
 
-    fn format_switch_patterns_doc(
+    pub(crate) fn format_switch_patterns_doc(
         &self,
-        patterns: rhai_syntax::SwitchPatternList<'_>,
+        patterns: SwitchPatternList<'_>,
         indent: usize,
     ) -> Doc {
         if patterns.wildcard_token().is_some() {
@@ -1962,7 +1992,13 @@ impl Formatter<'_> {
                     next_doc,
                 ]);
             } else {
-                doc = Doc::concat(vec![doc, Doc::text(" | "), next_doc]);
+                doc = Doc::group(Doc::concat(vec![
+                    doc,
+                    Doc::indent(
+                        1,
+                        Doc::concat(vec![Doc::soft_line(), Doc::text("| "), next_doc]),
+                    ),
+                ]));
             }
 
             previous_end = range_end(next_value.syntax().range());
@@ -1971,10 +2007,7 @@ impl Formatter<'_> {
         doc
     }
 
-    fn switch_patterns_requires_raw_fallback(
-        &self,
-        patterns: rhai_syntax::SwitchPatternList<'_>,
-    ) -> bool {
+    fn switch_patterns_requires_raw_fallback(&self, patterns: SwitchPatternList<'_>) -> bool {
         if patterns.wildcard_token().is_some() {
             return self.node_has_unowned_comments(patterns.syntax());
         }
@@ -2003,6 +2036,28 @@ impl Formatter<'_> {
         }
 
         self.node_has_unowned_comments_outside(patterns.syntax(), &allowed_ranges)
+    }
+
+    pub(crate) fn format_else_branch_doc(&self, else_branch: ElseBranch<'_>, indent: usize) -> Doc {
+        let else_body = else_branch.body();
+        let else_body_start = else_body
+            .map(|body| u32::from(body.syntax().range().start()) as usize)
+            .unwrap_or_else(|| u32::from(else_branch.syntax().range().end()) as usize);
+        let else_kw_end = self
+            .token_range(else_branch.syntax(), TokenKind::ElseKw)
+            .map(range_end)
+            .unwrap_or(else_body_start);
+
+        Doc::concat(vec![
+            Doc::text("else"),
+            self.head_body_separator_doc(else_kw_end, else_body_start),
+            match else_body {
+                Some(Expr::If(nested_if)) => self.format_if_expr_doc(nested_if, indent),
+                Some(Expr::Block(block)) => self.format_block_doc(block, indent),
+                Some(other) => self.format_expr_doc(other, indent),
+                None => Doc::text("{}"),
+            },
+        ])
     }
 
     fn field_requires_raw_fallback(&self, field: FieldExpr<'_>) -> bool {
@@ -2088,11 +2143,42 @@ impl Formatter<'_> {
         ]))
     }
 
+    fn group_keyword_clause_doc(&self, keyword: &str, clause: Doc) -> Doc {
+        Doc::group(Doc::concat(vec![
+            Doc::text(keyword),
+            Doc::indent(1, Doc::concat(vec![Doc::soft_line(), clause])),
+        ]))
+    }
+
+    fn group_keyword_with_gap_doc(
+        &self,
+        keyword: &str,
+        start: usize,
+        end: usize,
+        clause: Doc,
+    ) -> Doc {
+        Doc::group(Doc::concat(vec![
+            Doc::text(keyword),
+            Doc::indent(
+                1,
+                Doc::concat(vec![self.soft_or_tight_gap_doc(start, end), clause]),
+            ),
+        ]))
+    }
+
     fn space_or_tight_gap_doc(&self, start: usize, end: usize) -> Doc {
         if self.range_has_comments(start, end) {
             self.tight_comment_gap_doc(start, end)
         } else {
             Doc::text(" ")
+        }
+    }
+
+    fn soft_or_tight_gap_doc(&self, start: usize, end: usize) -> Doc {
+        if self.range_has_comments(start, end) {
+            self.tight_comment_gap_doc(start, end)
+        } else {
+            Doc::soft_line()
         }
     }
 
