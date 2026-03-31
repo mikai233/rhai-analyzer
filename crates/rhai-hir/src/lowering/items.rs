@@ -9,30 +9,32 @@ use rhai_syntax::{AstNode, BlockExpr, Item, Stmt, TextRange};
 impl<'a> LoweringContext<'a> {
     pub(crate) fn function_param_bindings(
         &self,
-        function: rhai_syntax::FnItem<'_>,
+        function: &rhai_syntax::FnItem,
     ) -> Vec<(String, TextRange)> {
-        function
+        let Some(params) = function.params() else {
+            return Vec::new();
+        };
+        params
             .params()
-            .into_iter()
-            .flat_map(|params| params.params())
-            .map(|token| (token.text(self.parse.text()).to_owned(), token.range()))
+            .map(|token| (token.text().to_owned(), token.text_range()))
             .collect()
     }
 
     pub(crate) fn closure_param_bindings(
         &self,
-        closure: rhai_syntax::ClosureExpr<'_>,
+        closure: &rhai_syntax::ClosureExpr,
     ) -> Vec<(String, TextRange)> {
-        closure
+        let Some(params) = closure.params() else {
+            return Vec::new();
+        };
+        params
             .params()
-            .into_iter()
-            .flat_map(|params| params.params())
-            .map(|token| (token.text(self.parse.text()).to_owned(), token.range()))
+            .map(|token| (token.text().to_owned(), token.text_range()))
             .collect()
     }
 
-    pub(crate) fn function_this_type(&self, function: rhai_syntax::FnItem<'_>) -> Option<TypeRef> {
-        let this_type = function.this_type_name(self.parse.text())?;
+    pub(crate) fn function_this_type(&self, function: &rhai_syntax::FnItem) -> Option<TypeRef> {
+        let this_type = function.this_type_name()?;
         crate::parse_type_ref(&this_type).or(Some(TypeRef::Named(this_type)))
     }
 
@@ -56,7 +58,7 @@ impl<'a> LoweringContext<'a> {
         }
     }
 
-    pub(crate) fn lower_item(&mut self, item: Item<'_>, scope: ScopeId) -> Option<crate::ExprId> {
+    pub(crate) fn lower_item(&mut self, item: Item, scope: ScopeId) -> Option<crate::ExprId> {
         match item {
             Item::Fn(function) => {
                 self.lower_function(function, scope);
@@ -66,19 +68,19 @@ impl<'a> LoweringContext<'a> {
         }
     }
 
-    pub(crate) fn lower_function(&mut self, function: rhai_syntax::FnItem<'_>, scope: ScopeId) {
-        let docs = self.docs_for_range(function.syntax().range());
-        let params = self.function_param_bindings(function);
+    pub(crate) fn lower_function(&mut self, function: rhai_syntax::FnItem, scope: ScopeId) {
+        let docs = self.docs_for_range(function.syntax().text_range());
+        let params = self.function_param_bindings(&function);
         let annotation = self.lower_function_signature(docs, &params);
-        let this_type = self.function_this_type(function);
+        let this_type = self.function_this_type(&function);
         let Some(name_token) = function.name_token() else {
             return;
         };
         let symbol = self.alloc_symbol_with_annotation(
-            name_token.text(self.parse.text()).to_owned(),
+            name_token.text().to_owned(),
             SymbolKind::Function,
             function.is_private(),
-            name_token.range(),
+            name_token.text_range(),
             scope,
             docs,
             annotation,
@@ -87,14 +89,17 @@ impl<'a> LoweringContext<'a> {
             .function_infos
             .push(FunctionInfo { symbol, this_type });
 
-        let function_scope =
-            self.new_scope(ScopeKind::Function, function.syntax().range(), Some(scope));
+        let function_scope = self.new_scope(
+            ScopeKind::Function,
+            function.syntax().text_range(),
+            Some(scope),
+        );
         let Some(body) = function.body() else {
             return;
         };
         self.new_body(
             BodyKind::Function,
-            body.syntax().range(),
+            body.syntax().text_range(),
             function_scope,
             Some(symbol),
         );
@@ -104,7 +109,7 @@ impl<'a> LoweringContext<'a> {
         self.with_body(body_id, |this| this.lower_block_items(body, function_scope));
     }
 
-    pub(crate) fn lower_stmt(&mut self, stmt: Stmt<'_>, scope: ScopeId) -> Option<crate::ExprId> {
+    pub(crate) fn lower_stmt(&mut self, stmt: Stmt, scope: ScopeId) -> Option<crate::ExprId> {
         match stmt {
             Stmt::Let(let_stmt) => {
                 let initializer = let_stmt
@@ -112,11 +117,11 @@ impl<'a> LoweringContext<'a> {
                     .map(|initializer| self.lower_expr(initializer, scope));
 
                 let symbol = let_stmt.name_token().map(|name| {
-                    let docs = self.docs_for_range(let_stmt.syntax().range());
+                    let docs = self.docs_for_range(let_stmt.syntax().text_range());
                     self.alloc_symbol(
-                        name.text(self.parse.text()).to_owned(),
+                        name.text().to_owned(),
                         SymbolKind::Variable,
-                        name.range(),
+                        name.text_range(),
                         scope,
                         docs,
                     )
@@ -127,7 +132,7 @@ impl<'a> LoweringContext<'a> {
                         symbol,
                         initializer,
                         ValueFlowKind::Initializer,
-                        let_stmt.syntax().range(),
+                        let_stmt.syntax().text_range(),
                     );
                 }
                 None
@@ -138,11 +143,11 @@ impl<'a> LoweringContext<'a> {
                     .map(|value| self.lower_expr(value, scope));
 
                 let symbol = const_stmt.name_token().map(|name| {
-                    let docs = self.docs_for_range(const_stmt.syntax().range());
+                    let docs = self.docs_for_range(const_stmt.syntax().text_range());
                     self.alloc_symbol(
-                        name.text(self.parse.text()).to_owned(),
+                        name.text().to_owned(),
                         SymbolKind::Constant,
-                        name.range(),
+                        name.text_range(),
                         scope,
                         docs,
                     )
@@ -153,7 +158,7 @@ impl<'a> LoweringContext<'a> {
                         symbol,
                         value,
                         ValueFlowKind::Initializer,
-                        const_stmt.syntax().range(),
+                        const_stmt.syntax().text_range(),
                     );
                 }
                 None
@@ -167,10 +172,10 @@ impl<'a> LoweringContext<'a> {
                 None
             }
             Stmt::Break(stmt) => {
-                let value_range = stmt.value().map(|value| value.syntax().range());
+                let value_range = stmt.value().map(|value| value.syntax().text_range());
                 self.record_control_flow(
                     ControlFlowKind::Break,
-                    stmt.syntax().range(),
+                    stmt.syntax().text_range(),
                     value_range,
                 );
                 if let Some(value) = stmt.value() {
@@ -179,14 +184,18 @@ impl<'a> LoweringContext<'a> {
                 None
             }
             Stmt::Continue(stmt) => {
-                self.record_control_flow(ControlFlowKind::Continue, stmt.syntax().range(), None);
+                self.record_control_flow(
+                    ControlFlowKind::Continue,
+                    stmt.syntax().text_range(),
+                    None,
+                );
                 None
             }
             Stmt::Return(stmt) => {
-                let value_range = stmt.value().map(|value| value.syntax().range());
+                let value_range = stmt.value().map(|value| value.syntax().text_range());
                 self.record_control_flow(
                     ControlFlowKind::Return,
-                    stmt.syntax().range(),
+                    stmt.syntax().text_range(),
                     value_range,
                 );
                 if let Some(value) = stmt.value() {
@@ -196,10 +205,10 @@ impl<'a> LoweringContext<'a> {
                 None
             }
             Stmt::Throw(stmt) => {
-                let value_range = stmt.value().map(|value| value.syntax().range());
+                let value_range = stmt.value().map(|value| value.syntax().text_range());
                 self.record_control_flow(
                     ControlFlowKind::Throw,
-                    stmt.syntax().range(),
+                    stmt.syntax().text_range(),
                     value_range,
                 );
                 if let Some(value) = stmt.value() {
@@ -211,23 +220,23 @@ impl<'a> LoweringContext<'a> {
             Stmt::Try(stmt) => {
                 if let Some(body) = stmt.body() {
                     let try_scope =
-                        self.new_scope(ScopeKind::Block, body.syntax().range(), Some(scope));
+                        self.new_scope(ScopeKind::Block, body.syntax().text_range(), Some(scope));
                     let body_id =
-                        self.new_body(BodyKind::Block, body.syntax().range(), try_scope, None);
+                        self.new_body(BodyKind::Block, body.syntax().text_range(), try_scope, None);
                     self.with_body(body_id, |this| this.lower_block_items(body, try_scope));
                 }
 
                 if let Some(catch_clause) = stmt.catch_clause() {
                     let catch_scope = self.new_scope(
                         ScopeKind::Catch,
-                        catch_clause.syntax().range(),
+                        catch_clause.syntax().text_range(),
                         Some(scope),
                     );
                     if let Some(binding) = catch_clause.binding_token() {
                         self.alloc_symbol(
-                            binding.text(self.parse.text()).to_owned(),
+                            binding.text().to_owned(),
                             SymbolKind::Variable,
-                            binding.range(),
+                            binding.text_range(),
                             catch_scope,
                             None,
                         );
@@ -235,7 +244,7 @@ impl<'a> LoweringContext<'a> {
                     if let Some(body) = catch_clause.body() {
                         let body_id = self.new_body(
                             BodyKind::Block,
-                            body.syntax().range(),
+                            body.syntax().text_range(),
                             catch_scope,
                             None,
                         );
@@ -248,7 +257,7 @@ impl<'a> LoweringContext<'a> {
         }
     }
 
-    pub(crate) fn lower_block_items(&mut self, block: BlockExpr<'_>, scope: ScopeId) {
+    pub(crate) fn lower_block_items(&mut self, block: BlockExpr, scope: ScopeId) {
         let mut terminated = false;
         let mut may_fall_through = true;
         let mut tail_value = None;
@@ -262,11 +271,11 @@ impl<'a> LoweringContext<'a> {
 
         for item in items.items() {
             if terminated && let Some(body) = self.current_body_mut() {
-                body.unreachable_ranges.push(item.syntax().range());
+                body.unreachable_ranges.push(item.syntax().text_range());
             }
 
-            let item_fallthrough = self.item_may_fall_through(item);
-            let item_expr = self.lower_item(item, scope);
+            let item_fallthrough = self.item_may_fall_through(&item);
+            let item_expr = self.lower_item(item.clone(), scope);
 
             if !terminated {
                 may_fall_through = item_fallthrough;

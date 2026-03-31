@@ -7,8 +7,9 @@ use crate::{FormatOptions, FormatResult, RangeFormatResult};
 use rhai_syntax::{
     AliasClause, ArgList, ArrayItemList, AstNode, BlockExpr, BlockItemList, CatchClause,
     ClosureParamList, DoCondition, ElseBranch, Expr, ForBindings, InterpolationItemList, Item,
-    ObjectFieldList, ParamList, Root, RootItemList, StringPartList, SwitchArmList,
-    SwitchPatternList, SyntaxKind, SyntaxNode, TextRange, TextSize, TriviaStore, parse_text,
+    ObjectFieldList, ParamList, Root, RootItemList, RowanSyntaxNode, RowanSyntaxNodeExt,
+    StringPartList, SwitchArmList, SwitchPatternList, SyntaxKind, TextRange, TextSize, TriviaStore,
+    parse_text,
 };
 
 use crate::formatter::layout::doc::Doc;
@@ -57,7 +58,7 @@ pub fn format_range(
     }
 
     let root = Root::cast(parse.root())?;
-    let structural_range = intersect_ranges(root.syntax().range(), requested_range)?;
+    let structural_range = intersect_ranges(root.syntax().text_range(), requested_range)?;
     if !ranges_intersect(structural_range, requested_range) {
         return None;
     }
@@ -184,62 +185,62 @@ impl Formatter<'_> {
     }
 }
 
-#[derive(Clone, Copy)]
-struct RangeOwner<'a> {
+#[derive(Clone)]
+struct RangeOwner {
     range: TextRange,
     base_indent: usize,
-    kind: RangeOwnerKind<'a>,
+    kind: RangeOwnerKind,
 }
 
-#[derive(Clone, Copy)]
-enum RangeOwnerKind<'a> {
-    Root(Root<'a>),
-    RootItemList(RootItemList<'a>),
-    Item(Item<'a>),
-    Block(BlockExpr<'a>),
-    BlockItemList(BlockItemList<'a>),
-    Expr(Expr<'a>),
-    ParamList(ParamList<'a>),
-    ClosureParamList(ClosureParamList<'a>),
-    ArgList(ArgList<'a>),
-    ArrayItemList(ArrayItemList<'a>),
-    StringPartList(StringPartList<'a>),
-    InterpolationItemList(InterpolationItemList<'a>),
-    ObjectFieldList(ObjectFieldList<'a>),
-    SwitchArmList(SwitchArmList<'a>),
-    SwitchPatternList(SwitchPatternList<'a>),
-    ForBindings(ForBindings<'a>),
-    DoCondition(DoCondition<'a>),
-    CatchClause(CatchClause<'a>),
-    AliasClause(AliasClause<'a>),
-    ElseBranch(ElseBranch<'a>),
+#[derive(Clone)]
+enum RangeOwnerKind {
+    Root(Root),
+    RootItemList(RootItemList),
+    Item(Item),
+    Block(BlockExpr),
+    BlockItemList(BlockItemList),
+    Expr(Expr),
+    ParamList(ParamList),
+    ClosureParamList(ClosureParamList),
+    ArgList(ArgList),
+    ArrayItemList(ArrayItemList),
+    StringPartList(StringPartList),
+    InterpolationItemList(InterpolationItemList),
+    ObjectFieldList(ObjectFieldList),
+    SwitchArmList(SwitchArmList),
+    SwitchPatternList(SwitchPatternList),
+    ForBindings(ForBindings),
+    DoCondition(DoCondition),
+    CatchClause(CatchClause),
+    AliasClause(AliasClause),
+    ElseBranch(ElseBranch),
 }
 
-fn select_range_owner<'a>(root: Root<'a>, requested_range: TextRange) -> Option<RangeOwner<'a>> {
+fn select_range_owner(root: Root, requested_range: TextRange) -> Option<RangeOwner> {
     let mut owner = RangeOwner {
-        range: root.syntax().range(),
+        range: root.syntax().text_range(),
         base_indent: 0,
-        kind: RangeOwnerKind::Root(root),
+        kind: RangeOwnerKind::Root(root.clone()),
     };
 
-    if let Some(nested_owner) = find_nested_range_owner(root.syntax(), requested_range, 0) {
+    if let Some(nested_owner) = find_nested_range_owner(&root.syntax(), requested_range, 0) {
         owner = nested_owner;
     }
 
     Some(owner)
 }
 
-fn find_nested_range_owner<'a>(
-    node: &'a SyntaxNode,
+fn find_nested_range_owner(
+    node: &RowanSyntaxNode,
     requested_range: TextRange,
     block_depth: usize,
-) -> Option<RangeOwner<'a>> {
-    if !range_contains(node.range(), requested_range) {
+) -> Option<RangeOwner> {
+    if !range_contains(node.text_range(), requested_range) {
         return None;
     }
 
     let mut best = range_owner_for_node(node, block_depth);
-    let child_block_depth = if node.kind() == SyntaxKind::Block {
+    let child_block_depth = if node.kind() == SyntaxKind::Block.to_rowan_kind() {
         block_depth + 1
     } else {
         block_depth
@@ -247,7 +248,7 @@ fn find_nested_range_owner<'a>(
 
     for child in node.child_nodes() {
         if let Some(child_owner) =
-            find_nested_range_owner(child, requested_range, child_block_depth)
+            find_nested_range_owner(&child, requested_range, child_block_depth)
         {
             best = Some(child_owner);
         }
@@ -256,8 +257,8 @@ fn find_nested_range_owner<'a>(
     best
 }
 
-fn range_owner_for_node<'a>(node: &'a SyntaxNode, block_depth: usize) -> Option<RangeOwner<'a>> {
-    if let Some(item) = Item::cast(node) {
+fn range_owner_for_node(node: &RowanSyntaxNode, block_depth: usize) -> Option<RangeOwner> {
+    if let Some(item) = Item::cast(node.clone()) {
         return Some(RangeOwner {
             range: node.structural_range(),
             base_indent: block_depth,
@@ -265,7 +266,7 @@ fn range_owner_for_node<'a>(node: &'a SyntaxNode, block_depth: usize) -> Option<
         });
     }
 
-    if let Some(items) = RootItemList::cast(node) {
+    if let Some(items) = RootItemList::cast(node.clone()) {
         return Some(RangeOwner {
             range: node.structural_range(),
             base_indent: 0,
@@ -273,7 +274,7 @@ fn range_owner_for_node<'a>(node: &'a SyntaxNode, block_depth: usize) -> Option<
         });
     }
 
-    if let Some(block) = BlockExpr::cast(node) {
+    if let Some(block) = BlockExpr::cast(node.clone()) {
         return Some(RangeOwner {
             range: node.structural_range(),
             base_indent: block_depth,
@@ -281,7 +282,7 @@ fn range_owner_for_node<'a>(node: &'a SyntaxNode, block_depth: usize) -> Option<
         });
     }
 
-    if let Some(items) = BlockItemList::cast(node) {
+    if let Some(items) = BlockItemList::cast(node.clone()) {
         return Some(RangeOwner {
             range: node.structural_range(),
             base_indent: block_depth,
@@ -289,7 +290,7 @@ fn range_owner_for_node<'a>(node: &'a SyntaxNode, block_depth: usize) -> Option<
         });
     }
 
-    if let Some(params) = ParamList::cast(node) {
+    if let Some(params) = ParamList::cast(node.clone()) {
         return Some(RangeOwner {
             range: node.structural_range(),
             base_indent: block_depth,
@@ -297,7 +298,7 @@ fn range_owner_for_node<'a>(node: &'a SyntaxNode, block_depth: usize) -> Option<
         });
     }
 
-    if let Some(params) = ClosureParamList::cast(node) {
+    if let Some(params) = ClosureParamList::cast(node.clone()) {
         return Some(RangeOwner {
             range: node.structural_range(),
             base_indent: block_depth,
@@ -305,7 +306,7 @@ fn range_owner_for_node<'a>(node: &'a SyntaxNode, block_depth: usize) -> Option<
         });
     }
 
-    if let Some(args) = ArgList::cast(node) {
+    if let Some(args) = ArgList::cast(node.clone()) {
         return Some(RangeOwner {
             range: node.structural_range(),
             base_indent: block_depth,
@@ -313,7 +314,7 @@ fn range_owner_for_node<'a>(node: &'a SyntaxNode, block_depth: usize) -> Option<
         });
     }
 
-    if let Some(items) = ArrayItemList::cast(node) {
+    if let Some(items) = ArrayItemList::cast(node.clone()) {
         return Some(RangeOwner {
             range: node.structural_range(),
             base_indent: block_depth,
@@ -321,7 +322,7 @@ fn range_owner_for_node<'a>(node: &'a SyntaxNode, block_depth: usize) -> Option<
         });
     }
 
-    if let Some(parts) = StringPartList::cast(node) {
+    if let Some(parts) = StringPartList::cast(node.clone()) {
         return Some(RangeOwner {
             range: node.structural_range(),
             base_indent: block_depth,
@@ -329,7 +330,7 @@ fn range_owner_for_node<'a>(node: &'a SyntaxNode, block_depth: usize) -> Option<
         });
     }
 
-    if let Some(items) = InterpolationItemList::cast(node) {
+    if let Some(items) = InterpolationItemList::cast(node.clone()) {
         return Some(RangeOwner {
             range: node.structural_range(),
             base_indent: block_depth,
@@ -337,7 +338,7 @@ fn range_owner_for_node<'a>(node: &'a SyntaxNode, block_depth: usize) -> Option<
         });
     }
 
-    if let Some(fields) = ObjectFieldList::cast(node) {
+    if let Some(fields) = ObjectFieldList::cast(node.clone()) {
         return Some(RangeOwner {
             range: node.structural_range(),
             base_indent: block_depth,
@@ -345,7 +346,7 @@ fn range_owner_for_node<'a>(node: &'a SyntaxNode, block_depth: usize) -> Option<
         });
     }
 
-    if let Some(arms) = SwitchArmList::cast(node) {
+    if let Some(arms) = SwitchArmList::cast(node.clone()) {
         return Some(RangeOwner {
             range: node.structural_range(),
             base_indent: block_depth,
@@ -353,7 +354,7 @@ fn range_owner_for_node<'a>(node: &'a SyntaxNode, block_depth: usize) -> Option<
         });
     }
 
-    if let Some(patterns) = SwitchPatternList::cast(node) {
+    if let Some(patterns) = SwitchPatternList::cast(node.clone()) {
         return Some(RangeOwner {
             range: node.structural_range(),
             base_indent: block_depth,
@@ -361,7 +362,7 @@ fn range_owner_for_node<'a>(node: &'a SyntaxNode, block_depth: usize) -> Option<
         });
     }
 
-    if let Some(bindings) = ForBindings::cast(node) {
+    if let Some(bindings) = ForBindings::cast(node.clone()) {
         return Some(RangeOwner {
             range: node.structural_range(),
             base_indent: block_depth,
@@ -369,7 +370,7 @@ fn range_owner_for_node<'a>(node: &'a SyntaxNode, block_depth: usize) -> Option<
         });
     }
 
-    if let Some(condition) = DoCondition::cast(node) {
+    if let Some(condition) = DoCondition::cast(node.clone()) {
         return Some(RangeOwner {
             range: node.structural_range(),
             base_indent: block_depth,
@@ -377,7 +378,7 @@ fn range_owner_for_node<'a>(node: &'a SyntaxNode, block_depth: usize) -> Option<
         });
     }
 
-    if let Some(catch_clause) = CatchClause::cast(node) {
+    if let Some(catch_clause) = CatchClause::cast(node.clone()) {
         return Some(RangeOwner {
             range: node.structural_range(),
             base_indent: block_depth,
@@ -385,7 +386,7 @@ fn range_owner_for_node<'a>(node: &'a SyntaxNode, block_depth: usize) -> Option<
         });
     }
 
-    if let Some(alias) = AliasClause::cast(node) {
+    if let Some(alias) = AliasClause::cast(node.clone()) {
         return Some(RangeOwner {
             range: node.structural_range(),
             base_indent: block_depth,
@@ -393,7 +394,7 @@ fn range_owner_for_node<'a>(node: &'a SyntaxNode, block_depth: usize) -> Option<
         });
     }
 
-    if let Some(else_branch) = ElseBranch::cast(node) {
+    if let Some(else_branch) = ElseBranch::cast(node.clone()) {
         return Some(RangeOwner {
             range: node.structural_range(),
             base_indent: block_depth,
@@ -401,8 +402,8 @@ fn range_owner_for_node<'a>(node: &'a SyntaxNode, block_depth: usize) -> Option<
         });
     }
 
-    Expr::cast(node)
-        .filter(|expr| range_owner_supports_expr(*expr))
+    Expr::cast(node.clone())
+        .filter(range_owner_supports_expr)
         .map(|expr| RangeOwner {
             range: node.structural_range(),
             base_indent: block_depth,
@@ -410,7 +411,7 @@ fn range_owner_for_node<'a>(node: &'a SyntaxNode, block_depth: usize) -> Option<
         })
 }
 
-fn range_owner_supports_expr(expr: Expr<'_>) -> bool {
+fn range_owner_supports_expr(expr: &Expr) -> bool {
     !matches!(
         expr,
         Expr::Name(_) | Expr::Literal(_) | Expr::Block(_) | Expr::Error(_)

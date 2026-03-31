@@ -59,7 +59,7 @@ pub(crate) struct FormatSupport<Family> {
     pub(crate) level: FormatSupportLevel,
 }
 
-pub(crate) fn expr_support(expr: Expr<'_>) -> FormatSupport<ExprFamily> {
+pub(crate) fn expr_support(expr: &Expr) -> FormatSupport<ExprFamily> {
     match expr {
         Expr::Name(_) => support(ExprFamily::Name, FormatSupportLevel::Full),
         Expr::Literal(_) => support(ExprFamily::Literal, FormatSupportLevel::Full),
@@ -89,7 +89,7 @@ pub(crate) fn expr_support(expr: Expr<'_>) -> FormatSupport<ExprFamily> {
     }
 }
 
-pub(crate) fn stmt_support(stmt: Stmt<'_>) -> FormatSupport<StmtFamily> {
+pub(crate) fn stmt_support(stmt: &Stmt) -> FormatSupport<StmtFamily> {
     match stmt {
         Stmt::Let(_) => support(StmtFamily::Let, FormatSupportLevel::Structural),
         Stmt::Const(_) => support(StmtFamily::Const, FormatSupportLevel::Structural),
@@ -104,7 +104,7 @@ pub(crate) fn stmt_support(stmt: Stmt<'_>) -> FormatSupport<StmtFamily> {
     }
 }
 
-pub(crate) fn item_support(item: Item<'_>) -> FormatSupport<ItemFamily> {
+pub(crate) fn item_support(item: &Item) -> FormatSupport<ItemFamily> {
     match item {
         Item::Fn(_) => support(ItemFamily::Function, FormatSupportLevel::Structural),
         Item::Stmt(_) => support(ItemFamily::Statement, FormatSupportLevel::Structural),

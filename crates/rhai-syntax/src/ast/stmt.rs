@@ -2,23 +2,23 @@ use crate::ast::{
     AliasClause, AstNode, BlockExpr, BreakStmt, CatchClause, ConstStmt, ContinueStmt, ExportStmt,
     Expr, ExprStmt, ImportStmt, LetStmt, ReturnStmt, ThrowStmt, TryStmt, child, token_by_kind,
 };
-use crate::{SyntaxKind, SyntaxNode, SyntaxToken, TokenKind};
+use crate::{RowanSyntaxNode, RowanSyntaxToken, SyntaxKind, TokenKind};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Stmt<'a> {
-    Let(LetStmt<'a>),
-    Const(ConstStmt<'a>),
-    Import(ImportStmt<'a>),
-    Export(ExportStmt<'a>),
-    Break(BreakStmt<'a>),
-    Continue(ContinueStmt<'a>),
-    Return(ReturnStmt<'a>),
-    Throw(ThrowStmt<'a>),
-    Try(TryStmt<'a>),
-    Expr(ExprStmt<'a>),
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Stmt {
+    Let(LetStmt),
+    Const(ConstStmt),
+    Import(ImportStmt),
+    Export(ExportStmt),
+    Break(BreakStmt),
+    Continue(ContinueStmt),
+    Return(ReturnStmt),
+    Throw(ThrowStmt),
+    Try(TryStmt),
+    Expr(ExprStmt),
 }
 
-impl<'a> AstNode<'a> for Stmt<'a> {
+impl AstNode for Stmt {
     fn can_cast(kind: SyntaxKind) -> bool {
         matches!(
             kind,
@@ -35,8 +35,8 @@ impl<'a> AstNode<'a> for Stmt<'a> {
         )
     }
 
-    fn cast(node: &'a SyntaxNode) -> Option<Self> {
-        match node.kind() {
+    fn cast(node: RowanSyntaxNode) -> Option<Self> {
+        match node.kind().syntax_kind()? {
             SyntaxKind::StmtLet => Some(Self::Let(LetStmt { syntax: node })),
             SyntaxKind::StmtConst => Some(Self::Const(ConstStmt { syntax: node })),
             SyntaxKind::StmtImport => Some(Self::Import(ImportStmt { syntax: node })),
@@ -51,7 +51,7 @@ impl<'a> AstNode<'a> for Stmt<'a> {
         }
     }
 
-    fn syntax(self) -> &'a SyntaxNode {
+    fn syntax(&self) -> RowanSyntaxNode {
         match self {
             Self::Let(stmt) => stmt.syntax(),
             Self::Const(stmt) => stmt.syntax(),
@@ -67,84 +67,84 @@ impl<'a> AstNode<'a> for Stmt<'a> {
     }
 }
 
-impl<'a> LetStmt<'a> {
-    pub fn name_token(self) -> Option<SyntaxToken> {
-        token_by_kind(self.syntax, TokenKind::Ident)
+impl LetStmt {
+    pub fn name_token(&self) -> Option<RowanSyntaxToken> {
+        token_by_kind(&self.syntax, TokenKind::Ident)
     }
 
-    pub fn initializer(self) -> Option<Expr<'a>> {
-        child(self.syntax)
-    }
-}
-
-impl<'a> ConstStmt<'a> {
-    pub fn name_token(self) -> Option<SyntaxToken> {
-        token_by_kind(self.syntax, TokenKind::Ident)
-    }
-
-    pub fn value(self) -> Option<Expr<'a>> {
-        child(self.syntax)
+    pub fn initializer(&self) -> Option<Expr> {
+        child(&self.syntax)
     }
 }
 
-impl<'a> ImportStmt<'a> {
-    pub fn module(self) -> Option<Expr<'a>> {
-        child(self.syntax)
+impl ConstStmt {
+    pub fn name_token(&self) -> Option<RowanSyntaxToken> {
+        token_by_kind(&self.syntax, TokenKind::Ident)
     }
 
-    pub fn alias(self) -> Option<AliasClause<'a>> {
-        child(self.syntax)
-    }
-}
-
-impl<'a> ExportStmt<'a> {
-    pub fn target(self) -> Option<Expr<'a>> {
-        child(self.syntax)
-    }
-
-    pub fn declaration(self) -> Option<Stmt<'a>> {
-        child(self.syntax)
-    }
-
-    pub fn alias(self) -> Option<AliasClause<'a>> {
-        child(self.syntax)
+    pub fn value(&self) -> Option<Expr> {
+        child(&self.syntax)
     }
 }
 
-impl<'a> BreakStmt<'a> {
-    pub fn value(self) -> Option<Expr<'a>> {
-        child(self.syntax)
+impl ImportStmt {
+    pub fn module(&self) -> Option<Expr> {
+        child(&self.syntax)
+    }
+
+    pub fn alias(&self) -> Option<AliasClause> {
+        child(&self.syntax)
     }
 }
 
-impl<'a> ReturnStmt<'a> {
-    pub fn value(self) -> Option<Expr<'a>> {
-        child(self.syntax)
+impl ExportStmt {
+    pub fn target(&self) -> Option<Expr> {
+        child(&self.syntax)
+    }
+
+    pub fn declaration(&self) -> Option<Stmt> {
+        child(&self.syntax)
+    }
+
+    pub fn alias(&self) -> Option<AliasClause> {
+        child(&self.syntax)
     }
 }
 
-impl<'a> ThrowStmt<'a> {
-    pub fn value(self) -> Option<Expr<'a>> {
-        child(self.syntax)
+impl BreakStmt {
+    pub fn value(&self) -> Option<Expr> {
+        child(&self.syntax)
     }
 }
 
-impl<'a> TryStmt<'a> {
-    pub fn body(self) -> Option<BlockExpr<'a>> {
-        child(self.syntax)
-    }
-
-    pub fn catch_clause(self) -> Option<CatchClause<'a>> {
-        child(self.syntax)
+impl ReturnStmt {
+    pub fn value(&self) -> Option<Expr> {
+        child(&self.syntax)
     }
 }
 
-impl<'a> ExprStmt<'a> {
-    pub fn expr(self) -> Option<Expr<'a>> {
-        child(self.syntax)
+impl ThrowStmt {
+    pub fn value(&self) -> Option<Expr> {
+        child(&self.syntax)
+    }
+}
+
+impl TryStmt {
+    pub fn body(&self) -> Option<BlockExpr> {
+        child(&self.syntax)
     }
 
-    pub fn has_semicolon(self) -> bool {
-        token_by_kind(self.syntax, TokenKind::Semicolon).is_some()
+    pub fn catch_clause(&self) -> Option<CatchClause> {
+        child(&self.syntax)
+    }
+}
+
+impl ExprStmt {
+    pub fn expr(&self) -> Option<Expr> {
+        child(&self.syntax)
+    }
+
+    pub fn has_semicolon(&self) -> bool {
+        token_by_kind(&self.syntax, TokenKind::Semicolon).is_some()
     }
 }

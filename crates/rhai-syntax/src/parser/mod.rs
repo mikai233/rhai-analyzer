@@ -13,7 +13,7 @@ mod stmt;
 
 pub(crate) use crate::parser::recovery::{
     InterpolatedPart, find_interpolation_end, infix_binding_power, make_absolute_range,
-    next_char_at, shift_element, shift_error,
+    next_char_at,
 };
 
 pub fn parse_text(text: &str) -> Parse {
@@ -122,6 +122,10 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_root(&mut self) -> SyntaxNode {
+        self.parse_root_with_range(TextRange::new(TextSize::from(0), self.text_len))
+    }
+
+    fn parse_root_with_range(&mut self, range: TextRange) -> SyntaxNode {
         let mut item_children = Vec::new();
 
         while !self.is_eof() {
@@ -130,14 +134,10 @@ impl<'a> Parser<'a> {
 
         let children = vec![crate::syntax::node_element(self.finish_node_with_range(
             SyntaxKind::RootItemList,
-            TextRange::new(TextSize::from(0), self.text_len),
+            range,
             item_children,
         ))];
 
-        self.finish_node_with_range(
-            SyntaxKind::Root,
-            TextRange::new(TextSize::from(0), self.text_len),
-            children,
-        )
+        self.finish_node_with_range(SyntaxKind::Root, range, children)
     }
 }

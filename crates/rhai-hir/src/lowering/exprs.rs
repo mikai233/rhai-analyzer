@@ -13,33 +13,28 @@ use rhai_syntax::{
 };
 
 impl<'a> LoweringContext<'a> {
-    pub(crate) fn lower_expr(&mut self, expr: Expr<'_>, scope: ScopeId) -> crate::ExprId {
-        let expr_id = self.alloc_expr(expr_kind(expr), expr.syntax().range(), scope);
+    pub(crate) fn lower_expr(&mut self, expr: Expr, scope: ScopeId) -> crate::ExprId {
+        let expr_id = self.alloc_expr(expr_kind(&expr), expr.syntax().text_range(), scope);
 
         match expr {
             Expr::Name(name) => {
                 if let Some(token) = name.token() {
-                    let kind = match token.kind() {
-                        rhai_syntax::TokenKind::ThisKw => ReferenceKind::This,
+                    let kind = match token.kind().token_kind() {
+                        Some(rhai_syntax::TokenKind::ThisKw) => ReferenceKind::This,
                         _ => ReferenceKind::Name,
                     };
-                    self.alloc_reference(
-                        token.text(self.parse.text()).to_owned(),
-                        kind,
-                        token.range(),
-                        scope,
-                    );
+                    self.alloc_reference(token.text().to_owned(), kind, token.text_range(), scope);
                 }
             }
             Expr::Literal(literal) => {
                 if let Some(token) = literal.token()
-                    && let Some(kind) = literal_kind(token.kind())
+                    && let Some(kind) = token.kind().token_kind().and_then(literal_kind)
                 {
                     self.file.literals.push(LiteralInfo {
                         owner: expr_id,
                         kind,
-                        range: token.range(),
-                        text: Some(token.text(self.parse.text()).to_owned()),
+                        range: token.text_range(),
+                        text: Some(token.text().to_owned()),
                     });
                 }
             }
@@ -63,8 +58,8 @@ impl<'a> LoweringContext<'a> {
                         if let Some(name) = field.name_token() {
                             self.file.object_fields.push(ObjectFieldInfo {
                                 owner: expr_id,
-                                name: normalize_object_field_name(name.text(self.parse.text())),
-                                range: name.range(),
+                                name: normalize_object_field_name(name.text()),
+                                range: name.text_range(),
                                 value,
                             });
                         }
@@ -88,7 +83,7 @@ impl<'a> LoweringContext<'a> {
                     then_branch,
                     else_branch,
                 });
-                self.record_merge_point(MergePointKind::IfElse, if_expr.syntax().range());
+                self.record_merge_point(MergePointKind::IfElse, if_expr.syntax().text_range());
             }
             Expr::Switch(switch_expr) => {
                 let scrutinee = switch_expr
@@ -105,7 +100,7 @@ impl<'a> LoweringContext<'a> {
                     scrutinee,
                     arms,
                 });
-                self.record_merge_point(MergePointKind::Switch, switch_expr.syntax().range());
+                self.record_merge_point(MergePointKind::Switch, switch_expr.syntax().text_range());
             }
             Expr::While(while_expr) => {
                 if let Some(condition) = while_expr.condition() {
@@ -113,26 +108,40 @@ impl<'a> LoweringContext<'a> {
                 }
                 if let Some(body) = while_expr.body() {
                     let loop_scope =
-                        self.new_scope(ScopeKind::Loop, body.syntax().range(), Some(scope));
-                    let body_id =
-                        self.new_body(BodyKind::Block, body.syntax().range(), loop_scope, None);
+                        self.new_scope(ScopeKind::Loop, body.syntax().text_range(), Some(scope));
+                    let body_id = self.new_body(
+                        BodyKind::Block,
+                        body.syntax().text_range(),
+                        loop_scope,
+                        None,
+                    );
                     self.with_loop(loop_scope, |this| {
                         this.with_body(body_id, |this| this.lower_block_items(body, loop_scope))
                     });
                 }
-                self.record_merge_point(MergePointKind::LoopIteration, while_expr.syntax().range());
+                self.record_merge_point(
+                    MergePointKind::LoopIteration,
+                    while_expr.syntax().text_range(),
+                );
             }
             Expr::Loop(loop_expr) => {
                 if let Some(body) = loop_expr.body() {
                     let loop_scope =
-                        self.new_scope(ScopeKind::Loop, body.syntax().range(), Some(scope));
-                    let body_id =
-                        self.new_body(BodyKind::Block, body.syntax().range(), loop_scope, None);
+                        self.new_scope(ScopeKind::Loop, body.syntax().text_range(), Some(scope));
+                    let body_id = self.new_body(
+                        BodyKind::Block,
+                        body.syntax().text_range(),
+                        loop_scope,
+                        None,
+                    );
                     self.with_loop(loop_scope, |this| {
                         this.with_body(body_id, |this| this.lower_block_items(body, loop_scope))
                     });
                 }
-                self.record_merge_point(MergePointKind::LoopIteration, loop_expr.syntax().range());
+                self.record_merge_point(
+                    MergePointKind::LoopIteration,
+                    loop_expr.syntax().text_range(),
+                );
             }
             Expr::For(for_expr) => {
                 let iterable_expr = for_expr
@@ -140,14 +149,14 @@ impl<'a> LoweringContext<'a> {
                     .map(|iterable| self.lower_expr(iterable, scope));
 
                 let loop_scope =
-                    self.new_scope(ScopeKind::Loop, for_expr.syntax().range(), Some(scope));
+                    self.new_scope(ScopeKind::Loop, for_expr.syntax().text_range(), Some(scope));
                 let mut binding_symbols = Vec::new();
                 if let Some(bindings) = for_expr.bindings() {
                     for binding in bindings.names() {
                         binding_symbols.push(self.alloc_symbol(
-                            binding.text(self.parse.text()).to_owned(),
+                            binding.text().to_owned(),
                             SymbolKind::Variable,
-                            binding.range(),
+                            binding.text_range(),
                             loop_scope,
                             None,
                         ));
@@ -155,8 +164,12 @@ impl<'a> LoweringContext<'a> {
                 }
                 let mut body_id = None;
                 if let Some(body) = for_expr.body() {
-                    let lowered_body =
-                        self.new_body(BodyKind::Block, body.syntax().range(), loop_scope, None);
+                    let lowered_body = self.new_body(
+                        BodyKind::Block,
+                        body.syntax().text_range(),
+                        loop_scope,
+                        None,
+                    );
                     self.with_loop(loop_scope, |this| {
                         this.with_body(lowered_body, |this| {
                             this.lower_block_items(body, loop_scope)
@@ -170,14 +183,21 @@ impl<'a> LoweringContext<'a> {
                     bindings: binding_symbols,
                     body: body_id,
                 });
-                self.record_merge_point(MergePointKind::LoopIteration, for_expr.syntax().range());
+                self.record_merge_point(
+                    MergePointKind::LoopIteration,
+                    for_expr.syntax().text_range(),
+                );
             }
             Expr::Do(do_expr) => {
                 if let Some(body) = do_expr.body() {
                     let loop_scope =
-                        self.new_scope(ScopeKind::Loop, body.syntax().range(), Some(scope));
-                    let body_id =
-                        self.new_body(BodyKind::Block, body.syntax().range(), loop_scope, None);
+                        self.new_scope(ScopeKind::Loop, body.syntax().text_range(), Some(scope));
+                    let body_id = self.new_body(
+                        BodyKind::Block,
+                        body.syntax().text_range(),
+                        loop_scope,
+                        None,
+                    );
                     self.with_loop(loop_scope, |this| {
                         this.with_body(body_id, |this| this.lower_block_items(body, loop_scope))
                     });
@@ -186,18 +206,21 @@ impl<'a> LoweringContext<'a> {
                 {
                     self.lower_expr(condition, scope);
                 }
-                self.record_merge_point(MergePointKind::LoopIteration, do_expr.syntax().range());
+                self.record_merge_point(
+                    MergePointKind::LoopIteration,
+                    do_expr.syntax().text_range(),
+                );
             }
             Expr::Path(path) => {
                 let mut base_expr = None;
                 let mut rooted_global = false;
                 if let Some(base) = path.base() {
                     if matches!(
-                        base,
+                        &base,
                         Expr::Name(name)
                             if matches!(
                                 name.token().map(|token| token.kind()),
-                                Some(rhai_syntax::TokenKind::GlobalKw)
+                                Some(kind) if kind.token_kind() == Some(rhai_syntax::TokenKind::GlobalKw)
                             )
                     ) {
                         rooted_global = true;
@@ -208,9 +231,9 @@ impl<'a> LoweringContext<'a> {
                 let mut segment_references = Vec::new();
                 for segment in path.segments() {
                     segment_references.push(self.alloc_reference(
-                        segment.text(self.parse.text()).to_owned(),
+                        segment.text().to_owned(),
                         ReferenceKind::PathSegment,
-                        segment.range(),
+                        segment.text_range(),
                         scope,
                     ));
                 }
@@ -222,15 +245,18 @@ impl<'a> LoweringContext<'a> {
                 });
             }
             Expr::Closure(closure) => {
-                let closure_scope =
-                    self.new_scope(ScopeKind::Closure, closure.syntax().range(), Some(scope));
+                let closure_scope = self.new_scope(
+                    ScopeKind::Closure,
+                    closure.syntax().text_range(),
+                    Some(scope),
+                );
                 let body_id = self.new_body(
                     BodyKind::Closure,
-                    closure.syntax().range(),
+                    closure.syntax().text_range(),
                     closure_scope,
                     None,
                 );
-                let params = self.closure_param_bindings(closure);
+                let params = self.closure_param_bindings(&closure);
                 self.lower_param_symbols(&params, None, closure_scope);
                 if let Some(body) = closure.body() {
                     let body_expr =
@@ -245,12 +271,12 @@ impl<'a> LoweringContext<'a> {
             Expr::InterpolatedString(string) => {
                 let interpolation_scope = self.new_scope(
                     ScopeKind::Interpolation,
-                    string.syntax().range(),
+                    string.syntax().text_range(),
                     Some(scope),
                 );
                 self.new_body(
                     BodyKind::Interpolation,
-                    string.syntax().range(),
+                    string.syntax().text_range(),
                     interpolation_scope,
                     None,
                 );
@@ -275,13 +301,13 @@ impl<'a> LoweringContext<'a> {
                 let operand = unary.expr().map(|expr| self.lower_expr(expr, scope));
                 let operator_token = unary.operator_token();
                 if let Some(token) = operator_token
-                    && let Some(operator) = unary_operator(token.kind())
+                    && let Some(operator) = token.kind().token_kind().and_then(unary_operator)
                 {
                     self.file.unary_exprs.push(UnaryExprInfo {
                         owner: expr_id,
                         operator,
                         operand,
-                        operator_range: Some(token.range()),
+                        operator_range: Some(token.text_range()),
                     });
                 }
             }
@@ -290,14 +316,14 @@ impl<'a> LoweringContext<'a> {
                 let rhs = binary.rhs().map(|rhs| self.lower_expr(rhs, scope));
                 let operator_token = binary.operator_token();
                 if let Some(token) = operator_token
-                    && let Some(operator) = binary_operator(token.kind())
+                    && let Some(operator) = token.kind().token_kind().and_then(binary_operator)
                 {
                     self.file.binary_exprs.push(BinaryExprInfo {
                         owner: expr_id,
                         operator,
                         lhs,
                         rhs,
-                        operator_range: Some(token.range()),
+                        operator_range: Some(token.text_range()),
                     });
                 }
             }
@@ -305,9 +331,9 @@ impl<'a> LoweringContext<'a> {
                 let assignment_start = self.file.references.len();
                 let assignment_operator = assign
                     .operator_token()
-                    .and_then(|token| assignment_operator(token.kind()));
+                    .and_then(|token| token.kind().token_kind().and_then(assignment_operator));
                 let lhs_syntax = assign.lhs();
-                let lhs_expr = lhs_syntax.map(|lhs| self.lower_expr(lhs, scope));
+                let lhs_expr = lhs_syntax.clone().map(|lhs| self.lower_expr(lhs, scope));
                 let rhs_expr = assign.rhs().map(|rhs| self.lower_expr(rhs, scope));
 
                 if let Some(operator) = assignment_operator {
@@ -316,7 +342,7 @@ impl<'a> LoweringContext<'a> {
                         operator,
                         lhs: lhs_expr,
                         rhs: rhs_expr,
-                        operator_range: assign.operator_token().map(|token| token.range()),
+                        operator_range: assign.operator_token().map(|token| token.text_range()),
                     });
                 }
 
@@ -342,18 +368,18 @@ impl<'a> LoweringContext<'a> {
                             reference,
                             expr: value_expr,
                             kind: ValueFlowKind::Assignment,
-                            range: assign.syntax().range(),
+                            range: assign.syntax().text_range(),
                         });
                     }
 
                     if let Some((receiver_reference, segments)) =
-                        self.mutation_target_from_expr(assignment_start, lhs)
+                        self.mutation_target_from_expr(assignment_start, &lhs)
                     {
                         self.pending_mutations.push(PendingMutation {
                             receiver_reference,
                             value: value_expr,
                             kind: PendingMutationKind::Path { segments },
-                            range: assign.syntax().range(),
+                            range: assign.syntax().text_range(),
                         });
                     }
                 }
@@ -390,14 +416,14 @@ impl<'a> LoweringContext<'a> {
                     let receiver_expr = self.lower_expr(receiver, scope);
                     if let Some(name) = field.name_token() {
                         let field_reference = self.alloc_reference(
-                            name.text(self.parse.text()).to_owned(),
+                            name.text().to_owned(),
                             ReferenceKind::Field,
-                            name.range(),
+                            name.text_range(),
                             scope,
                         );
                         self.file.member_accesses.push(MemberAccess {
                             owner: expr_id,
-                            range: field.syntax().range(),
+                            range: field.syntax().text_range(),
                             scope,
                             receiver: receiver_expr,
                             field_reference,
@@ -428,10 +454,10 @@ impl<'a> LoweringContext<'a> {
 
     pub(crate) fn lower_block_expr(
         &mut self,
-        block: BlockExpr<'_>,
+        block: BlockExpr,
         parent_scope: ScopeId,
     ) -> crate::ExprId {
-        let expr_id = self.alloc_expr(ExprKind::Block, block.syntax().range(), parent_scope);
+        let expr_id = self.alloc_expr(ExprKind::Block, block.syntax().text_range(), parent_scope);
         let body = self.lower_block_expr_with_owner(block, parent_scope);
         self.file.block_exprs.push(BlockExprInfo {
             owner: expr_id,
@@ -442,23 +468,32 @@ impl<'a> LoweringContext<'a> {
 
     pub(crate) fn lower_block_expr_with_owner(
         &mut self,
-        block: BlockExpr<'_>,
+        block: BlockExpr,
         parent_scope: ScopeId,
     ) -> BodyId {
-        let block_scope =
-            self.new_scope(ScopeKind::Block, block.syntax().range(), Some(parent_scope));
-        let body_id = self.new_body(BodyKind::Block, block.syntax().range(), block_scope, None);
+        let block_scope = self.new_scope(
+            ScopeKind::Block,
+            block.syntax().text_range(),
+            Some(parent_scope),
+        );
+        let body_id = self.new_body(
+            BodyKind::Block,
+            block.syntax().text_range(),
+            block_scope,
+            None,
+        );
         self.with_body(body_id, |this| this.lower_block_items(block, block_scope));
         body_id
     }
 
     pub(crate) fn lower_switch_arm(
         &mut self,
-        arm: SwitchArm<'_>,
+        arm: SwitchArm,
         scope: ScopeId,
         owner: crate::ExprId,
     ) -> Option<crate::ExprId> {
-        let arm_scope = self.new_scope(ScopeKind::SwitchArm, arm.syntax().range(), Some(scope));
+        let arm_scope =
+            self.new_scope(ScopeKind::SwitchArm, arm.syntax().text_range(), Some(scope));
         let mut lowered_patterns = Vec::new();
         let mut wildcard = false;
         if let Some(patterns) = arm.patterns() {
@@ -478,7 +513,7 @@ impl<'a> LoweringContext<'a> {
 
     pub(crate) fn lower_switch_patterns(
         &mut self,
-        patterns: SwitchPatternList<'_>,
+        patterns: SwitchPatternList,
         scope: ScopeId,
     ) -> Vec<crate::ExprId> {
         let mut lowered = Vec::new();
@@ -488,44 +523,44 @@ impl<'a> LoweringContext<'a> {
         lowered
     }
 
-    pub(crate) fn item_may_fall_through(&self, item: Item<'_>) -> bool {
+    pub(crate) fn item_may_fall_through(&self, item: &Item) -> bool {
         match item {
             Item::Fn(_) => true,
             Item::Stmt(stmt) => self.stmt_may_fall_through(stmt),
         }
     }
 
-    pub(crate) fn stmt_may_fall_through(&self, stmt: Stmt<'_>) -> bool {
+    pub(crate) fn stmt_may_fall_through(&self, stmt: &Stmt) -> bool {
         match stmt {
             Stmt::Break(_) | Stmt::Continue(_) | Stmt::Return(_) | Stmt::Throw(_) => false,
             Stmt::Expr(stmt) => stmt
                 .expr()
-                .is_none_or(|expr| self.expr_may_fall_through(expr)),
+                .is_none_or(|expr| self.expr_may_fall_through(&expr)),
             Stmt::Let(stmt) => stmt
                 .initializer()
-                .is_none_or(|expr| self.expr_may_fall_through(expr)),
+                .is_none_or(|expr| self.expr_may_fall_through(&expr)),
             Stmt::Const(stmt) => stmt
                 .value()
-                .is_none_or(|expr| self.expr_may_fall_through(expr)),
+                .is_none_or(|expr| self.expr_may_fall_through(&expr)),
             Stmt::Try(stmt) => {
                 let body_fallthrough = stmt
                     .body()
-                    .is_none_or(|body| self.block_may_fall_through(body));
+                    .is_none_or(|body| self.block_may_fall_through(&body));
                 let catch_fallthrough = stmt
                     .catch_clause()
                     .and_then(|catch| catch.body())
-                    .is_none_or(|body| self.block_may_fall_through(body));
+                    .is_none_or(|body| self.block_may_fall_through(&body));
                 body_fallthrough || catch_fallthrough
             }
             Stmt::Import(_) | Stmt::Export(_) => true,
         }
     }
 
-    pub(crate) fn block_may_fall_through(&self, block: BlockExpr<'_>) -> bool {
+    pub(crate) fn block_may_fall_through(&self, block: &BlockExpr) -> bool {
         let mut may_fall_through = true;
         if let Some(items) = block.item_list() {
             for item in items.items() {
-                may_fall_through = self.item_may_fall_through(item);
+                may_fall_through = self.item_may_fall_through(&item);
                 if !may_fall_through {
                     break;
                 }
@@ -534,16 +569,16 @@ impl<'a> LoweringContext<'a> {
         may_fall_through
     }
 
-    pub(crate) fn expr_may_fall_through(&self, expr: Expr<'_>) -> bool {
+    pub(crate) fn expr_may_fall_through(&self, expr: &Expr) -> bool {
         match expr {
             Expr::If(if_expr) => {
                 let then_fallthrough = if_expr
                     .then_branch()
-                    .is_none_or(|block| self.block_may_fall_through(block));
+                    .is_none_or(|block| self.block_may_fall_through(&block));
                 let else_fallthrough = if_expr
                     .else_branch()
                     .and_then(|branch| branch.body())
-                    .is_none_or(|expr| self.expr_may_fall_through(expr));
+                    .is_none_or(|expr| self.expr_may_fall_through(&expr));
                 then_fallthrough || else_fallthrough
             }
             Expr::Switch(switch_expr) => {
@@ -559,7 +594,7 @@ impl<'a> LoweringContext<'a> {
 
                         let arm_fallthrough = arm
                             .value()
-                            .is_none_or(|expr| self.expr_may_fall_through(expr));
+                            .is_none_or(|expr| self.expr_may_fall_through(&expr));
                         if arm_fallthrough {
                             all_arms_terminate = false;
                         }
@@ -571,14 +606,14 @@ impl<'a> LoweringContext<'a> {
             Expr::Block(block) => self.block_may_fall_through(block),
             Expr::Paren(paren) => paren
                 .expr()
-                .is_none_or(|expr| self.expr_may_fall_through(expr)),
+                .is_none_or(|expr| self.expr_may_fall_through(&expr)),
             Expr::Do(_) | Expr::While(_) | Expr::Loop(_) | Expr::For(_) => true,
             _ => true,
         }
     }
 }
 
-fn expr_kind(expr: Expr<'_>) -> ExprKind {
+fn expr_kind(expr: &Expr) -> ExprKind {
     match expr {
         Expr::Name(_) => ExprKind::Name,
         Expr::Literal(_) => ExprKind::Literal,

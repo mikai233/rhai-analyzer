@@ -1,11 +1,11 @@
 use crate::lexer::lex_text;
 use crate::parser::{
     InterpolatedPart, Parser, find_interpolation_end, infix_binding_power, make_absolute_range,
-    next_char_at, shift_element, shift_error,
+    next_char_at,
 };
 use crate::syntax::{
     SyntaxKind, SyntaxNode, SyntaxToken, TextRange, TextSize, TokenKind, empty_range, node_element,
-    text_size_of, token_element,
+    token_element,
 };
 
 impl<'a> Parser<'a> {
@@ -459,35 +459,21 @@ impl<'a> Parser<'a> {
         let end = u32::from(body_range.end()) as usize;
         let body_text = &self.source[start..end];
 
-        let lexed = lex_text(body_text);
+        let lexed = lex_text(body_text).shifted(body_range.start());
         let (tokens, errors) = lexed.into_parts();
-        let shifted_offset = body_range.start();
+        self.errors.extend(errors);
 
-        self.errors.extend(
-            errors
-                .into_iter()
-                .map(|error| shift_error(error, shifted_offset)),
-        );
+        let mut parser = Parser::new(tokens, body_range.end(), self.source);
+        let root = parser.parse_root_with_range(body_range);
+        self.errors.extend(parser.finish_errors());
 
-        let mut parser = Parser::new(tokens.clone(), text_size_of(body_text), body_text);
-        let root = parser.parse_root();
-        self.errors.extend(
-            parser
-                .finish_errors()
-                .into_iter()
-                .map(|error| shift_error(error, shifted_offset)),
-        );
-
-        let shifted_children = root
+        let item_children = root
             .children()
             .first()
             .and_then(crate::syntax::SyntaxElement::as_node)
             .map(crate::SyntaxNode::children)
             .unwrap_or(root.children())
-            .iter()
-            .cloned()
-            .map(|element| shift_element(element, shifted_offset))
-            .collect();
+            .to_vec();
 
         SyntaxNode::with_range(
             SyntaxKind::InterpolationBody,
@@ -495,7 +481,7 @@ impl<'a> Parser<'a> {
             vec![node_element(SyntaxNode::with_range(
                 SyntaxKind::InterpolationItemList,
                 body_range,
-                shifted_children,
+                item_children,
             ))],
         )
     }

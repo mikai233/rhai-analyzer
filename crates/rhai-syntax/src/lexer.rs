@@ -22,6 +22,34 @@ impl Lexed {
     pub fn into_parts(self) -> (Vec<SyntaxToken>, Vec<SyntaxError>) {
         (self.tokens, self.errors)
     }
+
+    pub fn shifted(mut self, offset: TextSize) -> Self {
+        if offset == TextSize::from(0) {
+            return self;
+        }
+
+        self.tokens = self
+            .tokens
+            .into_iter()
+            .map(|token| {
+                SyntaxToken::new(
+                    token.kind(),
+                    TextRange::new(token.range().start() + offset, token.range().end() + offset),
+                )
+            })
+            .collect();
+        self.errors = self
+            .errors
+            .into_iter()
+            .map(|error| {
+                SyntaxError::new(
+                    error.message().to_owned(),
+                    TextRange::new(error.range().start() + offset, error.range().end() + offset),
+                )
+            })
+            .collect();
+        self
+    }
 }
 
 pub fn lex_text(text: &str) -> Lexed {

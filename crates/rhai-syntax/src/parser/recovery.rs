@@ -300,41 +300,6 @@ pub(crate) enum InterpolatedPart {
     },
 }
 
-pub(crate) fn shift_error(error: SyntaxError, offset: TextSize) -> SyntaxError {
-    SyntaxError::new(
-        error.message().to_owned(),
-        shift_range(error.range(), offset),
-    )
-}
-
-pub(crate) fn shift_element(
-    element: crate::SyntaxElement,
-    offset: TextSize,
-) -> crate::SyntaxElement {
-    match element {
-        crate::SyntaxElement::Node(node) => node_element(shift_node(*node, offset)),
-        crate::SyntaxElement::Token(token) => token_element(SyntaxToken::new(
-            token.kind(),
-            shift_range(token.range(), offset),
-        )),
-    }
-}
-
-pub(crate) fn shift_node(node: SyntaxNode, offset: TextSize) -> SyntaxNode {
-    let children = node
-        .children()
-        .iter()
-        .cloned()
-        .map(|element| shift_element(element, offset))
-        .collect();
-
-    SyntaxNode::with_range(node.kind(), shift_range(node.range(), offset), children)
-}
-
-pub(crate) fn shift_range(range: TextRange, offset: TextSize) -> TextRange {
-    TextRange::new(range.start() + offset, range.end() + offset)
-}
-
 pub(crate) fn make_absolute_range(start: usize, end: usize) -> TextRange {
     TextRange::new(
         TextSize::from(u32::try_from(start).unwrap_or(u32::MAX)),

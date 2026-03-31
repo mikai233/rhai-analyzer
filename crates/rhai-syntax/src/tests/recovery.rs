@@ -1,4 +1,5 @@
-use crate::{AstNode, Item, Root, SyntaxElement, SyntaxKind, parse_text};
+use crate::tests::node_kind;
+use crate::{AstNode, Root, parse_text};
 
 #[test]
 fn recovers_from_missing_expression() {
@@ -11,16 +12,13 @@ fn recovers_from_missing_expression() {
     let stmt = root
         .item_list()
         .and_then(|items| items.items().next())
-        .map(Item::syntax)
+        .map(|item| item.syntax())
         .expect("expected statement node");
-    assert_eq!(stmt.kind(), SyntaxKind::StmtLet);
+    assert_eq!(node_kind(&stmt), crate::SyntaxKind::StmtLet);
 
-    let has_error_node = stmt.children().iter().any(|element| {
-        matches!(
-            element,
-            SyntaxElement::Node(node) if node.kind() == SyntaxKind::Error
-        )
-    });
+    let has_error_node = stmt
+        .children()
+        .any(|node| node_kind(&node) == crate::SyntaxKind::Error);
     assert!(has_error_node, "{}", parse.debug_tree());
 }
 
@@ -64,7 +62,7 @@ fn recovers_across_statement_boundary_after_broken_call() {
     assert_eq!(items.len(), 2, "{}", parse.debug_tree());
 
     let second_stmt = items[1].syntax();
-    assert_eq!(second_stmt.kind(), SyntaxKind::StmtLet);
+    assert_eq!(node_kind(&second_stmt), crate::SyntaxKind::StmtLet);
 }
 
 #[test]
@@ -89,7 +87,7 @@ fn recovers_across_statement_boundary_after_missing_binary_rhs() {
         .unwrap_or_default();
     assert_eq!(items.len(), 2, "{}", parse.debug_tree());
     let second_stmt = items[1].syntax();
-    assert_eq!(second_stmt.kind(), SyntaxKind::StmtLet);
+    assert_eq!(node_kind(&second_stmt), crate::SyntaxKind::StmtLet);
 }
 
 #[test]
@@ -279,7 +277,7 @@ fn recovers_when_function_parameter_list_runs_into_body() {
         .unwrap_or_default();
     assert_eq!(items.len(), 2, "{}", tree);
     let second_stmt = items[1].syntax();
-    assert_eq!(second_stmt.kind(), SyntaxKind::StmtLet);
+    assert_eq!(node_kind(&second_stmt), crate::SyntaxKind::StmtLet);
 }
 
 #[test]
@@ -303,7 +301,7 @@ fn recovers_when_closure_parameter_list_runs_into_block_body() {
         .unwrap_or_default();
     assert_eq!(items.len(), 2, "{}", parse.debug_tree());
     let second_stmt = items[1].syntax();
-    assert_eq!(second_stmt.kind(), SyntaxKind::StmtLet);
+    assert_eq!(node_kind(&second_stmt), crate::SyntaxKind::StmtLet);
 }
 
 #[test]

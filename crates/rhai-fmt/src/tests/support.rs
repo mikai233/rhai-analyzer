@@ -41,7 +41,7 @@ fn run() {
             Item::Stmt(Stmt::Expr(expr_stmt)) => expr_stmt.expr(),
             _ => None,
         })
-        .map(|expr| (expr, expr_support(expr).level))
+        .map(|expr| (expr.clone(), expr_support(&expr).level))
         .collect::<Vec<_>>();
 
     assert_eq!(levels.len(), 8);
@@ -125,12 +125,18 @@ let root_value = compute();
         .unwrap_or_default();
 
     assert!(matches!(items[0], Item::Fn(_)));
-    assert_eq!(item_support(items[0]).level, FormatSupportLevel::Structural);
+    assert_eq!(
+        item_support(&items[0]).level,
+        FormatSupportLevel::Structural
+    );
     assert!(matches!(items[1], Item::Stmt(Stmt::Let(_))));
-    assert_eq!(item_support(items[1]).level, FormatSupportLevel::Structural);
+    assert_eq!(
+        item_support(&items[1]).level,
+        FormatSupportLevel::Structural
+    );
 
-    let function = match items[0] {
-        Item::Fn(function) => function,
+    let function = match &items[0] {
+        Item::Fn(function) => function.clone(),
         Item::Stmt(_) => panic!("expected function"),
     };
     let body = function.body().expect("expected function body");
@@ -149,17 +155,17 @@ let root_value = compute();
 
     assert!(matches!(body_statements[0], Stmt::Let(_)));
     assert_eq!(
-        stmt_support(body_statements[0]).level,
+        stmt_support(&body_statements[0]).level,
         FormatSupportLevel::Structural
     );
     assert!(matches!(body_statements[1], Stmt::Expr(_)));
     assert_eq!(
-        stmt_support(body_statements[1]).level,
+        stmt_support(&body_statements[1]).level,
         FormatSupportLevel::Structural
     );
     assert!(matches!(body_statements[2], Stmt::Continue(_)));
     assert_eq!(
-        stmt_support(body_statements[2]).level,
+        stmt_support(&body_statements[2]).level,
         FormatSupportLevel::Structural
     );
 }

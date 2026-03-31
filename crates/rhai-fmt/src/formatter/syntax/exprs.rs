@@ -2,9 +2,9 @@ use rhai_syntax::{
     ArgList, ArrayExpr, ArrayItemList, AstNode, BinaryExpr, CallExpr, ClosureExpr,
     ClosureParamList, DoCondition, DoExpr, ElseBranch, Expr, FieldExpr, ForBindings, ForExpr,
     GapTrivia, IfExpr, IndexExpr, InterpolatedStringExpr, InterpolationItemList, LoopExpr,
-    ObjectExpr, ObjectField, ObjectFieldList, ParamList, ParenExpr, PathExpr, StringPart,
-    StringPartList, SwitchArm, SwitchArmList, SwitchExpr, SwitchPatternList, SyntaxNode, TextRange,
-    TokenKind, TriviaBoundary, WhileExpr,
+    ObjectExpr, ObjectField, ObjectFieldList, ParamList, ParenExpr, PathExpr, RowanSyntaxNode,
+    RowanSyntaxNodeExt, StringPart, StringPartList, SwitchArm, SwitchArmList, SwitchExpr,
+    SwitchPatternList, TextRange, TokenKind, TriviaBoundary, WhileExpr,
 };
 
 use crate::ContainerLayoutStyle;
@@ -14,13 +14,13 @@ use crate::formatter::support::coverage::{FormatSupportLevel, expr_support};
 use crate::formatter::trivia::comments::GapSeparatorOptions;
 
 impl Formatter<'_> {
-    pub(crate) fn format_expr_doc(&self, expr: Expr<'_>, indent: usize) -> Doc {
-        if matches!(expr_support(expr).level, FormatSupportLevel::RawFallback) {
+    pub(crate) fn format_expr_doc(&self, expr: Expr, indent: usize) -> Doc {
+        if matches!(expr_support(&expr).level, FormatSupportLevel::RawFallback) {
             return Doc::text(self.raw(expr.syntax()));
         }
 
-        if matches!(expr_support(expr).level, FormatSupportLevel::Structural)
-            && self.expr_requires_raw_fallback(expr)
+        if matches!(expr_support(&expr).level, FormatSupportLevel::Structural)
+            && self.expr_requires_raw_fallback(expr.clone())
         {
             return Doc::text(self.raw(expr.syntax()));
         }
@@ -28,14 +28,14 @@ impl Formatter<'_> {
         match expr {
             Expr::Name(name) => Doc::text(
                 name.token()
-                    .map(|token| token.text(self.source).to_owned())
-                    .unwrap_or_else(|| self.raw(expr.syntax())),
+                    .map(|token| token.text().to_owned())
+                    .unwrap_or_else(|| self.raw(name.syntax())),
             ),
             Expr::Literal(literal) => Doc::text(
                 literal
                     .token()
-                    .map(|token| token.text(self.source).to_owned())
-                    .unwrap_or_else(|| self.raw(expr.syntax())),
+                    .map(|token| token.text().to_owned())
+                    .unwrap_or_else(|| self.raw(literal.syntax())),
             ),
             Expr::Array(array) => self.format_array_doc(array, indent),
             Expr::Object(object) => self.format_object_doc(object, indent),
@@ -60,7 +60,7 @@ impl Formatter<'_> {
         }
     }
 
-    fn expr_requires_raw_fallback(&self, expr: Expr<'_>) -> bool {
+    fn expr_requires_raw_fallback(&self, expr: Expr) -> bool {
         match expr {
             Expr::If(if_expr) => self.if_requires_raw_fallback(if_expr),
             Expr::Switch(_) => false,
@@ -70,7 +70,7 @@ impl Formatter<'_> {
             Expr::Do(do_expr) => self.do_requires_raw_fallback(do_expr),
             Expr::Path(path) => self.path_requires_raw_fallback(path),
             Expr::Closure(closure) => self.closure_requires_raw_fallback(closure),
-            Expr::InterpolatedString(string) => {
+            Expr::InterpolatedString(ref string) => {
                 self.node_has_unowned_comments(expr.syntax())
                     || string
                         .part_list()
@@ -99,7 +99,7 @@ impl Formatter<'_> {
         }
     }
 
-    fn call_requires_raw_fallback(&self, call: CallExpr<'_>) -> bool {
+    fn call_requires_raw_fallback(&self, call: CallExpr) -> bool {
         let Some(callee) = call.callee() else {
             return self.node_has_unowned_comments(call.syntax());
         };
@@ -111,10 +111,13 @@ impl Formatter<'_> {
         };
 
         let mut allowed_boundaries = Vec::new();
-        let call_end = range_end(args.syntax().range());
+        let call_end = range_end(args.syntax().text_range());
 
         if let Some(bang_token) = self.token(call.syntax(), TokenKind::Bang) {
-            allowed_boundaries.push(TriviaBoundary::NodeToken(callee.syntax(), bang_token));
+            allowed_boundaries.push(TriviaBoundary::NodeToken(
+                callee.syntax(),
+                bang_token.clone(),
+            ));
             allowed_boundaries.push(TriviaBoundary::TokenNode(bang_token, args.syntax()));
         } else {
             allowed_boundaries.push(TriviaBoundary::NodeNode(callee.syntax(), args.syntax()));
@@ -125,11 +128,11 @@ impl Formatter<'_> {
 
         self.node_has_unowned_comments_outside(
             args.syntax(),
-            &[(range_start(args_open_token.range()), call_end)],
+            &[(range_start(args_open_token.text_range()), call_end)],
         )
     }
 
-    fn unary_requires_raw_fallback(&self, unary: rhai_syntax::UnaryExpr<'_>) -> bool {
+    fn unary_requires_raw_fallback(&self, unary: rhai_syntax::UnaryExpr) -> bool {
         let Some(operator_token) = unary.operator_token() else {
             return self.node_has_unowned_comments(unary.syntax());
         };
@@ -143,7 +146,7 @@ impl Formatter<'_> {
         )
     }
 
-    fn binary_requires_raw_fallback(&self, binary: BinaryExpr<'_>) -> bool {
+    fn binary_requires_raw_fallback(&self, binary: BinaryExpr) -> bool {
         let Some(lhs) = binary.lhs() else {
             return self.node_has_unowned_comments(binary.syntax());
         };
@@ -157,13 +160,13 @@ impl Formatter<'_> {
         self.node_has_unowned_comments_outside_boundaries(
             binary.syntax(),
             &[
-                TriviaBoundary::NodeToken(lhs.syntax(), operator_token),
+                TriviaBoundary::NodeToken(lhs.syntax(), operator_token.clone()),
                 TriviaBoundary::TokenNode(operator_token, rhs.syntax()),
             ],
         )
     }
 
-    fn assign_requires_raw_fallback(&self, assign: rhai_syntax::AssignExpr<'_>) -> bool {
+    fn assign_requires_raw_fallback(&self, assign: rhai_syntax::AssignExpr) -> bool {
         let Some(lhs) = assign.lhs() else {
             return self.node_has_unowned_comments(assign.syntax());
         };
@@ -177,27 +180,27 @@ impl Formatter<'_> {
         self.node_has_unowned_comments_outside_boundaries(
             assign.syntax(),
             &[
-                TriviaBoundary::NodeToken(lhs.syntax(), operator_token),
+                TriviaBoundary::NodeToken(lhs.syntax(), operator_token.clone()),
                 TriviaBoundary::TokenNode(operator_token, rhs.syntax()),
             ],
         )
     }
 
-    fn paren_requires_raw_fallback(&self, paren: ParenExpr<'_>) -> bool {
+    fn paren_requires_raw_fallback(&self, paren: ParenExpr) -> bool {
         let Some(inner) = paren.expr() else {
             return self.node_has_unowned_comments(paren.syntax());
         };
         let Some(open_token) = paren
             .syntax()
-            .significant_tokens()
-            .find(|token| token.kind() == TokenKind::OpenParen)
+            .direct_significant_tokens()
+            .find(|token| token.kind().token_kind() == Some(TokenKind::OpenParen))
         else {
             return self.node_has_unowned_comments(paren.syntax());
         };
         let Some(close_token) = paren
             .syntax()
-            .significant_tokens()
-            .find(|token| token.kind() == TokenKind::CloseParen)
+            .direct_significant_tokens()
+            .find(|token| token.kind().token_kind() == Some(TokenKind::CloseParen))
         else {
             return self.node_has_unowned_comments(paren.syntax());
         };
@@ -211,13 +214,14 @@ impl Formatter<'_> {
         )
     }
 
-    fn format_unary_doc(&self, unary: rhai_syntax::UnaryExpr<'_>, indent: usize) -> Doc {
+    fn format_unary_doc(&self, unary: rhai_syntax::UnaryExpr, indent: usize) -> Doc {
         let operator = unary
             .operator_token()
-            .map(|token| token.text(self.source))
-            .unwrap_or("");
+            .map(|token| token.text().to_owned())
+            .unwrap_or_default();
         let inner_expr = unary.expr();
         let inner = inner_expr
+            .clone()
             .map(|expr| self.format_expr_doc(expr, indent))
             .unwrap_or_else(|| Doc::text(self.raw(unary.syntax())));
 
@@ -228,10 +232,13 @@ impl Formatter<'_> {
             return Doc::concat(vec![Doc::text(operator), inner]);
         };
 
-        if self.has_comments_after_token_before_node(operator_token, inner_expr.syntax()) {
+        if self.has_comments_after_token_before_node(&operator_token, inner_expr.syntax()) {
             return Doc::concat(vec![
                 Doc::text(operator),
-                self.tight_comment_gap_after_token_before_node(operator_token, inner_expr.syntax()),
+                self.tight_comment_gap_after_token_before_node(
+                    &operator_token,
+                    inner_expr.syntax(),
+                ),
                 inner,
             ]);
         }
@@ -243,32 +250,25 @@ impl Formatter<'_> {
         }
     }
 
-    fn format_path_doc(&self, path: PathExpr<'_>, indent: usize) -> Doc {
+    fn format_path_doc(&self, path: PathExpr, indent: usize) -> Doc {
         let segments = path.segments().collect::<Vec<_>>();
         let separators = self
-            .token_ranges(path.syntax(), TokenKind::ColonColon)
+            .token_ranges(&path.syntax(), TokenKind::ColonColon)
             .collect::<Vec<_>>();
 
         let (mut doc, segment_start_index, mut previous_end) = if let Some(base) = path.base() {
             if separators.len() != segments.len() {
                 return Doc::text(self.raw(path.syntax()));
             }
+            let base_end = u32::from(base.syntax().text_range().end()) as usize;
 
-            (
-                self.format_expr_doc(base, indent),
-                0,
-                u32::from(base.syntax().range().end()) as usize,
-            )
+            (self.format_expr_doc(base, indent), 0, base_end)
         } else if let Some(first) = segments.first() {
             if separators.len() + 1 != segments.len() {
                 return Doc::text(self.raw(path.syntax()));
             }
 
-            (
-                Doc::text(first.text(self.source)),
-                1,
-                range_end(first.range()),
-            )
+            (Doc::text(first.text()), 1, range_end(first.text_range()))
         } else {
             return Doc::text(self.raw(path.syntax()));
         };
@@ -279,8 +279,10 @@ impl Formatter<'_> {
         {
             let before_separator_has_comments =
                 self.range_has_comments(previous_end, range_start(separator_range));
-            let after_separator_has_comments =
-                self.range_has_comments(range_end(separator_range), range_start(segment.range()));
+            let after_separator_has_comments = self.range_has_comments(
+                range_end(separator_range),
+                range_start(segment.text_range()),
+            );
 
             if before_separator_has_comments || after_separator_has_comments {
                 doc = Doc::concat(vec![
@@ -289,36 +291,35 @@ impl Formatter<'_> {
                     Doc::text("::"),
                     self.tight_comment_gap_doc(
                         range_end(separator_range),
-                        range_start(segment.range()),
+                        range_start(segment.text_range()),
                     ),
-                    Doc::text(segment.text(self.source)),
+                    Doc::text(segment.text()),
                 ]);
             } else {
-                doc = self.group_tight_suffix_doc(
-                    doc,
-                    Doc::text(format!("::{}", segment.text(self.source))),
-                );
+                doc = self.group_tight_suffix_doc(doc, Doc::text(format!("::{}", segment.text())));
             }
 
-            previous_end = range_end(segment.range());
+            previous_end = range_end(segment.text_range());
         }
 
         doc
     }
 
-    fn format_assign_doc(&self, assign: rhai_syntax::AssignExpr<'_>, indent: usize) -> Doc {
+    fn format_assign_doc(&self, assign: rhai_syntax::AssignExpr, indent: usize) -> Doc {
         let lhs_expr = assign.lhs();
         let rhs_expr = assign.rhs();
         let lhs = lhs_expr
+            .clone()
             .map(|lhs| self.format_expr_doc(lhs, indent))
             .unwrap_or_else(|| Doc::text(""));
         let rhs = rhs_expr
+            .clone()
             .map(|rhs| self.format_expr_doc(rhs, indent))
             .unwrap_or_else(|| Doc::text(""));
         let operator = assign
             .operator_token()
-            .map(|token| token.text(self.source))
-            .unwrap_or("=");
+            .map(|token| token.text().to_owned())
+            .unwrap_or_else(|| "=".to_owned());
         let Some(lhs_expr) = lhs_expr else {
             return Doc::concat(vec![lhs, Doc::text(format!(" {operator} ")), rhs]);
         };
@@ -330,15 +331,15 @@ impl Formatter<'_> {
         };
 
         let before_operator_has_comments =
-            self.has_comments_after_node_before_token(lhs_expr.syntax(), operator_token);
+            self.has_comments_after_node_before_token(lhs_expr.syntax(), &operator_token);
         let after_operator_has_comments =
-            self.has_comments_after_token_before_node(operator_token, rhs_expr.syntax());
+            self.has_comments_after_token_before_node(&operator_token, rhs_expr.syntax());
 
         if before_operator_has_comments || after_operator_has_comments {
             let (lhs_to_operator_start, lhs_to_operator_end) =
-                self.range_after_node_before_token(lhs_expr.syntax(), operator_token);
+                self.range_after_node_before_token(lhs_expr.syntax(), &operator_token);
             let (operator_to_rhs_start, operator_to_rhs_end) =
-                self.range_after_token_before_node(operator_token, rhs_expr.syntax());
+                self.range_after_token_before_node(&operator_token, rhs_expr.syntax());
             return Doc::concat(vec![
                 lhs,
                 self.space_or_tight_gap_doc(lhs_to_operator_start, lhs_to_operator_end),
@@ -356,14 +357,19 @@ impl Formatter<'_> {
         }
     }
 
-    fn format_binary_doc(&self, binary: BinaryExpr<'_>, indent: usize) -> Doc {
-        if self.binary_has_operator_comments(binary) {
+    fn format_binary_doc(&self, binary: BinaryExpr, indent: usize) -> Doc {
+        if self.binary_has_operator_comments(&binary) {
             return self.format_binary_with_operator_comments_doc(binary, indent);
         }
 
         let mut operands = Vec::new();
         let mut operators = Vec::new();
-        self.collect_binary_chain(Expr::Binary(binary), indent, &mut operands, &mut operators);
+        self.collect_binary_chain(
+            Expr::Binary(binary.clone()),
+            indent,
+            &mut operands,
+            &mut operators,
+        );
 
         if operands.is_empty() {
             return Doc::text(self.raw(binary.syntax()));
@@ -395,23 +401,21 @@ impl Formatter<'_> {
         }
     }
 
-    fn format_binary_with_operator_comments_doc(
-        &self,
-        binary: BinaryExpr<'_>,
-        indent: usize,
-    ) -> Doc {
+    fn format_binary_with_operator_comments_doc(&self, binary: BinaryExpr, indent: usize) -> Doc {
         let lhs_expr = binary.lhs();
         let rhs_expr = binary.rhs();
         let lhs = lhs_expr
+            .clone()
             .map(|lhs| self.format_expr_doc(lhs, indent))
             .unwrap_or_else(|| Doc::text(""));
         let rhs = rhs_expr
+            .clone()
             .map(|rhs| self.format_expr_doc(rhs, indent))
             .unwrap_or_else(|| Doc::text(""));
         let operator = binary
             .operator_token()
-            .map(|token| token.text(self.source))
-            .unwrap_or("");
+            .map(|token| token.text().to_owned())
+            .unwrap_or_default();
         let Some(lhs_expr) = lhs_expr else {
             return Doc::concat(vec![lhs, Doc::text(format!(" {operator} ")), rhs]);
         };
@@ -423,9 +427,9 @@ impl Formatter<'_> {
         };
 
         let (lhs_to_operator_start, lhs_to_operator_end) =
-            self.range_after_node_before_token(lhs_expr.syntax(), operator_token);
+            self.range_after_node_before_token(lhs_expr.syntax(), &operator_token);
         let (operator_to_rhs_start, operator_to_rhs_end) =
-            self.range_after_token_before_node(operator_token, rhs_expr.syntax());
+            self.range_after_token_before_node(&operator_token, rhs_expr.syntax());
         Doc::concat(vec![
             lhs,
             self.space_or_tight_gap_doc(lhs_to_operator_start, lhs_to_operator_end),
@@ -435,7 +439,7 @@ impl Formatter<'_> {
         ])
     }
 
-    fn format_paren_doc(&self, paren: ParenExpr<'_>, indent: usize) -> Doc {
+    fn format_paren_doc(&self, paren: ParenExpr, indent: usize) -> Doc {
         let Some(inner_expr) = paren.expr() else {
             return Doc::concat(vec![Doc::text("("), Doc::text(")")]);
         };
@@ -446,29 +450,29 @@ impl Formatter<'_> {
             .unwrap_or_else(|| Doc::text(""));
         let Some(open_token) = paren
             .syntax()
-            .significant_tokens()
-            .find(|token| token.kind() == TokenKind::OpenParen)
+            .direct_significant_tokens()
+            .find(|token| token.kind().token_kind() == Some(TokenKind::OpenParen))
         else {
             return Doc::concat(vec![Doc::text("("), inner, Doc::text(")")]);
         };
         let Some(close_token) = paren
             .syntax()
-            .significant_tokens()
-            .find(|token| token.kind() == TokenKind::CloseParen)
+            .direct_significant_tokens()
+            .find(|token| token.kind().token_kind() == Some(TokenKind::CloseParen))
         else {
             return Doc::concat(vec![Doc::text("("), inner, Doc::text(")")]);
         };
 
         Doc::concat(vec![
             Doc::text("("),
-            self.tight_comment_gap_after_token_before_node(open_token, inner_expr.syntax()),
+            self.tight_comment_gap_after_token_before_node(&open_token, inner_expr.syntax()),
             inner,
-            self.tight_comment_gap_after_node_before_token(inner_expr.syntax(), close_token),
+            self.tight_comment_gap_after_node_before_token(inner_expr.syntax(), &close_token),
             Doc::text(")"),
         ])
     }
 
-    fn format_call_doc(&self, call: CallExpr<'_>, indent: usize) -> Doc {
+    fn format_call_doc(&self, call: CallExpr, indent: usize) -> Doc {
         let callee = call
             .callee()
             .map(|callee| self.format_expr_doc(callee, indent))
@@ -485,22 +489,22 @@ impl Formatter<'_> {
         };
         let Some(args_open_token) = arg_list
             .syntax()
-            .significant_tokens()
-            .find(|token| token.kind() == TokenKind::OpenParen)
+            .direct_significant_tokens()
+            .find(|token| token.kind().token_kind() == Some(TokenKind::OpenParen))
         else {
             return Doc::concat(vec![callee, args]);
         };
 
         if let Some(bang_token) = call
             .syntax()
-            .significant_tokens()
-            .find(|token| token.kind() == TokenKind::Bang)
+            .direct_significant_tokens()
+            .find(|token| token.kind().token_kind() == Some(TokenKind::Bang))
         {
             Doc::concat(vec![
                 callee,
-                self.tight_comment_gap_after_node_before_token(callee_expr.syntax(), bang_token),
+                self.tight_comment_gap_after_node_before_token(callee_expr.syntax(), &bang_token),
                 Doc::text("!"),
-                self.tight_comment_gap_after_token_before_token(bang_token, args_open_token),
+                self.tight_comment_gap_after_token_before_token(&bang_token, &args_open_token),
                 args,
             ])
         } else {
@@ -508,18 +512,18 @@ impl Formatter<'_> {
                 callee,
                 self.tight_comment_gap_after_node_before_token(
                     callee_expr.syntax(),
-                    args_open_token,
+                    &args_open_token,
                 ),
                 args,
             ])
         }
     }
 
-    fn format_arg_list_doc(&self, args: ArgList<'_>, indent: usize) -> Doc {
-        let values = self.arg_list_items(args, indent);
+    fn format_arg_list_doc(&self, args: ArgList, indent: usize) -> Doc {
+        let values = self.arg_list_items(args.clone(), indent);
         self.format_delimited_node_doc(
             DelimitedNodeSpec {
-                node: args.syntax(),
+                node: &args.syntax(),
                 open_kind: TokenKind::OpenParen,
                 close_kind: TokenKind::CloseParen,
                 open: "(",
@@ -530,13 +534,13 @@ impl Formatter<'_> {
         )
     }
 
-    pub(crate) fn format_arg_list_body_doc(&self, args: ArgList<'_>, indent: usize) -> Doc {
+    pub(crate) fn format_arg_list_body_doc(&self, args: ArgList, indent: usize) -> Doc {
         self.format_arg_list_doc(args, indent)
     }
 
     pub(crate) fn format_array_item_list_body_doc(
         &self,
-        items: ArrayItemList<'_>,
+        items: ArrayItemList,
         indent: usize,
     ) -> Doc {
         self.format_array_item_list_doc(items, indent)
@@ -544,7 +548,7 @@ impl Formatter<'_> {
 
     pub(crate) fn format_interpolation_item_list_body_doc(
         &self,
-        items: InterpolationItemList<'_>,
+        items: InterpolationItemList,
         indent: usize,
     ) -> Doc {
         self.format_interpolation_item_docs(items.items().collect::<Vec<_>>(), indent)
@@ -552,7 +556,7 @@ impl Formatter<'_> {
 
     pub(crate) fn format_string_part_list_body_doc(
         &self,
-        parts: StringPartList<'_>,
+        parts: StringPartList,
         indent: usize,
     ) -> Doc {
         self.format_string_part_docs(parts.parts().collect::<Vec<_>>(), indent)
@@ -560,49 +564,53 @@ impl Formatter<'_> {
 
     pub(crate) fn format_object_field_list_body_doc(
         &self,
-        fields: ObjectFieldList<'_>,
+        fields: ObjectFieldList,
         indent: usize,
     ) -> Doc {
-        let item_docs = self.object_field_list_items(fields, indent);
-        self.format_comma_separated_body_doc(fields.syntax(), item_docs)
+        let item_docs = self.object_field_list_items(fields.clone(), indent);
+        self.format_comma_separated_body_doc(&fields.syntax(), item_docs)
     }
 
     pub(crate) fn format_switch_arm_list_body_doc(
         &self,
-        arms: SwitchArmList<'_>,
+        arms: SwitchArmList,
         indent: usize,
     ) -> Doc {
-        let item_docs = self.switch_arm_list_items(arms, indent);
-        self.format_comma_separated_body_doc(arms.syntax(), item_docs)
+        let item_docs = self.switch_arm_list_items(arms.clone(), indent);
+        self.format_comma_separated_body_doc(&arms.syntax(), item_docs)
     }
 
-    fn format_array_doc(&self, array: ArrayExpr<'_>, indent: usize) -> Doc {
+    fn format_array_doc(&self, array: ArrayExpr, indent: usize) -> Doc {
         array
             .items()
             .map(|items| self.format_array_item_list_doc(items, indent))
             .unwrap_or_else(|| Doc::text("[]"))
     }
 
-    fn format_index_doc(&self, index: IndexExpr<'_>, indent: usize) -> Doc {
+    fn format_index_doc(&self, index: IndexExpr, indent: usize) -> Doc {
         let receiver_expr = index.receiver();
         let receiver = receiver_expr
+            .clone()
             .map(|receiver| self.format_expr_doc(receiver, indent))
             .unwrap_or_else(|| Doc::text(""));
         let inner_expr = index.index();
         let inner = inner_expr
+            .clone()
             .map(|inner| self.format_expr_doc(inner, indent))
             .unwrap_or_else(|| Doc::text(""));
-        let open_token = index.syntax().significant_tokens().find(|token| {
+        let open_token = index.syntax().direct_significant_tokens().find(|token| {
             matches!(
-                token.kind(),
-                TokenKind::QuestionOpenBracket | TokenKind::OpenBracket
+                token.kind().token_kind(),
+                Some(TokenKind::QuestionOpenBracket | TokenKind::OpenBracket)
             )
         });
         let close_token = index
             .syntax()
-            .significant_tokens()
-            .find(|token| token.kind() == TokenKind::CloseBracket);
-        let open = if open_token.is_some_and(|token| token.kind() == TokenKind::QuestionOpenBracket)
+            .direct_significant_tokens()
+            .find(|token| token.kind().token_kind() == Some(TokenKind::CloseBracket));
+        let open = if open_token
+            .clone()
+            .is_some_and(|token| token.kind().token_kind() == Some(TokenKind::QuestionOpenBracket))
         {
             "?["
         } else {
@@ -628,17 +636,17 @@ impl Formatter<'_> {
             return self.group_tight_suffix_doc(receiver, suffix);
         };
 
-        if self.has_comments_after_node_before_token(receiver_expr.syntax(), open_token)
-            || self.has_comments_after_token_before_node(open_token, inner_expr.syntax())
-            || self.has_comments_after_node_before_token(inner_expr.syntax(), close_token)
+        if self.has_comments_after_node_before_token(receiver_expr.syntax(), &open_token)
+            || self.has_comments_after_token_before_node(&open_token, inner_expr.syntax())
+            || self.has_comments_after_node_before_token(inner_expr.syntax(), &close_token)
         {
             Doc::concat(vec![
                 receiver,
-                self.tight_comment_gap_after_node_before_token(receiver_expr.syntax(), open_token),
+                self.tight_comment_gap_after_node_before_token(receiver_expr.syntax(), &open_token),
                 Doc::text(open),
-                self.tight_comment_gap_after_token_before_node(open_token, inner_expr.syntax()),
+                self.tight_comment_gap_after_token_before_node(&open_token, inner_expr.syntax()),
                 inner,
-                self.tight_comment_gap_after_node_before_token(inner_expr.syntax(), close_token),
+                self.tight_comment_gap_after_node_before_token(inner_expr.syntax(), &close_token),
                 Doc::text("]"),
             ])
         } else {
@@ -646,20 +654,25 @@ impl Formatter<'_> {
         }
     }
 
-    fn format_field_doc(&self, field: FieldExpr<'_>, indent: usize) -> Doc {
+    fn format_field_doc(&self, field: FieldExpr, indent: usize) -> Doc {
         let receiver_expr = field.receiver();
         let receiver = receiver_expr
+            .clone()
             .map(|receiver| self.format_expr_doc(receiver, indent))
             .unwrap_or_else(|| Doc::text(""));
         let name = field
             .name_token()
-            .map(|name| name.text(self.source).to_owned())
+            .map(|name| name.text().to_owned())
             .unwrap_or_default();
-        let accessor_token = field
-            .syntax()
-            .significant_tokens()
-            .find(|token| matches!(token.kind(), TokenKind::QuestionDot | TokenKind::Dot));
-        let accessor = if accessor_token.is_some_and(|token| token.kind() == TokenKind::QuestionDot)
+        let accessor_token = field.syntax().direct_significant_tokens().find(|token| {
+            matches!(
+                token.kind().token_kind(),
+                Some(TokenKind::QuestionDot | TokenKind::Dot)
+            )
+        });
+        let accessor = if accessor_token
+            .clone()
+            .is_some_and(|token| token.kind().token_kind() == Some(TokenKind::QuestionDot))
         {
             "?."
         } else {
@@ -677,19 +690,19 @@ impl Formatter<'_> {
         };
 
         let before_accessor_has_comments =
-            self.has_comments_after_node_before_token(receiver_expr.syntax(), accessor_token);
+            self.has_comments_after_node_before_token(receiver_expr.syntax(), &accessor_token);
         let after_accessor_has_comments =
-            self.has_comments_after_token_before_token(accessor_token, name_token);
+            self.has_comments_after_token_before_token(&accessor_token, &name_token);
 
         if before_accessor_has_comments || after_accessor_has_comments {
             Doc::concat(vec![
                 receiver,
                 self.tight_comment_gap_after_node_before_token(
                     receiver_expr.syntax(),
-                    accessor_token,
+                    &accessor_token,
                 ),
                 Doc::text(accessor),
-                self.tight_comment_gap_after_token_before_token(accessor_token, name_token),
+                self.tight_comment_gap_after_token_before_token(&accessor_token, &name_token),
                 Doc::text(name),
             ])
         } else {
@@ -697,7 +710,7 @@ impl Formatter<'_> {
         }
     }
 
-    fn binary_has_operator_comments(&self, binary: BinaryExpr<'_>) -> bool {
+    fn binary_has_operator_comments(&self, binary: &BinaryExpr) -> bool {
         let Some(lhs) = binary.lhs() else {
             return false;
         };
@@ -708,18 +721,18 @@ impl Formatter<'_> {
             return false;
         };
 
-        self.has_comments_after_node_before_token(lhs.syntax(), operator_token)
-            || self.has_comments_after_token_before_node(operator_token, rhs.syntax())
+        self.has_comments_after_node_before_token(lhs.syntax(), &operator_token)
+            || self.has_comments_after_token_before_node(&operator_token, rhs.syntax())
     }
 
-    fn format_object_doc(&self, object: ObjectExpr<'_>, indent: usize) -> Doc {
+    fn format_object_doc(&self, object: ObjectExpr, indent: usize) -> Doc {
         let fields = object
             .field_list()
             .map(|fields| self.object_field_list_items(fields, indent + 1))
             .unwrap_or_default();
         self.format_delimited_node_doc(
             DelimitedNodeSpec {
-                node: object.syntax(),
+                node: &object.syntax(),
                 open_kind: TokenKind::HashBraceOpen,
                 close_kind: TokenKind::CloseBrace,
                 open: "#{",
@@ -732,43 +745,40 @@ impl Formatter<'_> {
 
     fn object_field_list_items(
         &self,
-        fields: ObjectFieldList<'_>,
+        fields: ObjectFieldList,
         indent: usize,
     ) -> Vec<DelimitedItemDoc> {
         fields
             .fields()
             .map(|field| DelimitedItemDoc {
-                range: field.syntax().range(),
+                range: field.syntax().text_range(),
                 doc: self.format_object_field_doc(field, indent),
             })
             .collect()
     }
 
-    fn switch_arm_list_items(
-        &self,
-        arms: SwitchArmList<'_>,
-        indent: usize,
-    ) -> Vec<DelimitedItemDoc> {
+    fn switch_arm_list_items(&self, arms: SwitchArmList, indent: usize) -> Vec<DelimitedItemDoc> {
         arms.arms()
             .map(|arm| DelimitedItemDoc {
-                range: arm.syntax().range(),
+                range: arm.syntax().text_range(),
                 doc: self.format_switch_arm_doc(arm, indent),
             })
             .collect()
     }
 
-    fn format_object_field_doc(&self, field: ObjectField<'_>, indent: usize) -> Doc {
-        if self.object_field_requires_raw_fallback(field) {
+    fn format_object_field_doc(&self, field: ObjectField, indent: usize) -> Doc {
+        if self.object_field_requires_raw_fallback(field.clone()) {
             return Doc::text(self.raw(field.syntax()));
         }
 
         let name_token = field.name_token();
         let name = field
             .name_token()
-            .map(|token| token.text(self.source).to_owned())
+            .map(|token| token.text().to_owned())
             .unwrap_or_default();
         let value_expr = field.value();
         let value = value_expr
+            .clone()
             .map(|value| self.format_expr_doc(value, indent))
             .unwrap_or_else(|| Doc::text(""));
         let Some(name_token) = name_token else {
@@ -776,8 +786,8 @@ impl Formatter<'_> {
         };
         let Some(colon_token) = field
             .syntax()
-            .significant_tokens()
-            .find(|token| token.kind() == TokenKind::Colon)
+            .direct_significant_tokens()
+            .find(|token| token.kind().token_kind() == Some(TokenKind::Colon))
         else {
             return Doc::concat(vec![Doc::text(format!("{name}: ")), value]);
         };
@@ -785,19 +795,19 @@ impl Formatter<'_> {
             return Doc::concat(vec![Doc::text(format!("{name}: ")), value]);
         };
 
-        if self.has_comments_after_token_before_token(name_token, colon_token)
-            || self.has_comments_after_token_before_node(colon_token, value_expr.syntax())
+        if self.has_comments_after_token_before_token(&name_token, &colon_token)
+            || self.has_comments_after_token_before_node(&colon_token, value_expr.syntax())
         {
             return Doc::concat(vec![
                 Doc::text(name),
                 self.tight_comment_gap_doc_without_trailing_space(
-                    range_end(name_token.range()),
-                    range_start(colon_token.range()),
+                    range_end(name_token.text_range()),
+                    range_start(colon_token.text_range()),
                 ),
                 Doc::text(":"),
                 self.space_or_tight_gap_doc(
-                    range_end(colon_token.range()),
-                    range_start(value_expr.syntax().range()),
+                    range_end(colon_token.text_range()),
+                    range_start(value_expr.syntax().text_range()),
                 ),
                 value,
             ]);
@@ -806,25 +816,29 @@ impl Formatter<'_> {
         Doc::concat(vec![Doc::text(format!("{name}: ")), value])
     }
 
-    fn format_if_expr_doc(&self, if_expr: IfExpr<'_>, indent: usize) -> Doc {
+    fn format_if_expr_doc(&self, if_expr: IfExpr, indent: usize) -> Doc {
         let condition_expr = if_expr.condition();
         let condition = condition_expr
+            .clone()
             .map(|expr| self.format_expr_doc(expr, indent))
             .unwrap_or_else(|| Doc::text(""));
         let then_expr = if_expr.then_branch();
         let then_branch = then_expr
+            .clone()
             .map(|body| self.format_block_doc(body, indent))
             .unwrap_or_else(|| Doc::text("{}"));
         let condition_end = condition_expr
-            .map(|expr| u32::from(expr.syntax().range().end()) as usize)
+            .as_ref()
+            .map(|expr| u32::from(expr.syntax().text_range().end()) as usize)
             .unwrap_or_else(|| {
                 self.token_range(if_expr.syntax(), TokenKind::IfKw)
                     .map(range_end)
-                    .unwrap_or_else(|| u32::from(if_expr.syntax().range().start()) as usize)
+                    .unwrap_or_else(|| u32::from(if_expr.syntax().text_range().start()) as usize)
             });
         let then_start = then_expr
-            .map(|body| u32::from(body.syntax().range().start()) as usize)
-            .unwrap_or_else(|| u32::from(if_expr.syntax().range().end()) as usize);
+            .as_ref()
+            .map(|body| u32::from(body.syntax().text_range().start()) as usize)
+            .unwrap_or_else(|| u32::from(if_expr.syntax().text_range().end()) as usize);
         let mut parts = vec![
             self.group_keyword_clause_doc("if", condition),
             self.head_body_separator_doc(condition_end, then_start),
@@ -835,9 +849,10 @@ impl Formatter<'_> {
             let else_start = self
                 .token_range(else_branch.syntax(), TokenKind::ElseKw)
                 .map(range_start)
-                .unwrap_or_else(|| u32::from(else_branch.syntax().range().start()) as usize);
+                .unwrap_or_else(|| u32::from(else_branch.syntax().text_range().start()) as usize);
             let then_end = then_expr
-                .map(|body| u32::from(body.syntax().range().end()) as usize)
+                .as_ref()
+                .map(|body| u32::from(body.syntax().text_range().end()) as usize)
                 .unwrap_or(else_start);
             parts.push(self.inline_or_gap_separator_doc(
                 then_end,
@@ -856,7 +871,7 @@ impl Formatter<'_> {
         Doc::concat(parts)
     }
 
-    fn format_switch_expr_doc(&self, switch_expr: SwitchExpr<'_>, indent: usize) -> Doc {
+    fn format_switch_expr_doc(&self, switch_expr: SwitchExpr, indent: usize) -> Doc {
         let scrutinee = switch_expr
             .scrutinee()
             .map(|expr| self.format_expr_doc(expr, indent))
@@ -868,14 +883,14 @@ impl Formatter<'_> {
         let open_brace_end = self
             .token_range(switch_expr.syntax(), TokenKind::OpenBrace)
             .map(|range| u32::from(range.end()) as usize)
-            .unwrap_or_else(|| u32::from(switch_expr.syntax().range().start()) as usize);
+            .unwrap_or_else(|| u32::from(switch_expr.syntax().text_range().start()) as usize);
         let close_brace_start = self
             .token_range(switch_expr.syntax(), TokenKind::CloseBrace)
             .map(|range| u32::from(range.start()) as usize)
-            .unwrap_or_else(|| u32::from(switch_expr.syntax().range().end()) as usize);
+            .unwrap_or_else(|| u32::from(switch_expr.syntax().text_range().end()) as usize);
         let first_arm_start = arms
             .first()
-            .map(|arm| u32::from(arm.syntax().range().start()) as usize)
+            .map(|arm| u32::from(arm.syntax().text_range().start()) as usize)
             .unwrap_or(close_brace_start);
         let leading_gap =
             self.comment_gap(open_brace_end, first_arm_start, false, !arms.is_empty());
@@ -903,7 +918,7 @@ impl Formatter<'_> {
 
         let mut cursor = first_arm_start;
         for (index, arm) in arms.iter().enumerate() {
-            let arm_start = u32::from(arm.syntax().range().start()) as usize;
+            let arm_start = u32::from(arm.syntax().text_range().start()) as usize;
             let has_leading_content = !body_parts.is_empty();
             let skip_separator = index == 0 && has_leading_content && arm_start == cursor;
 
@@ -918,11 +933,11 @@ impl Formatter<'_> {
                 ));
             }
 
-            body_parts.push(self.format_switch_arm_doc(*arm, indent + 1));
+            body_parts.push(self.format_switch_arm_doc(arm.clone(), indent + 1));
             if index + 1 < arms.len() {
                 body_parts.push(Doc::text(","));
             }
-            cursor = u32::from(arm.syntax().range().end()) as usize;
+            cursor = u32::from(arm.syntax().text_range().end()) as usize;
         }
 
         let trailing_gap = self.comment_gap(cursor, close_brace_start, !arms.is_empty(), false);
@@ -944,17 +959,19 @@ impl Formatter<'_> {
         ])
     }
 
-    fn format_switch_arm_doc(&self, arm: SwitchArm<'_>, indent: usize) -> Doc {
-        if self.switch_arm_requires_raw_fallback(arm) {
+    fn format_switch_arm_doc(&self, arm: SwitchArm, indent: usize) -> Doc {
+        if self.switch_arm_requires_raw_fallback(arm.clone()) {
             return Doc::text(self.raw(arm.syntax()));
         }
 
         let patterns_node = arm.patterns();
         let patterns = patterns_node
+            .clone()
             .map(|patterns| self.format_switch_patterns_doc(patterns, indent))
             .unwrap_or_else(|| Doc::text("_"));
         let value_expr = arm.value();
         let value = value_expr
+            .clone()
             .map(|value| self.format_expr_doc(value, indent))
             .unwrap_or_else(|| Doc::text(""));
         let Some(patterns_node) = patterns_node else {
@@ -968,22 +985,22 @@ impl Formatter<'_> {
         };
 
         if self.range_has_comments(
-            range_end(patterns_node.syntax().range()),
+            range_end(patterns_node.syntax().text_range()),
             range_start(arrow_range),
         ) || self.range_has_comments(
             range_end(arrow_range),
-            range_start(value_expr.syntax().range()),
+            range_start(value_expr.syntax().text_range()),
         ) {
             return Doc::concat(vec![
                 patterns,
                 self.space_or_tight_gap_doc(
-                    range_end(patterns_node.syntax().range()),
+                    range_end(patterns_node.syntax().text_range()),
                     range_start(arrow_range),
                 ),
                 Doc::text("=>"),
                 self.space_or_tight_gap_doc(
                     range_end(arrow_range),
-                    range_start(value_expr.syntax().range()),
+                    range_start(value_expr.syntax().text_range()),
                 ),
                 value,
             ]);
@@ -998,25 +1015,29 @@ impl Formatter<'_> {
         }
     }
 
-    fn format_while_expr_doc(&self, while_expr: WhileExpr<'_>, indent: usize) -> Doc {
+    fn format_while_expr_doc(&self, while_expr: WhileExpr, indent: usize) -> Doc {
         let condition_expr = while_expr.condition();
         let condition = condition_expr
+            .clone()
             .map(|expr| self.format_expr_doc(expr, indent))
             .unwrap_or_else(|| Doc::text(""));
         let body_expr = while_expr.body();
         let body = body_expr
+            .clone()
             .map(|body| self.format_block_doc(body, indent))
             .unwrap_or_else(|| Doc::text("{}"));
         let condition_end = condition_expr
-            .map(|expr| u32::from(expr.syntax().range().end()) as usize)
+            .as_ref()
+            .map(|expr| u32::from(expr.syntax().text_range().end()) as usize)
             .unwrap_or_else(|| {
                 self.token_range(while_expr.syntax(), TokenKind::WhileKw)
                     .map(range_end)
-                    .unwrap_or_else(|| u32::from(while_expr.syntax().range().start()) as usize)
+                    .unwrap_or_else(|| u32::from(while_expr.syntax().text_range().start()) as usize)
             });
         let body_start = body_expr
-            .map(|body| u32::from(body.syntax().range().start()) as usize)
-            .unwrap_or_else(|| u32::from(while_expr.syntax().range().end()) as usize);
+            .as_ref()
+            .map(|body| u32::from(body.syntax().text_range().start()) as usize)
+            .unwrap_or_else(|| u32::from(while_expr.syntax().text_range().end()) as usize);
         Doc::concat(vec![
             self.group_keyword_clause_doc("while", condition),
             self.head_body_separator_doc(condition_end, body_start),
@@ -1024,18 +1045,20 @@ impl Formatter<'_> {
         ])
     }
 
-    fn format_loop_expr_doc(&self, loop_expr: LoopExpr<'_>, indent: usize) -> Doc {
+    fn format_loop_expr_doc(&self, loop_expr: LoopExpr, indent: usize) -> Doc {
         let body_expr = loop_expr.body();
         let body = body_expr
+            .clone()
             .map(|body| self.format_block_doc(body, indent))
             .unwrap_or_else(|| Doc::text("{}"));
         let head_end = self
             .token_range(loop_expr.syntax(), TokenKind::LoopKw)
             .map(range_end)
-            .unwrap_or_else(|| u32::from(loop_expr.syntax().range().start()) as usize);
+            .unwrap_or_else(|| u32::from(loop_expr.syntax().text_range().start()) as usize);
         let body_start = body_expr
-            .map(|body| u32::from(body.syntax().range().start()) as usize)
-            .unwrap_or_else(|| u32::from(loop_expr.syntax().range().end()) as usize);
+            .as_ref()
+            .map(|body| u32::from(body.syntax().text_range().start()) as usize)
+            .unwrap_or_else(|| u32::from(loop_expr.syntax().text_range().end()) as usize);
         Doc::concat(vec![
             Doc::text("loop"),
             self.head_body_separator_doc(head_end, body_start),
@@ -1043,22 +1066,26 @@ impl Formatter<'_> {
         ])
     }
 
-    fn format_for_expr_doc(&self, for_expr: ForExpr<'_>, indent: usize) -> Doc {
+    fn format_for_expr_doc(&self, for_expr: ForExpr, indent: usize) -> Doc {
         let bindings = self.format_for_bindings_doc(for_expr.bindings());
         let iterable_expr = for_expr.iterable();
         let iterable = iterable_expr
+            .clone()
             .map(|expr| self.format_expr_doc(expr, indent))
             .unwrap_or_else(|| Doc::text(""));
         let body_expr = for_expr.body();
         let body = body_expr
+            .clone()
             .map(|body| self.format_block_doc(body, indent))
             .unwrap_or_else(|| Doc::text("{}"));
         let iterable_end = iterable_expr
-            .map(|expr| u32::from(expr.syntax().range().end()) as usize)
-            .unwrap_or_else(|| u32::from(for_expr.syntax().range().start()) as usize);
+            .as_ref()
+            .map(|expr| u32::from(expr.syntax().text_range().end()) as usize)
+            .unwrap_or_else(|| u32::from(for_expr.syntax().text_range().start()) as usize);
         let body_start = body_expr
-            .map(|body| u32::from(body.syntax().range().start()) as usize)
-            .unwrap_or_else(|| u32::from(for_expr.syntax().range().end()) as usize);
+            .as_ref()
+            .map(|body| u32::from(body.syntax().text_range().start()) as usize)
+            .unwrap_or_else(|| u32::from(for_expr.syntax().text_range().end()) as usize);
         let head = Doc::group(Doc::concat(vec![
             Doc::text("for"),
             Doc::indent(
@@ -1079,14 +1106,14 @@ impl Formatter<'_> {
         ])
     }
 
-    pub(crate) fn format_for_bindings_doc(&self, bindings: Option<ForBindings<'_>>) -> Doc {
+    pub(crate) fn format_for_bindings_doc(&self, bindings: Option<ForBindings>) -> Doc {
         let Some(bindings) = bindings else {
             return Doc::text("_");
         };
         let names = bindings.names().collect::<Vec<_>>();
         match names.as_slice() {
             [] => Doc::text("_"),
-            [name] => Doc::text(name.text(self.source)),
+            [name] => Doc::text(name.text()),
             [first, second] => {
                 let Some(open_range) = self.token_range(bindings.syntax(), TokenKind::OpenParen)
                 else {
@@ -1101,30 +1128,37 @@ impl Formatter<'_> {
                     return Doc::text(self.raw(bindings.syntax()));
                 };
 
-                if self.range_has_comments(range_end(open_range), range_start(first.range()))
-                    || self.range_has_comments(range_end(first.range()), range_start(comma_range))
-                    || self.range_has_comments(range_end(comma_range), range_start(second.range()))
-                    || self.range_has_comments(range_end(second.range()), range_start(close_range))
+                if self.range_has_comments(range_end(open_range), range_start(first.text_range()))
+                    || self
+                        .range_has_comments(range_end(first.text_range()), range_start(comma_range))
+                    || self.range_has_comments(
+                        range_end(comma_range),
+                        range_start(second.text_range()),
+                    )
+                    || self.range_has_comments(
+                        range_end(second.text_range()),
+                        range_start(close_range),
+                    )
                 {
                     Doc::concat(vec![
                         Doc::text("("),
                         self.tight_comment_gap_doc(
                             range_end(open_range),
-                            range_start(first.range()),
+                            range_start(first.text_range()),
                         ),
-                        Doc::text(first.text(self.source)),
+                        Doc::text(first.text()),
                         self.tight_comment_gap_doc_without_trailing_space(
-                            range_end(first.range()),
+                            range_end(first.text_range()),
                             range_start(comma_range),
                         ),
                         Doc::text(","),
                         self.space_or_tight_gap_doc(
                             range_end(comma_range),
-                            range_start(second.range()),
+                            range_start(second.text_range()),
                         ),
-                        Doc::text(second.text(self.source)),
+                        Doc::text(second.text()),
                         self.tight_comment_gap_doc(
-                            range_end(second.range()),
+                            range_end(second.text_range()),
                             range_start(close_range),
                         ),
                         Doc::text(")"),
@@ -1136,10 +1170,10 @@ impl Formatter<'_> {
                             1,
                             Doc::concat(vec![
                                 Doc::line(),
-                                Doc::text(first.text(self.source)),
+                                Doc::text(first.text()),
                                 Doc::text(","),
                                 Doc::soft_line(),
-                                Doc::text(second.text(self.source)),
+                                Doc::text(second.text()),
                             ]),
                         ),
                         Doc::line(),
@@ -1151,26 +1185,31 @@ impl Formatter<'_> {
         }
     }
 
-    fn format_do_expr_doc(&self, do_expr: DoExpr<'_>, indent: usize) -> Doc {
+    fn format_do_expr_doc(&self, do_expr: DoExpr, indent: usize) -> Doc {
         let body_expr = do_expr.body();
         let body = body_expr
+            .clone()
             .map(|body| self.format_block_doc(body, indent))
             .unwrap_or_else(|| Doc::text("{}"));
         let condition = do_expr.condition();
         let do_kw_end = self
             .token_range(do_expr.syntax(), TokenKind::DoKw)
             .map(range_end)
-            .unwrap_or_else(|| u32::from(do_expr.syntax().range().start()) as usize);
+            .unwrap_or_else(|| u32::from(do_expr.syntax().text_range().start()) as usize);
         let body_start = body_expr
-            .map(|body| u32::from(body.syntax().range().start()) as usize)
-            .unwrap_or_else(|| u32::from(do_expr.syntax().range().end()) as usize);
+            .as_ref()
+            .map(|body| u32::from(body.syntax().text_range().start()) as usize)
+            .unwrap_or_else(|| u32::from(do_expr.syntax().text_range().end()) as usize);
         let body_end = body_expr
-            .map(|body| u32::from(body.syntax().range().end()) as usize)
+            .as_ref()
+            .map(|body| u32::from(body.syntax().text_range().end()) as usize)
             .unwrap_or(body_start);
         let condition_start = condition
-            .map(|condition| u32::from(condition.syntax().range().start()) as usize)
+            .as_ref()
+            .map(|condition| u32::from(condition.syntax().text_range().start()) as usize)
             .unwrap_or(body_end);
         let condition_doc = condition
+            .clone()
             .map(|condition| self.format_do_condition_doc(condition, indent))
             .unwrap_or_else(|| Doc::text("while"));
         Doc::concat(vec![
@@ -1192,42 +1231,43 @@ impl Formatter<'_> {
         ])
     }
 
-    pub(crate) fn format_do_condition_doc(&self, condition: DoCondition<'_>, indent: usize) -> Doc {
+    pub(crate) fn format_do_condition_doc(&self, condition: DoCondition, indent: usize) -> Doc {
         let keyword = condition
             .keyword_token()
-            .map(|token| token.text(self.source))
-            .unwrap_or("while");
+            .map(|token| token.text().to_owned())
+            .unwrap_or_else(|| "while".to_owned());
         let expr = condition
             .expr()
             .map(|expr| self.format_expr_doc(expr, indent))
             .unwrap_or_else(|| Doc::text(""));
         let keyword_end = condition
             .keyword_token()
-            .map(|token| u32::from(token.range().end()) as usize)
-            .unwrap_or_else(|| u32::from(condition.syntax().range().start()) as usize);
+            .map(|token| u32::from(token.text_range().end()) as usize)
+            .unwrap_or_else(|| u32::from(condition.syntax().text_range().start()) as usize);
         let expr_start = condition
             .expr()
-            .map(|expr| u32::from(expr.syntax().range().start()) as usize)
+            .map(|expr| u32::from(expr.syntax().text_range().start()) as usize)
             .unwrap_or(keyword_end);
 
         if condition.expr().is_none() {
             return Doc::text(keyword);
         }
 
-        self.group_keyword_with_gap_doc(keyword, keyword_end, expr_start, expr)
+        self.group_keyword_with_gap_doc(&keyword, keyword_end, expr_start, expr)
     }
 
-    fn format_closure_expr_doc(&self, closure: ClosureExpr<'_>, indent: usize) -> Doc {
+    fn format_closure_expr_doc(&self, closure: ClosureExpr, indent: usize) -> Doc {
         let params_node = closure.params();
-        let params = self.format_closure_params_doc(params_node);
+        let params = self.format_closure_params_doc(params_node.clone());
         let body_expr = closure.body();
         let body = body_expr
+            .clone()
             .map(|body| self.format_expr_doc(body, indent))
             .unwrap_or_else(|| Doc::text(""));
-        let has_head_comments = match (params_node, body_expr) {
+        let has_head_comments = match (params_node.clone(), body_expr.clone()) {
             (Some(params), Some(body)) => self.range_has_comments(
-                range_end(params.syntax().range()),
-                range_start(body.syntax().range()),
+                range_end(params.syntax().text_range()),
+                range_start(body.syntax().text_range()),
             ),
             _ => false,
         };
@@ -1241,8 +1281,8 @@ impl Formatter<'_> {
 
         let separator = match (params_node, body_expr) {
             (Some(params), Some(body)) => self.space_or_tight_gap_doc(
-                range_end(params.syntax().range()),
-                range_start(body.syntax().range()),
+                range_end(params.syntax().text_range()),
+                range_start(body.syntax().text_range()),
             ),
             _ => Doc::text(" "),
         };
@@ -1250,11 +1290,7 @@ impl Formatter<'_> {
         Doc::concat(vec![params, separator, body])
     }
 
-    fn format_interpolated_string_doc(
-        &self,
-        string: InterpolatedStringExpr<'_>,
-        indent: usize,
-    ) -> Doc {
+    fn format_interpolated_string_doc(&self, string: InterpolatedStringExpr, indent: usize) -> Doc {
         let mut parts = vec![Doc::text("`")];
         parts.push(
             string
@@ -1267,7 +1303,7 @@ impl Formatter<'_> {
         Doc::concat(parts)
     }
 
-    pub(crate) fn format_closure_params_doc(&self, params: Option<ClosureParamList<'_>>) -> Doc {
+    pub(crate) fn format_closure_params_doc(&self, params: Option<ClosureParamList>) -> Doc {
         let Some(params) = params else {
             return Doc::text("||");
         };
@@ -1279,10 +1315,10 @@ impl Formatter<'_> {
         }
 
         let names = params.params().collect::<Vec<_>>();
-        let Some(open_range) = self.token_ranges(params.syntax(), TokenKind::Pipe).next() else {
+        let Some(open_range) = self.token_ranges(&params.syntax(), TokenKind::Pipe).next() else {
             return Doc::text(self.raw(params.syntax()));
         };
-        let Some(close_range) = self.token_ranges(params.syntax(), TokenKind::Pipe).last() else {
+        let Some(close_range) = self.token_ranges(&params.syntax(), TokenKind::Pipe).last() else {
             return Doc::text(self.raw(params.syntax()));
         };
 
@@ -1299,17 +1335,18 @@ impl Formatter<'_> {
         }
 
         let commas = self
-            .token_ranges(params.syntax(), TokenKind::Comma)
+            .token_ranges(&params.syntax(), TokenKind::Comma)
             .collect::<Vec<_>>();
         if commas.len() + 1 != names.len() {
             return Doc::text(self.raw(params.syntax()));
         }
 
         let mut parts = vec![Doc::text("|")];
-        parts
-            .push(self.tight_comment_gap_doc(range_end(open_range), range_start(names[0].range())));
-        parts.push(Doc::text(names[0].text(self.source)));
-        let mut previous_end = range_end(names[0].range());
+        parts.push(
+            self.tight_comment_gap_doc(range_end(open_range), range_start(names[0].text_range())),
+        );
+        parts.push(Doc::text(names[0].text()));
+        let mut previous_end = range_end(names[0].text_range());
 
         for (comma_range, next_name) in commas.into_iter().zip(names.iter().skip(1)) {
             parts.push(self.tight_comment_gap_doc_without_trailing_space(
@@ -1317,16 +1354,17 @@ impl Formatter<'_> {
                 range_start(comma_range),
             ));
             parts.push(Doc::text(","));
-            parts.push(
-                self.space_or_tight_gap_doc(range_end(comma_range), range_start(next_name.range())),
-            );
-            parts.push(Doc::text(next_name.text(self.source)));
-            previous_end = range_end(next_name.range());
+            parts.push(self.space_or_tight_gap_doc(
+                range_end(comma_range),
+                range_start(next_name.text_range()),
+            ));
+            parts.push(Doc::text(next_name.text()));
+            previous_end = range_end(next_name.text_range());
         }
 
-        let last_name = names.last().copied().expect("non-empty closure params");
+        let last_name = names.last().cloned().expect("non-empty closure params");
         parts.push(
-            self.tight_comment_gap_doc(range_end(last_name.range()), range_start(close_range)),
+            self.tight_comment_gap_doc(range_end(last_name.text_range()), range_start(close_range)),
         );
         parts.push(Doc::text("|"));
 
@@ -1335,7 +1373,7 @@ impl Formatter<'_> {
 
     fn format_interpolation_body_doc(
         &self,
-        body: rhai_syntax::InterpolationBody<'_>,
+        body: rhai_syntax::InterpolationBody,
         indent: usize,
     ) -> Doc {
         if self.node_has_unowned_comments(body.syntax()) {
@@ -1347,18 +1385,14 @@ impl Formatter<'_> {
             .unwrap_or_else(Doc::nil)
     }
 
-    fn format_interpolation_item_docs(
-        &self,
-        items: Vec<rhai_syntax::Item<'_>>,
-        indent: usize,
-    ) -> Doc {
+    fn format_interpolation_item_docs(&self, items: Vec<rhai_syntax::Item>, indent: usize) -> Doc {
         if items.is_empty() {
             return Doc::nil();
         }
 
         let item_docs = items
             .iter()
-            .map(|item| self.format_item(*item, indent))
+            .map(|item| self.format_item(item.clone(), indent))
             .collect::<Vec<_>>();
         let inline_fragments = item_docs
             .iter()
@@ -1383,14 +1417,14 @@ impl Formatter<'_> {
         Doc::indent(1, Doc::concat(parts))
     }
 
-    fn format_string_part_docs(&self, parts: Vec<StringPart<'_>>, indent: usize) -> Doc {
+    fn format_string_part_docs(&self, parts: Vec<StringPart>, indent: usize) -> Doc {
         let mut docs = Vec::new();
 
         for part in parts {
             match part {
                 StringPart::Segment(segment) => {
                     if let Some(token) = segment.text_token() {
-                        docs.push(Doc::text(token.text(self.source)));
+                        docs.push(Doc::text(token.text()));
                     }
                 }
                 StringPart::Interpolation(interpolation) => {
@@ -1485,14 +1519,15 @@ impl Formatter<'_> {
             && inline.chars().count() <= max_inline_width
     }
 
-    pub(crate) fn format_params_doc(&self, params: Option<ParamList<'_>>, _indent: usize) -> Doc {
+    pub(crate) fn format_params_doc(&self, params: Option<ParamList>, _indent: usize) -> Doc {
         let names = params
+            .clone()
             .map(|params| {
                 params
                     .params()
                     .map(|param| DelimitedItemDoc {
-                        range: param.range(),
-                        doc: Doc::text(param.text(self.source)),
+                        range: param.text_range(),
+                        doc: Doc::text(param.text()),
                     })
                     .collect::<Vec<_>>()
             })
@@ -1500,7 +1535,7 @@ impl Formatter<'_> {
         match params {
             Some(params) => self.format_delimited_node_doc(
                 DelimitedNodeSpec {
-                    node: params.syntax(),
+                    node: &params.syntax(),
                     open_kind: TokenKind::OpenParen,
                     close_kind: TokenKind::CloseParen,
                     open: "(",
@@ -1513,34 +1548,30 @@ impl Formatter<'_> {
         }
     }
 
-    fn arg_list_items(&self, args: ArgList<'_>, indent: usize) -> Vec<DelimitedItemDoc> {
+    fn arg_list_items(&self, args: ArgList, indent: usize) -> Vec<DelimitedItemDoc> {
         args.args()
             .map(|expr| DelimitedItemDoc {
-                range: expr.syntax().range(),
+                range: expr.syntax().text_range(),
                 doc: self.format_expr_doc(expr, indent),
             })
             .collect::<Vec<_>>()
     }
 
-    fn array_item_list_items(
-        &self,
-        items: ArrayItemList<'_>,
-        indent: usize,
-    ) -> Vec<DelimitedItemDoc> {
+    fn array_item_list_items(&self, items: ArrayItemList, indent: usize) -> Vec<DelimitedItemDoc> {
         items
             .exprs()
             .map(|expr| DelimitedItemDoc {
-                range: expr.syntax().range(),
+                range: expr.syntax().text_range(),
                 doc: self.format_expr_doc(expr, indent + 1),
             })
             .collect::<Vec<_>>()
     }
 
-    fn format_array_item_list_doc(&self, items: ArrayItemList<'_>, indent: usize) -> Doc {
-        let item_docs = self.array_item_list_items(items, indent);
+    fn format_array_item_list_doc(&self, items: ArrayItemList, indent: usize) -> Doc {
+        let item_docs = self.array_item_list_items(items.clone(), indent);
         self.format_delimited_node_doc(
             DelimitedNodeSpec {
-                node: items.syntax(),
+                node: &items.syntax(),
                 open_kind: TokenKind::OpenBracket,
                 close_kind: TokenKind::CloseBracket,
                 open: "[",
@@ -1553,18 +1584,18 @@ impl Formatter<'_> {
 
     fn format_delimited_node_doc(
         &self,
-        spec: DelimitedNodeSpec<'_>,
+        spec: DelimitedNodeSpec,
         items: Vec<DelimitedItemDoc>,
         inline_limit: Option<usize>,
     ) -> Doc {
         let open_end = self
-            .token_range(spec.node, spec.open_kind)
+            .token_range(spec.node.clone(), spec.open_kind)
             .map(range_end)
-            .unwrap_or_else(|| range_start(spec.node.range()));
+            .unwrap_or_else(|| range_start(spec.node.text_range()));
         let close_start = self
-            .token_range(spec.node, spec.close_kind)
+            .token_range(spec.node.clone(), spec.close_kind)
             .map(range_start)
-            .unwrap_or_else(|| range_end(spec.node.range()));
+            .unwrap_or_else(|| range_end(spec.node.text_range()));
 
         if items.is_empty() {
             let gap = self.comment_gap(open_end, close_start, false, false);
@@ -1628,7 +1659,7 @@ impl Formatter<'_> {
 
     fn format_comma_separated_body_doc(
         &self,
-        node: &SyntaxNode,
+        node: &RowanSyntaxNode,
         items: Vec<DelimitedItemDoc>,
     ) -> Doc {
         if items.is_empty() {
@@ -1642,7 +1673,7 @@ impl Formatter<'_> {
             requires_trivia_layout |= gap_requires_trivia_layout(&gap);
             cursor = range_end(item.range);
         }
-        let trailing_gap = self.comment_gap(cursor, range_end(node.range()), true, false);
+        let trailing_gap = self.comment_gap(cursor, range_end(node.text_range()), true, false);
         requires_trivia_layout |= gap_requires_trivia_layout(&trailing_gap);
 
         let inline_items = items
@@ -1703,9 +1734,9 @@ impl Formatter<'_> {
         hard_lines(gap.trailing_blank_lines_before_next + usize::from(include_terminal_newline))
     }
 
-    pub(crate) fn raw(&self, node: &SyntaxNode) -> String {
-        let start = u32::from(node.range().start()) as usize;
-        let end = u32::from(node.range().end()) as usize;
+    pub(crate) fn raw(&self, node: RowanSyntaxNode) -> String {
+        let start = u32::from(node.text_range().start()) as usize;
+        let end = u32::from(node.text_range().end()) as usize;
         self.source[start..end].trim().to_owned()
     }
 
@@ -1713,7 +1744,7 @@ impl Formatter<'_> {
         !self.render_fragment(doc, indent).contains('\n')
     }
 
-    fn while_requires_raw_fallback(&self, while_expr: WhileExpr<'_>) -> bool {
+    fn while_requires_raw_fallback(&self, while_expr: WhileExpr) -> bool {
         let Some(condition) = while_expr.condition() else {
             return self.node_has_unowned_comments(while_expr.syntax());
         };
@@ -1727,7 +1758,7 @@ impl Formatter<'_> {
         )
     }
 
-    fn loop_requires_raw_fallback(&self, loop_expr: LoopExpr<'_>) -> bool {
+    fn loop_requires_raw_fallback(&self, loop_expr: LoopExpr) -> bool {
         let Some(body) = loop_expr.body() else {
             return self.node_has_unowned_comments(loop_expr.syntax());
         };
@@ -1737,11 +1768,11 @@ impl Formatter<'_> {
 
         self.node_has_unowned_comments_outside(
             loop_expr.syntax(),
-            &[self.range_after_token_before_node(loop_kw, body.syntax())],
+            &[self.range_after_token_before_node(&loop_kw, body.syntax())],
         )
     }
 
-    fn if_requires_raw_fallback(&self, if_expr: IfExpr<'_>) -> bool {
+    fn if_requires_raw_fallback(&self, if_expr: IfExpr) -> bool {
         let Some(condition) = if_expr.condition() else {
             return self.node_has_unowned_comments(if_expr.syntax());
         };
@@ -1755,7 +1786,7 @@ impl Formatter<'_> {
             let Some(else_kw) = self.token(else_branch.syntax(), TokenKind::ElseKw) else {
                 return self.node_has_unowned_comments(if_expr.syntax());
             };
-            allowed_ranges.push(self.range_after_node_before_token(then_branch.syntax(), else_kw));
+            allowed_ranges.push(self.range_after_node_before_token(then_branch.syntax(), &else_kw));
 
             if self.else_branch_requires_raw_fallback(else_branch) {
                 return true;
@@ -1765,7 +1796,7 @@ impl Formatter<'_> {
         self.node_has_unowned_comments_outside(if_expr.syntax(), &allowed_ranges)
     }
 
-    fn else_branch_requires_raw_fallback(&self, else_branch: rhai_syntax::ElseBranch<'_>) -> bool {
+    fn else_branch_requires_raw_fallback(&self, else_branch: rhai_syntax::ElseBranch) -> bool {
         let Some(body) = else_branch.body() else {
             return self.node_has_unowned_comments(else_branch.syntax());
         };
@@ -1775,11 +1806,11 @@ impl Formatter<'_> {
 
         self.node_has_unowned_comments_outside(
             else_branch.syntax(),
-            &[self.range_after_token_before_node(else_kw, body.syntax())],
+            &[self.range_after_token_before_node(&else_kw, body.syntax())],
         )
     }
 
-    fn for_requires_raw_fallback(&self, for_expr: ForExpr<'_>) -> bool {
+    fn for_requires_raw_fallback(&self, for_expr: ForExpr) -> bool {
         let Some(iterable) = for_expr.iterable() else {
             return self.node_has_unowned_comments(for_expr.syntax());
         };
@@ -1795,7 +1826,7 @@ impl Formatter<'_> {
             .is_some_and(|bindings| self.for_bindings_requires_raw_fallback(bindings))
     }
 
-    fn do_requires_raw_fallback(&self, do_expr: DoExpr<'_>) -> bool {
+    fn do_requires_raw_fallback(&self, do_expr: DoExpr) -> bool {
         let Some(body) = do_expr.body() else {
             return self.node_has_unowned_comments(do_expr.syntax());
         };
@@ -1805,7 +1836,7 @@ impl Formatter<'_> {
         let Some(condition) = do_expr.condition() else {
             return self.node_has_unowned_comments_outside(
                 do_expr.syntax(),
-                &[self.range_after_token_before_node(do_kw, body.syntax())],
+                &[self.range_after_token_before_node(&do_kw, body.syntax())],
             );
         };
         let Some(condition_kw) = condition.keyword_token() else {
@@ -1820,16 +1851,16 @@ impl Formatter<'_> {
         self.node_has_unowned_comments_outside(
             do_expr.syntax(),
             &[
-                self.range_after_token_before_node(do_kw, body.syntax()),
+                self.range_after_token_before_node(&do_kw, body.syntax()),
                 self.range_after_node_before_node(body.syntax(), condition.syntax()),
             ],
         ) || self.node_has_unowned_comments_outside(
             condition.syntax(),
-            &[self.range_after_token_before_node(condition_kw, condition_expr.syntax())],
+            &[self.range_after_token_before_node(&condition_kw, condition_expr.syntax())],
         )
     }
 
-    fn path_requires_raw_fallback(&self, path: PathExpr<'_>) -> bool {
+    fn path_requires_raw_fallback(&self, path: PathExpr) -> bool {
         let segments = path.segments().collect::<Vec<_>>();
         let separators = self
             .tokens(path.syntax(), TokenKind::ColonColon)
@@ -1847,7 +1878,7 @@ impl Formatter<'_> {
                 return self.node_has_unowned_comments(path.syntax());
             }
 
-            (1, Some(*first))
+            (1, Some(first.clone()))
         } else {
             return self.node_has_unowned_comments(path.syntax());
         };
@@ -1859,12 +1890,12 @@ impl Formatter<'_> {
         {
             if let Some(previous_node) = previous_node {
                 allowed_ranges
-                    .push(self.range_after_node_before_token(previous_node, separator_token));
+                    .push(self.range_after_node_before_token(previous_node, &separator_token));
             } else if let Some(previous_token) = previous_token {
                 allowed_ranges
-                    .push(self.range_after_token_before_token(previous_token, separator_token));
+                    .push(self.range_after_token_before_token(&previous_token, &separator_token));
             }
-            allowed_ranges.push(self.range_after_token_before_token(separator_token, segment));
+            allowed_ranges.push(self.range_after_token_before_token(&separator_token, &segment));
             previous_node = None;
             previous_token = Some(segment);
         }
@@ -1872,7 +1903,7 @@ impl Formatter<'_> {
         self.node_has_unowned_comments_outside(path.syntax(), &allowed_ranges)
     }
 
-    fn index_requires_raw_fallback(&self, index: IndexExpr<'_>) -> bool {
+    fn index_requires_raw_fallback(&self, index: IndexExpr) -> bool {
         let Some(receiver) = index.receiver() else {
             return self.node_has_unowned_comments(index.syntax());
         };
@@ -1892,17 +1923,17 @@ impl Formatter<'_> {
         self.node_has_unowned_comments_outside(
             index.syntax(),
             &[
-                self.range_after_node_before_token(receiver.syntax(), open_token),
-                self.range_after_token_before_node(open_token, inner.syntax()),
-                self.range_after_node_before_token(inner.syntax(), close_token),
+                self.range_after_node_before_token(receiver.syntax(), &open_token),
+                self.range_after_token_before_node(&open_token, inner.syntax()),
+                self.range_after_node_before_token(inner.syntax(), &close_token),
             ],
         )
     }
 
-    fn closure_requires_raw_fallback(&self, closure: ClosureExpr<'_>) -> bool {
+    fn closure_requires_raw_fallback(&self, closure: ClosureExpr) -> bool {
         let mut allowed_ranges = Vec::new();
         if let Some(params) = closure.params() {
-            if self.closure_params_requires_raw_fallback(params) {
+            if self.closure_params_requires_raw_fallback(params.clone()) {
                 return true;
             }
 
@@ -1915,7 +1946,7 @@ impl Formatter<'_> {
         self.node_has_unowned_comments_outside(closure.syntax(), &allowed_ranges)
     }
 
-    fn closure_params_requires_raw_fallback(&self, params: ClosureParamList<'_>) -> bool {
+    fn closure_params_requires_raw_fallback(&self, params: ClosureParamList) -> bool {
         if self
             .token_range(params.syntax(), TokenKind::PipePipe)
             .is_some()
@@ -1934,7 +1965,7 @@ impl Formatter<'_> {
         if names.is_empty() {
             return self.node_has_unowned_comments_outside(
                 params.syntax(),
-                &[self.range_after_token_before_token(open_token, close_token)],
+                &[self.range_after_token_before_token(&open_token, &close_token)],
             );
         }
 
@@ -1945,19 +1976,22 @@ impl Formatter<'_> {
             return self.node_has_unowned_comments(params.syntax());
         }
 
-        let mut allowed_ranges = vec![self.range_after_token_before_token(open_token, names[0])];
-        let mut previous_name = names[0];
+        let mut allowed_ranges =
+            vec![self.range_after_token_before_token(&open_token, &names[0].clone())];
+        let mut previous_name = names[0].clone();
         for (comma_token, next_name) in commas.into_iter().zip(names.iter().skip(1)) {
-            allowed_ranges.push(self.range_after_token_before_token(previous_name, comma_token));
-            allowed_ranges.push(self.range_after_token_before_token(comma_token, *next_name));
-            previous_name = *next_name;
+            allowed_ranges
+                .push(self.range_after_token_before_token(&previous_name, &comma_token.clone()));
+            allowed_ranges
+                .push(self.range_after_token_before_token(&comma_token, &next_name.clone()));
+            previous_name = next_name.clone();
         }
-        allowed_ranges.push(self.range_after_token_before_token(previous_name, close_token));
+        allowed_ranges.push(self.range_after_token_before_token(&previous_name, &close_token));
 
         self.node_has_unowned_comments_outside(params.syntax(), &allowed_ranges)
     }
 
-    fn for_bindings_requires_raw_fallback(&self, bindings: ForBindings<'_>) -> bool {
+    fn for_bindings_requires_raw_fallback(&self, bindings: ForBindings) -> bool {
         let names = bindings.names().collect::<Vec<_>>();
         match names.as_slice() {
             [] | [_] => self.node_has_unowned_comments(bindings.syntax()),
@@ -1975,10 +2009,10 @@ impl Formatter<'_> {
                 self.node_has_unowned_comments_outside(
                     bindings.syntax(),
                     &[
-                        self.range_after_token_before_token(open_token, *first),
-                        self.range_after_token_before_token(*first, comma_token),
-                        self.range_after_token_before_token(comma_token, *second),
-                        self.range_after_token_before_token(*second, close_token),
+                        self.range_after_token_before_token(&open_token, &first.clone()),
+                        self.range_after_token_before_token(&first.clone(), &comma_token.clone()),
+                        self.range_after_token_before_token(&comma_token, &second.clone()),
+                        self.range_after_token_before_token(&second.clone(), &close_token),
                     ],
                 )
             }
@@ -1986,7 +2020,7 @@ impl Formatter<'_> {
         }
     }
 
-    fn object_field_requires_raw_fallback(&self, field: ObjectField<'_>) -> bool {
+    fn object_field_requires_raw_fallback(&self, field: ObjectField) -> bool {
         let Some(name_token) = field.name_token() else {
             return self.node_has_unowned_comments(field.syntax());
         };
@@ -2000,13 +2034,13 @@ impl Formatter<'_> {
         self.node_has_unowned_comments_outside(
             field.syntax(),
             &[
-                self.range_after_token_before_token(name_token, colon_token),
-                self.range_after_token_before_node(colon_token, value.syntax()),
+                self.range_after_token_before_token(&name_token, &colon_token.clone()),
+                self.range_after_token_before_node(&colon_token, value.syntax()),
             ],
         )
     }
 
-    fn switch_arm_requires_raw_fallback(&self, arm: SwitchArm<'_>) -> bool {
+    fn switch_arm_requires_raw_fallback(&self, arm: SwitchArm) -> bool {
         let Some(patterns) = arm.patterns() else {
             return self.node_has_unowned_comments(arm.syntax());
         };
@@ -2017,19 +2051,19 @@ impl Formatter<'_> {
             return self.node_has_unowned_comments(arm.syntax());
         };
 
-        self.switch_patterns_requires_raw_fallback(patterns)
+        self.switch_patterns_requires_raw_fallback(patterns.clone())
             || self.node_has_unowned_comments_outside(
                 arm.syntax(),
                 &[
-                    self.range_after_node_before_token(patterns.syntax(), arrow_token),
-                    self.range_after_token_before_node(arrow_token, value.syntax()),
+                    self.range_after_node_before_token(patterns.syntax(), &arrow_token.clone()),
+                    self.range_after_token_before_node(&arrow_token, value.syntax()),
                 ],
             )
     }
 
     pub(crate) fn format_switch_patterns_doc(
         &self,
-        patterns: SwitchPatternList<'_>,
+        patterns: SwitchPatternList,
         indent: usize,
     ) -> Doc {
         if patterns.wildcard_token().is_some() {
@@ -2042,23 +2076,22 @@ impl Formatter<'_> {
         }
 
         let separators = self
-            .token_ranges(patterns.syntax(), TokenKind::Pipe)
+            .token_ranges(&patterns.syntax(), TokenKind::Pipe)
             .collect::<Vec<_>>();
         if separators.len() + 1 != values.len() {
             return Doc::text(self.raw(patterns.syntax()));
         }
 
-        let mut doc = self.format_expr_doc(values[0], indent);
-        let mut previous_end = range_end(values[0].syntax().range());
+        let mut doc = self.format_expr_doc(values[0].clone(), indent);
+        let mut previous_end = range_end(values[0].syntax().text_range());
 
         for (separator_range, next_value) in separators.into_iter().zip(values.into_iter().skip(1))
         {
+            let next_start = range_start(next_value.syntax().text_range());
+            let next_end = range_end(next_value.syntax().text_range());
             let next_doc = self.format_expr_doc(next_value, indent);
             if self.range_has_comments(previous_end, range_start(separator_range))
-                || self.range_has_comments(
-                    range_end(separator_range),
-                    range_start(next_value.syntax().range()),
-                )
+                || self.range_has_comments(range_end(separator_range), next_start)
             {
                 doc = Doc::concat(vec![
                     doc,
@@ -2067,10 +2100,7 @@ impl Formatter<'_> {
                         range_start(separator_range),
                     ),
                     Doc::text("|"),
-                    self.space_or_tight_gap_doc(
-                        range_end(separator_range),
-                        range_start(next_value.syntax().range()),
-                    ),
+                    self.space_or_tight_gap_doc(range_end(separator_range), next_start),
                     next_doc,
                 ]);
             } else {
@@ -2083,13 +2113,13 @@ impl Formatter<'_> {
                 ]));
             }
 
-            previous_end = range_end(next_value.syntax().range());
+            previous_end = next_end;
         }
 
         doc
     }
 
-    fn switch_patterns_requires_raw_fallback(&self, patterns: SwitchPatternList<'_>) -> bool {
+    fn switch_patterns_requires_raw_fallback(&self, patterns: SwitchPatternList) -> bool {
         if patterns.wildcard_token().is_some() {
             return self.node_has_unowned_comments(patterns.syntax());
         }
@@ -2107,23 +2137,28 @@ impl Formatter<'_> {
         }
 
         let mut allowed_ranges = Vec::new();
-        let mut previous_value = values[0];
+        let mut previous_value = values[0].clone();
         for (separator_token, next_value) in separators.into_iter().zip(values.iter().skip(1)) {
+            allowed_ranges.push(
+                self.range_after_node_before_token(
+                    previous_value.syntax(),
+                    &separator_token.clone(),
+                ),
+            );
             allowed_ranges
-                .push(self.range_after_node_before_token(previous_value.syntax(), separator_token));
-            allowed_ranges
-                .push(self.range_after_token_before_node(separator_token, next_value.syntax()));
-            previous_value = *next_value;
+                .push(self.range_after_token_before_node(&separator_token, next_value.syntax()));
+            previous_value = next_value.clone();
         }
 
         self.node_has_unowned_comments_outside(patterns.syntax(), &allowed_ranges)
     }
 
-    pub(crate) fn format_else_branch_doc(&self, else_branch: ElseBranch<'_>, indent: usize) -> Doc {
+    pub(crate) fn format_else_branch_doc(&self, else_branch: ElseBranch, indent: usize) -> Doc {
         let else_body = else_branch.body();
         let else_body_start = else_body
-            .map(|body| u32::from(body.syntax().range().start()) as usize)
-            .unwrap_or_else(|| u32::from(else_branch.syntax().range().end()) as usize);
+            .as_ref()
+            .map(|body| u32::from(body.syntax().text_range().start()) as usize)
+            .unwrap_or_else(|| u32::from(else_branch.syntax().text_range().end()) as usize);
         let else_kw_end = self
             .token_range(else_branch.syntax(), TokenKind::ElseKw)
             .map(range_end)
@@ -2141,7 +2176,7 @@ impl Formatter<'_> {
         ])
     }
 
-    fn field_requires_raw_fallback(&self, field: FieldExpr<'_>) -> bool {
+    fn field_requires_raw_fallback(&self, field: FieldExpr) -> bool {
         let Some(receiver) = field.receiver() else {
             return self.node_has_unowned_comments(field.syntax());
         };
@@ -2158,29 +2193,29 @@ impl Formatter<'_> {
         self.node_has_unowned_comments_outside(
             field.syntax(),
             &[
-                self.range_after_node_before_token(receiver.syntax(), accessor_token),
-                self.range_after_token_before_token(accessor_token, name_token),
+                self.range_after_node_before_token(receiver.syntax(), &accessor_token.clone()),
+                self.range_after_token_before_token(&accessor_token, &name_token),
             ],
         )
     }
 
     fn collect_binary_chain(
         &self,
-        expr: Expr<'_>,
+        expr: Expr,
         indent: usize,
         operands: &mut Vec<Doc>,
         operators: &mut Vec<String>,
     ) {
-        if matches!(expr_support(expr).level, FormatSupportLevel::RawFallback)
-            || (matches!(expr_support(expr).level, FormatSupportLevel::Structural)
-                && self.expr_requires_raw_fallback(expr))
+        if matches!(expr_support(&expr).level, FormatSupportLevel::RawFallback)
+            || (matches!(expr_support(&expr).level, FormatSupportLevel::Structural)
+                && self.expr_requires_raw_fallback(expr.clone()))
         {
             operands.push(Doc::text(self.raw(expr.syntax())));
             return;
         }
 
         if let Expr::Binary(binary) = expr {
-            if self.binary_has_operator_comments(binary) {
+            if self.binary_has_operator_comments(&binary) {
                 operands.push(self.format_binary_doc(binary, indent));
                 return;
             }
@@ -2192,7 +2227,7 @@ impl Formatter<'_> {
             operators.push(
                 binary
                     .operator_token()
-                    .map(|token| token.text(self.source).to_owned())
+                    .map(|token| token.text().to_owned())
                     .unwrap_or_default(),
             );
 
@@ -2262,12 +2297,12 @@ impl Formatter<'_> {
 
     fn token_ranges<'a>(
         &self,
-        node: &'a SyntaxNode,
+        node: &'a RowanSyntaxNode,
         kind: TokenKind,
     ) -> impl Iterator<Item = TextRange> + 'a {
-        node.significant_tokens()
-            .filter(move |token| token.kind() == kind)
-            .map(|token| token.range())
+        node.direct_significant_tokens()
+            .filter(move |token| token.kind().token_kind() == Some(kind))
+            .map(|token| token.text_range())
     }
 }
 
@@ -2279,7 +2314,7 @@ struct DelimitedItemDoc {
 
 #[derive(Debug, Clone, Copy)]
 struct DelimitedNodeSpec<'a> {
-    node: &'a SyntaxNode,
+    node: &'a RowanSyntaxNode,
     open_kind: TokenKind,
     close_kind: TokenKind,
     open: &'a str,

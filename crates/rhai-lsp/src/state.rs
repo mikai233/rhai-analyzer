@@ -531,16 +531,18 @@ fn static_import_dependencies(importer_path: &Path, text: &str) -> Vec<PathBuf> 
     dependencies
 }
 
-fn static_import_module_name(expr: Expr<'_>, source: &str) -> Option<String> {
+fn static_import_module_name(expr: Expr, _source: &str) -> Option<String> {
     let Expr::Literal(literal) = expr else {
         return None;
     };
     let token = literal.token()?;
-    let text = token.text(source);
+    let text = token.text();
 
-    match token.kind() {
-        TokenKind::String if text.len() >= 2 => Some(text[1..text.len() - 1].to_owned()),
-        TokenKind::BacktickString if text.len() >= 2 => Some(text[1..text.len() - 1].to_owned()),
+    match token.kind().token_kind() {
+        Some(TokenKind::String) if text.len() >= 2 => Some(text[1..text.len() - 1].to_owned()),
+        Some(TokenKind::BacktickString) if text.len() >= 2 => {
+            Some(text[1..text.len() - 1].to_owned())
+        }
         _ => None,
     }
 }

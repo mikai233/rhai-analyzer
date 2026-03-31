@@ -18,7 +18,9 @@ pub use ast::{
 pub use lexer::{Lexed, lex_text};
 pub use parser::parse_text;
 pub use syntax::{
-    Parse, SyntaxElement, SyntaxError, SyntaxKind, SyntaxNode, SyntaxToken, TextRange, TextSize,
+    Parse, RhaiKind, RhaiLanguage, RowanGreenNode, RowanGreenToken, RowanNodeOrToken,
+    RowanSyntaxElement, RowanSyntaxKind, RowanSyntaxNode, RowanSyntaxNodeExt, RowanSyntaxToken,
+    SyntaxElement, SyntaxError, SyntaxKind, SyntaxNode, SyntaxToken, TextRange, TextSize,
     TokenKind,
 };
 pub use trivia::{

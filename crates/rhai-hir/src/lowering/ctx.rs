@@ -47,7 +47,7 @@ impl<'a> LoweringContext<'a> {
         Self {
             parse,
             file: FileHir {
-                root_range: parse.root().range(),
+                root_range: parse.root().text_range(),
                 scopes: Vec::new(),
                 symbols: Vec::new(),
                 references: Vec::new(),
@@ -120,13 +120,13 @@ impl<'a> LoweringContext<'a> {
     pub(crate) fn simple_receiver_reference_from(
         &self,
         start: usize,
-        expr: Expr<'_>,
+        expr: &Expr,
     ) -> Option<ReferenceId> {
         match expr {
-            Expr::Name(_) => self.first_name_reference_from(start, expr.syntax().range()),
+            Expr::Name(_) => self.first_name_reference_from(start, expr.syntax().text_range()),
             Expr::Paren(paren) => paren
                 .expr()
-                .and_then(|inner| self.simple_receiver_reference_from(start, inner)),
+                .and_then(|inner| self.simple_receiver_reference_from(start, &inner)),
             _ => None,
         }
     }
@@ -142,26 +142,26 @@ impl<'a> LoweringContext<'a> {
     pub(crate) fn mutation_target_from_expr(
         &self,
         start: usize,
-        expr: Expr<'_>,
+        expr: &Expr,
     ) -> Option<(ReferenceId, Vec<MutationPathSegment>)> {
         match expr {
             Expr::Field(field) => {
-                let name = field.name_token()?.text(self.parse.text()).to_owned();
+                let name = field.name_token()?.text().to_owned();
                 let receiver = field.receiver()?;
 
                 if let Some((reference, mut segments)) =
-                    self.mutation_target_from_expr(start, receiver)
+                    self.mutation_target_from_expr(start, &receiver)
                 {
                     segments.push(MutationPathSegment::Field { name });
                     return Some((reference, segments));
                 }
 
-                let reference = self.simple_receiver_reference_from(start, receiver)?;
+                let reference = self.simple_receiver_reference_from(start, &receiver)?;
                 Some((reference, vec![MutationPathSegment::Field { name }]))
             }
             Expr::Index(index) => {
                 let receiver = index.receiver()?;
-                let owner = self.expr_id_for_range(index.syntax().range())?;
+                let owner = self.expr_id_for_range(index.syntax().text_range())?;
                 let index_expr = self
                     .file
                     .index_exprs
@@ -170,13 +170,13 @@ impl<'a> LoweringContext<'a> {
                     .index?;
 
                 if let Some((reference, mut segments)) =
-                    self.mutation_target_from_expr(start, receiver)
+                    self.mutation_target_from_expr(start, &receiver)
                 {
                     segments.push(MutationPathSegment::Index { index: index_expr });
                     return Some((reference, segments));
                 }
 
-                let reference = self.simple_receiver_reference_from(start, receiver)?;
+                let reference = self.simple_receiver_reference_from(start, &receiver)?;
                 Some((
                     reference,
                     vec![MutationPathSegment::Index { index: index_expr }],
@@ -184,7 +184,7 @@ impl<'a> LoweringContext<'a> {
             }
             Expr::Paren(paren) => paren
                 .expr()
-                .and_then(|inner| self.mutation_target_from_expr(start, inner)),
+                .and_then(|inner| self.mutation_target_from_expr(start, &inner)),
             _ => None,
         }
     }

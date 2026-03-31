@@ -82,10 +82,10 @@ fn maybe_push_comment_run(
     }
 }
 
-fn collect_item_folding_ranges(item: Item<'_>, ranges: &mut Vec<FoldingRange>) {
+fn collect_item_folding_ranges(item: Item, ranges: &mut Vec<FoldingRange>) {
     match item {
         Item::Fn(function) => {
-            push_region_range(ranges, function.syntax().range());
+            push_region_range(ranges, function.syntax().text_range());
             if let Some(body) = function.body() {
                 collect_block_folding_ranges(body, ranges);
             }
@@ -94,7 +94,7 @@ fn collect_item_folding_ranges(item: Item<'_>, ranges: &mut Vec<FoldingRange>) {
     }
 }
 
-fn collect_stmt_folding_ranges(stmt: Stmt<'_>, ranges: &mut Vec<FoldingRange>) {
+fn collect_stmt_folding_ranges(stmt: Stmt, ranges: &mut Vec<FoldingRange>) {
     match stmt {
         Stmt::Try(try_stmt) => collect_try_folding_ranges(try_stmt, ranges),
         Stmt::Expr(expr_stmt) => {
@@ -144,8 +144,8 @@ fn collect_stmt_folding_ranges(stmt: Stmt<'_>, ranges: &mut Vec<FoldingRange>) {
     }
 }
 
-fn collect_try_folding_ranges(try_stmt: TryStmt<'_>, ranges: &mut Vec<FoldingRange>) {
-    push_region_range(ranges, try_stmt.syntax().range());
+fn collect_try_folding_ranges(try_stmt: TryStmt, ranges: &mut Vec<FoldingRange>) {
+    push_region_range(ranges, try_stmt.syntax().text_range());
 
     if let Some(body) = try_stmt.body() {
         collect_block_folding_ranges(body, ranges);
@@ -156,15 +156,15 @@ fn collect_try_folding_ranges(try_stmt: TryStmt<'_>, ranges: &mut Vec<FoldingRan
     }
 }
 
-fn collect_catch_folding_ranges(catch_clause: CatchClause<'_>, ranges: &mut Vec<FoldingRange>) {
-    push_region_range(ranges, catch_clause.syntax().range());
+fn collect_catch_folding_ranges(catch_clause: CatchClause, ranges: &mut Vec<FoldingRange>) {
+    push_region_range(ranges, catch_clause.syntax().text_range());
 
     if let Some(body) = catch_clause.body() {
         collect_block_folding_ranges(body, ranges);
     }
 }
 
-fn collect_expr_folding_ranges(expr: Expr<'_>, ranges: &mut Vec<FoldingRange>) {
+fn collect_expr_folding_ranges(expr: Expr, ranges: &mut Vec<FoldingRange>) {
     match expr {
         Expr::Array(array) => collect_array_folding_ranges(array, ranges),
         Expr::Object(object) => collect_object_folding_ranges(object, ranges),
@@ -172,14 +172,14 @@ fn collect_expr_folding_ranges(expr: Expr<'_>, ranges: &mut Vec<FoldingRange>) {
         Expr::Switch(switch_expr) => collect_switch_folding_ranges(switch_expr, ranges),
         Expr::While(while_expr) => collect_while_folding_ranges(while_expr, ranges),
         Expr::Loop(loop_expr) => {
-            push_region_range(ranges, loop_expr.syntax().range());
+            push_region_range(ranges, loop_expr.syntax().text_range());
             if let Some(body) = loop_expr.body() {
                 collect_block_folding_ranges(body, ranges);
             }
         }
         Expr::For(for_expr) => collect_for_folding_ranges(for_expr, ranges),
         Expr::Do(do_expr) => {
-            push_region_range(ranges, do_expr.syntax().range());
+            push_region_range(ranges, do_expr.syntax().text_range());
             if let Some(body) = do_expr.body() {
                 collect_block_folding_ranges(body, ranges);
             }
@@ -188,19 +188,19 @@ fn collect_expr_folding_ranges(expr: Expr<'_>, ranges: &mut Vec<FoldingRange>) {
             }
         }
         Expr::Closure(closure) => {
-            push_region_range(ranges, closure.syntax().range());
+            push_region_range(ranges, closure.syntax().text_range());
             if let Some(body) = closure.body() {
                 collect_expr_folding_ranges(body, ranges);
             }
         }
         Expr::InterpolatedString(string) => {
-            push_region_range(ranges, string.syntax().range());
+            push_region_range(ranges, string.syntax().text_range());
             if let Some(parts) = string.part_list() {
                 for part in parts.parts() {
                     if let rhai_syntax::StringPart::Interpolation(interpolation) = part
                         && let Some(body) = interpolation.body()
                     {
-                        push_region_range(ranges, body.syntax().range());
+                        push_region_range(ranges, body.syntax().text_range());
                         if let Some(items) = body.item_list() {
                             for item in items.items() {
                                 collect_item_folding_ranges(item, ranges);
@@ -237,7 +237,7 @@ fn collect_expr_folding_ranges(expr: Expr<'_>, ranges: &mut Vec<FoldingRange>) {
             }
         }
         Expr::Call(call) => {
-            push_region_range(ranges, call.syntax().range());
+            push_region_range(ranges, call.syntax().text_range());
             if let Some(callee) = call.callee() {
                 collect_expr_folding_ranges(callee, ranges);
             }
@@ -248,7 +248,7 @@ fn collect_expr_folding_ranges(expr: Expr<'_>, ranges: &mut Vec<FoldingRange>) {
             }
         }
         Expr::Index(index) => {
-            push_region_range(ranges, index.syntax().range());
+            push_region_range(ranges, index.syntax().text_range());
             if let Some(receiver) = index.receiver() {
                 collect_expr_folding_ranges(receiver, ranges);
             }
@@ -271,8 +271,8 @@ fn collect_expr_folding_ranges(expr: Expr<'_>, ranges: &mut Vec<FoldingRange>) {
     }
 }
 
-fn collect_array_folding_ranges(array: ArrayExpr<'_>, ranges: &mut Vec<FoldingRange>) {
-    push_region_range(ranges, array.syntax().range());
+fn collect_array_folding_ranges(array: ArrayExpr, ranges: &mut Vec<FoldingRange>) {
+    push_region_range(ranges, array.syntax().text_range());
 
     if let Some(items) = array.items() {
         for expr in items.exprs() {
@@ -281,8 +281,8 @@ fn collect_array_folding_ranges(array: ArrayExpr<'_>, ranges: &mut Vec<FoldingRa
     }
 }
 
-fn collect_object_folding_ranges(object: ObjectExpr<'_>, ranges: &mut Vec<FoldingRange>) {
-    push_region_range(ranges, object.syntax().range());
+fn collect_object_folding_ranges(object: ObjectExpr, ranges: &mut Vec<FoldingRange>) {
+    push_region_range(ranges, object.syntax().text_range());
 
     if let Some(fields) = object.field_list() {
         for field in fields.fields() {
@@ -293,8 +293,8 @@ fn collect_object_folding_ranges(object: ObjectExpr<'_>, ranges: &mut Vec<Foldin
     }
 }
 
-fn collect_if_folding_ranges(if_expr: IfExpr<'_>, ranges: &mut Vec<FoldingRange>) {
-    push_region_range(ranges, if_expr.syntax().range());
+fn collect_if_folding_ranges(if_expr: IfExpr, ranges: &mut Vec<FoldingRange>) {
+    push_region_range(ranges, if_expr.syntax().text_range());
 
     if let Some(condition) = if_expr.condition() {
         collect_expr_folding_ranges(condition, ranges);
@@ -307,8 +307,8 @@ fn collect_if_folding_ranges(if_expr: IfExpr<'_>, ranges: &mut Vec<FoldingRange>
     }
 }
 
-fn collect_switch_folding_ranges(switch_expr: SwitchExpr<'_>, ranges: &mut Vec<FoldingRange>) {
-    push_region_range(ranges, switch_expr.syntax().range());
+fn collect_switch_folding_ranges(switch_expr: SwitchExpr, ranges: &mut Vec<FoldingRange>) {
+    push_region_range(ranges, switch_expr.syntax().text_range());
 
     if let Some(scrutinee) = switch_expr.scrutinee() {
         collect_expr_folding_ranges(scrutinee, ranges);
@@ -316,7 +316,7 @@ fn collect_switch_folding_ranges(switch_expr: SwitchExpr<'_>, ranges: &mut Vec<F
 
     if let Some(arm_list) = switch_expr.arm_list() {
         for arm in arm_list.arms() {
-            push_region_range(ranges, arm.syntax().range());
+            push_region_range(ranges, arm.syntax().text_range());
             if let Some(patterns) = arm.patterns() {
                 for pattern in patterns.exprs() {
                     collect_expr_folding_ranges(pattern, ranges);
@@ -329,8 +329,8 @@ fn collect_switch_folding_ranges(switch_expr: SwitchExpr<'_>, ranges: &mut Vec<F
     }
 }
 
-fn collect_while_folding_ranges(while_expr: WhileExpr<'_>, ranges: &mut Vec<FoldingRange>) {
-    push_region_range(ranges, while_expr.syntax().range());
+fn collect_while_folding_ranges(while_expr: WhileExpr, ranges: &mut Vec<FoldingRange>) {
+    push_region_range(ranges, while_expr.syntax().text_range());
 
     if let Some(condition) = while_expr.condition() {
         collect_expr_folding_ranges(condition, ranges);
@@ -340,8 +340,8 @@ fn collect_while_folding_ranges(while_expr: WhileExpr<'_>, ranges: &mut Vec<Fold
     }
 }
 
-fn collect_for_folding_ranges(for_expr: ForExpr<'_>, ranges: &mut Vec<FoldingRange>) {
-    push_region_range(ranges, for_expr.syntax().range());
+fn collect_for_folding_ranges(for_expr: ForExpr, ranges: &mut Vec<FoldingRange>) {
+    push_region_range(ranges, for_expr.syntax().text_range());
 
     if let Some(iterable) = for_expr.iterable() {
         collect_expr_folding_ranges(iterable, ranges);
@@ -351,8 +351,8 @@ fn collect_for_folding_ranges(for_expr: ForExpr<'_>, ranges: &mut Vec<FoldingRan
     }
 }
 
-fn collect_block_folding_ranges(block: BlockExpr<'_>, ranges: &mut Vec<FoldingRange>) {
-    push_region_range(ranges, block.syntax().range());
+fn collect_block_folding_ranges(block: BlockExpr, ranges: &mut Vec<FoldingRange>) {
+    push_region_range(ranges, block.syntax().text_range());
 
     if let Some(items) = block.item_list() {
         for item in items.items() {

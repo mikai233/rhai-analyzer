@@ -1,5 +1,5 @@
-use crate::tests::{binary_lhs, binary_operator, binary_rhs, first_stmt_expr};
-use crate::{AstNode, CommentKind, Root, SyntaxKind, TokenKind, lex_text, parse_text};
+use crate::tests::{binary_lhs, binary_operator, binary_rhs, first_stmt_expr, node_kind};
+use crate::{AstNode, CommentKind, RhaiKind, Root, SyntaxKind, TokenKind, lex_text, parse_text};
 
 #[test]
 fn lexes_basic_tokens() {
@@ -26,6 +26,53 @@ fn lexes_basic_tokens() {
         ]
     );
     assert!(lexed.errors().is_empty());
+}
+
+#[test]
+fn syntax_kind_round_trips_through_rowan_kind() {
+    let kinds = [
+        SyntaxKind::Root,
+        SyntaxKind::StmtLet,
+        SyntaxKind::ExprBinary,
+        SyntaxKind::ArgList,
+        SyntaxKind::CatchClause,
+        SyntaxKind::Error,
+    ];
+
+    for kind in kinds {
+        let raw = kind.to_rowan();
+        assert_eq!(SyntaxKind::from_rowan(raw), Some(kind));
+    }
+
+    assert_eq!(SyntaxKind::from_rowan(rowan::SyntaxKind(u16::MAX)), None);
+}
+
+#[test]
+fn parse_exposes_trivia_bearing_rowan_root() {
+    let parse = parse_text("let value = 1; // trailing");
+    let root = parse.root();
+    let kinds: Vec<_> = root
+        .descendants_with_tokens()
+        .map(|element| element.kind())
+        .collect();
+
+    assert_eq!(root.kind(), RhaiKind::Root);
+    assert!(kinds.contains(&RhaiKind::StmtLet));
+    assert!(kinds.contains(&RhaiKind::LineComment));
+}
+
+#[test]
+fn interpolation_body_parser_errors_use_absolute_ranges() {
+    let source = "let msg = `value = ${1 + }`;";
+    let parse = parse_text(source);
+    let error = parse
+        .errors()
+        .iter()
+        .find(|error| error.message() == "expected expression after operator")
+        .expect("expected interpolation body parser error");
+
+    let start = u32::from(error.range().start()) as usize;
+    assert!(start > source.find("${").expect("expected interpolation start"));
 }
 
 #[test]
@@ -246,8 +293,8 @@ fn parse_trivia_store_attaches_trailing_and_leading_comments() {
         .item_list()
         .map(|items| items.items().collect::<Vec<_>>())
         .expect("expected root item list");
-    let first_end = u32::from(items[0].syntax().range().end()) as usize;
-    let second_start = u32::from(items[1].syntax().range().start()) as usize;
+    let first_end = u32::from(items[0].syntax().text_range().end()) as usize;
+    let second_start = u32::from(items[1].syntax().text_range().start()) as usize;
     let gap = parse
         .trivia()
         .comment_gap(first_end, second_start, true, true);
@@ -271,8 +318,8 @@ fn parse_trivia_store_tracks_blank_lines_between_comments_and_next_node() {
         .item_list()
         .map(|items| items.items().collect::<Vec<_>>())
         .expect("expected root item list");
-    let first_end = u32::from(items[0].syntax().range().end()) as usize;
-    let second_start = u32::from(items[1].syntax().range().start()) as usize;
+    let first_end = u32::from(items[0].syntax().text_range().end()) as usize;
+    let second_start = u32::from(items[1].syntax().text_range().start()) as usize;
     let gap = parse
         .trivia()
         .comment_gap(first_end, second_start, true, true);
@@ -301,22 +348,21 @@ fn parse_trivia_store_supports_node_and_token_boundary_queries() {
     assert!(
         parse
             .trivia()
-            .has_comments_after_node_before_node(first_stmt, second_stmt)
+            .has_comments_after_node_before_node(&first_stmt, &second_stmt)
     );
     let between_items =
         parse
             .trivia()
-            .comment_gap_after_node_before_node(first_stmt, second_stmt, true, true);
+            .comment_gap_after_node_before_node(&first_stmt, &second_stmt, true, true);
     assert_eq!(between_items.trailing_comments.len(), 1);
     assert_eq!(between_items.leading_comments.len(), 1);
 
     let semicolon = first_stmt
-        .children()
-        .iter()
-        .filter_map(|child| child.as_token())
-        .find(|token| token.kind() == TokenKind::Semicolon)
+        .children_with_tokens()
+        .filter_map(|child| child.into_token())
+        .find(|token| token.kind().token_kind() == Some(TokenKind::Semicolon))
         .expect("expected semicolon");
-    let value_expr = match items[0] {
+    let value_expr = match &items[0] {
         crate::Item::Stmt(crate::Stmt::Let(let_stmt)) => {
             let_stmt.initializer().expect("expected value")
         }
@@ -326,11 +372,11 @@ fn parse_trivia_store_supports_node_and_token_boundary_queries() {
     assert!(
         parse
             .trivia()
-            .has_comments_after_node_before_token(value_expr.syntax(), semicolon)
+            .has_comments_after_node_before_token(&value_expr.syntax(), semicolon.clone())
     );
     let before_semicolon = parse.trivia().comment_gap_after_node_before_token(
-        value_expr.syntax(),
-        semicolon,
+        &value_expr.syntax(),
+        semicolon.clone(),
         true,
         true,
     );
@@ -343,12 +389,12 @@ fn parse_trivia_store_supports_node_and_token_boundary_queries() {
     assert!(
         parse
             .trivia()
-            .has_comments_after_token_before_node(semicolon, second_stmt)
+            .has_comments_after_token_before_node(semicolon.clone(), &second_stmt)
     );
     let after_semicolon =
         parse
             .trivia()
-            .comment_gap_after_token_before_node(semicolon, second_stmt, true, true);
+            .comment_gap_after_token_before_node(semicolon, &second_stmt, true, true);
     assert_eq!(after_semicolon.trailing_comments.len(), 1);
     assert_eq!(after_semicolon.leading_comments.len(), 1);
 }
@@ -362,27 +408,23 @@ fn parse_trivia_store_supports_token_to_token_queries() {
     let expr = first_stmt_expr(&parse);
     let args = expr
         .children()
-        .iter()
-        .filter_map(|child| child.as_node())
-        .find(|node| node.kind() == SyntaxKind::ArgList)
+        .find(|node| node_kind(node) == SyntaxKind::ArgList)
         .expect("expected arg list");
     let open_paren = args
-        .children()
-        .iter()
-        .filter_map(|child| child.as_token())
-        .find(|token| token.kind() == TokenKind::OpenParen)
+        .children_with_tokens()
+        .filter_map(|child| child.into_token())
+        .find(|token| token.kind().token_kind() == Some(TokenKind::OpenParen))
         .expect("expected open paren");
     let close_paren = args
-        .children()
-        .iter()
-        .filter_map(|child| child.as_token())
-        .find(|token| token.kind() == TokenKind::CloseParen)
+        .children_with_tokens()
+        .filter_map(|child| child.into_token())
+        .find(|token| token.kind().token_kind() == Some(TokenKind::CloseParen))
         .expect("expected close paren");
 
     assert!(
         parse
             .trivia()
-            .has_comments_after_token_before_token(open_paren, close_paren)
+            .has_comments_after_token_before_token(open_paren.clone(), close_paren.clone())
     );
     let gap =
         parse
@@ -399,13 +441,13 @@ fn parses_let_statement_with_call_and_binary_expr() {
     assert!(parse.errors().is_empty(), "{}", parse.debug_tree());
 
     let root = Root::cast(parse.root()).expect("expected root");
-    assert_eq!(root.syntax().kind(), SyntaxKind::Root);
+    assert_eq!(node_kind(&root.syntax()), SyntaxKind::Root);
     let item_list = root.item_list().expect("expected root item list");
     let items = item_list.items().collect::<Vec<_>>();
     assert_eq!(items.len(), 1);
 
     let stmt = items[0].syntax();
-    assert_eq!(stmt.kind(), SyntaxKind::StmtLet);
+    assert_eq!(node_kind(&stmt), SyntaxKind::StmtLet);
 
     let tree = parse.debug_tree();
     assert!(tree.contains("RootItemList"), "{tree}");
@@ -436,14 +478,14 @@ fn parses_unary_and_assignment_expressions() {
     assert!(parse.errors().is_empty(), "{}", parse.debug_tree());
 
     let expr = first_stmt_expr(&parse);
-    assert_eq!(expr.kind(), SyntaxKind::ExprAssign);
+    assert_eq!(node_kind(&expr), SyntaxKind::ExprAssign);
 
-    let rhs = binary_rhs(expr);
-    assert_eq!(rhs.kind(), SyntaxKind::ExprBinary);
-    assert_eq!(binary_operator(rhs), TokenKind::StarStar);
+    let rhs = binary_rhs(&expr);
+    assert_eq!(node_kind(&rhs), SyntaxKind::ExprBinary);
+    assert_eq!(binary_operator(&rhs), TokenKind::StarStar);
 
-    let unary_operand = binary_lhs(rhs);
-    assert_eq!(unary_operand.kind(), SyntaxKind::ExprUnary);
+    let unary_operand = binary_lhs(&rhs);
+    assert_eq!(node_kind(&unary_operand), SyntaxKind::ExprUnary);
 }
 
 #[test]
@@ -453,10 +495,10 @@ fn assignment_is_right_associative() {
     assert!(parse.errors().is_empty(), "{}", parse.debug_tree());
 
     let expr = first_stmt_expr(&parse);
-    assert_eq!(expr.kind(), SyntaxKind::ExprAssign);
+    assert_eq!(node_kind(&expr), SyntaxKind::ExprAssign);
 
-    let rhs = binary_rhs(expr);
-    assert_eq!(rhs.kind(), SyntaxKind::ExprAssign);
+    let rhs = binary_rhs(&expr);
+    assert_eq!(node_kind(&rhs), SyntaxKind::ExprAssign);
 }
 
 #[test]
@@ -466,16 +508,16 @@ fn logical_precedence_groups_tighter_than_or() {
     assert!(parse.errors().is_empty(), "{}", parse.debug_tree());
 
     let expr = first_stmt_expr(&parse);
-    assert_eq!(expr.kind(), SyntaxKind::ExprBinary);
-    assert_eq!(binary_operator(expr), TokenKind::PipePipe);
+    assert_eq!(node_kind(&expr), SyntaxKind::ExprBinary);
+    assert_eq!(binary_operator(&expr), TokenKind::PipePipe);
 
-    let rhs = binary_rhs(expr);
-    assert_eq!(rhs.kind(), SyntaxKind::ExprBinary);
-    assert_eq!(binary_operator(rhs), TokenKind::AmpAmp);
+    let rhs = binary_rhs(&expr);
+    assert_eq!(node_kind(&rhs), SyntaxKind::ExprBinary);
+    assert_eq!(binary_operator(&rhs), TokenKind::AmpAmp);
 
-    let nested_rhs = binary_rhs(rhs);
-    assert_eq!(nested_rhs.kind(), SyntaxKind::ExprBinary);
-    assert_eq!(binary_operator(nested_rhs), TokenKind::InKw);
+    let nested_rhs = binary_rhs(&rhs);
+    assert_eq!(node_kind(&nested_rhs), SyntaxKind::ExprBinary);
+    assert_eq!(binary_operator(&nested_rhs), TokenKind::InKw);
 }
 
 #[test]
@@ -485,9 +527,9 @@ fn unary_binds_tighter_than_exponent_in_rhai() {
     assert!(parse.errors().is_empty(), "{}", parse.debug_tree());
 
     let expr = first_stmt_expr(&parse);
-    assert_eq!(expr.kind(), SyntaxKind::ExprBinary);
-    assert_eq!(binary_operator(expr), TokenKind::StarStar);
-    assert_eq!(binary_lhs(expr).kind(), SyntaxKind::ExprUnary);
+    assert_eq!(node_kind(&expr), SyntaxKind::ExprBinary);
+    assert_eq!(binary_operator(&expr), TokenKind::StarStar);
+    assert_eq!(node_kind(&binary_lhs(&expr)), SyntaxKind::ExprUnary);
 }
 
 #[test]
@@ -497,16 +539,16 @@ fn shift_binds_tighter_than_exponent_and_addition() {
     assert!(parse.errors().is_empty(), "{}", parse.debug_tree());
 
     let expr = first_stmt_expr(&parse);
-    assert_eq!(expr.kind(), SyntaxKind::ExprBinary);
-    assert_eq!(binary_operator(expr), TokenKind::Plus);
+    assert_eq!(node_kind(&expr), SyntaxKind::ExprBinary);
+    assert_eq!(binary_operator(&expr), TokenKind::Plus);
 
-    let rhs = binary_rhs(expr);
-    assert_eq!(rhs.kind(), SyntaxKind::ExprBinary);
-    assert_eq!(binary_operator(rhs), TokenKind::StarStar);
+    let rhs = binary_rhs(&expr);
+    assert_eq!(node_kind(&rhs), SyntaxKind::ExprBinary);
+    assert_eq!(binary_operator(&rhs), TokenKind::StarStar);
 
-    let exp_lhs = binary_lhs(rhs);
-    assert_eq!(exp_lhs.kind(), SyntaxKind::ExprBinary);
-    assert_eq!(binary_operator(exp_lhs), TokenKind::Shl);
+    let exp_lhs = binary_lhs(&rhs);
+    assert_eq!(node_kind(&exp_lhs), SyntaxKind::ExprBinary);
+    assert_eq!(binary_operator(&exp_lhs), TokenKind::Shl);
 }
 
 #[test]
@@ -516,16 +558,16 @@ fn bitwise_and_logical_same_precedence_groups_are_left_associative() {
     assert!(parse.errors().is_empty(), "{}", parse.debug_tree());
 
     let expr = first_stmt_expr(&parse);
-    assert_eq!(expr.kind(), SyntaxKind::ExprBinary);
-    assert_eq!(binary_operator(expr), TokenKind::PipePipe);
+    assert_eq!(node_kind(&expr), SyntaxKind::ExprBinary);
+    assert_eq!(binary_operator(&expr), TokenKind::PipePipe);
 
-    let lhs = binary_lhs(expr);
-    assert_eq!(lhs.kind(), SyntaxKind::ExprBinary);
-    assert_eq!(binary_operator(lhs), TokenKind::Caret);
+    let lhs = binary_lhs(&expr);
+    assert_eq!(node_kind(&lhs), SyntaxKind::ExprBinary);
+    assert_eq!(binary_operator(&lhs), TokenKind::Caret);
 
-    let nested_lhs = binary_lhs(lhs);
-    assert_eq!(nested_lhs.kind(), SyntaxKind::ExprBinary);
-    assert_eq!(binary_operator(nested_lhs), TokenKind::Pipe);
+    let nested_lhs = binary_lhs(&lhs);
+    assert_eq!(node_kind(&nested_lhs), SyntaxKind::ExprBinary);
+    assert_eq!(binary_operator(&nested_lhs), TokenKind::Pipe);
 }
 
 #[test]
@@ -535,7 +577,7 @@ fn parses_if_else_chain_in_expression_position() {
     assert!(parse.errors().is_empty(), "{}", parse.debug_tree());
 
     let expr = first_stmt_expr(&parse);
-    assert_eq!(expr.kind(), SyntaxKind::ExprIf);
+    assert_eq!(node_kind(&expr), SyntaxKind::ExprIf);
 
     let tree = parse.debug_tree();
     assert!(tree.contains("ElseBranch"), "{tree}");
@@ -581,7 +623,7 @@ fn parses_switch_expression_with_patterns() {
     assert!(parse.errors().is_empty(), "{}", parse.debug_tree());
 
     let expr = first_stmt_expr(&parse);
-    assert_eq!(expr.kind(), SyntaxKind::ExprSwitch);
+    assert_eq!(node_kind(&expr), SyntaxKind::ExprSwitch);
 
     let tree = parse.debug_tree();
     assert!(tree.contains("BlockItemList"), "{tree}");

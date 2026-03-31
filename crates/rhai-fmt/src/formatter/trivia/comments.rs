@@ -1,6 +1,6 @@
 use rhai_syntax::{
-    AttachedComment, CommentKind, GapTrivia, SyntaxNode, SyntaxToken, TextRange, TokenKind,
-    TriviaBoundary,
+    AttachedComment, CommentKind, GapTrivia, RowanSyntaxNode, RowanSyntaxNodeExt, RowanSyntaxToken,
+    TextRange, TokenKind, TriviaBoundary,
 };
 
 use crate::formatter::Formatter;
@@ -16,26 +16,26 @@ pub(crate) struct GapSeparatorOptions<'a> {
 }
 
 impl Formatter<'_> {
-    pub(crate) fn node_has_unowned_comments(&self, node: &SyntaxNode) -> bool {
-        self.trivia.node_has_unowned_comments(node)
+    pub(crate) fn node_has_unowned_comments(&self, node: RowanSyntaxNode) -> bool {
+        self.trivia.node_has_unowned_comments(&node)
     }
 
     pub(crate) fn node_has_unowned_comments_outside(
         &self,
-        node: &SyntaxNode,
+        node: RowanSyntaxNode,
         allowed_ranges: &[(usize, usize)],
     ) -> bool {
         self.trivia
-            .node_has_unowned_comments_outside(node, allowed_ranges)
+            .node_has_unowned_comments_outside(&node, allowed_ranges)
     }
 
     pub(crate) fn node_has_unowned_comments_outside_boundaries(
         &self,
-        node: &SyntaxNode,
-        boundaries: &[TriviaBoundary<'_>],
+        node: RowanSyntaxNode,
+        boundaries: &[TriviaBoundary],
     ) -> bool {
         self.trivia
-            .node_has_unowned_comments_outside_boundaries(node, boundaries)
+            .node_has_unowned_comments_outside_boundaries(&node, boundaries)
     }
 
     pub(crate) fn range_has_comments(&self, start: usize, end: usize) -> bool {
@@ -44,79 +44,82 @@ impl Formatter<'_> {
 
     pub(crate) fn has_blank_line_between_nodes(
         &self,
-        previous: &SyntaxNode,
-        next: &SyntaxNode,
+        previous: RowanSyntaxNode,
+        next: RowanSyntaxNode,
     ) -> bool {
         self.trivia
-            .has_blank_line_after_node_before_node(previous, next)
+            .has_blank_line_after_node_before_node(&previous, &next)
     }
 
     pub(crate) fn is_whitespace_only_between_nodes(
         &self,
-        previous: &SyntaxNode,
-        next: &SyntaxNode,
+        previous: RowanSyntaxNode,
+        next: RowanSyntaxNode,
     ) -> bool {
         self.trivia
-            .is_whitespace_only_after_node_before_node(previous, next)
+            .is_whitespace_only_after_node_before_node(&previous, &next)
     }
 
     pub(crate) fn range_after_node_before_node(
         &self,
-        previous: &SyntaxNode,
-        next: &SyntaxNode,
+        previous: RowanSyntaxNode,
+        next: RowanSyntaxNode,
     ) -> (usize, usize) {
-        self.trivia.range_after_node_before_node(previous, next)
+        self.trivia.range_after_node_before_node(&previous, &next)
     }
 
     pub(crate) fn range_after_node_before_token(
         &self,
-        previous: &SyntaxNode,
-        next: SyntaxToken,
+        previous: RowanSyntaxNode,
+        next: &RowanSyntaxToken,
     ) -> (usize, usize) {
-        self.trivia.range_after_node_before_token(previous, next)
+        self.trivia
+            .range_after_node_before_token(&previous, next.clone())
     }
 
     pub(crate) fn range_after_token_before_node(
         &self,
-        previous: SyntaxToken,
-        next: &SyntaxNode,
+        previous: &RowanSyntaxToken,
+        next: RowanSyntaxNode,
     ) -> (usize, usize) {
-        self.trivia.range_after_token_before_node(previous, next)
+        self.trivia
+            .range_after_token_before_node(previous.clone(), &next)
     }
 
     pub(crate) fn range_after_token_before_token(
         &self,
-        previous: SyntaxToken,
-        next: SyntaxToken,
+        previous: &RowanSyntaxToken,
+        next: &RowanSyntaxToken,
     ) -> (usize, usize) {
-        self.trivia.range_after_token_before_token(previous, next)
+        self.trivia
+            .range_after_token_before_token(previous.clone(), next.clone())
     }
 
     pub(crate) fn has_comments_after_node_before_token(
         &self,
-        previous: &SyntaxNode,
-        next: SyntaxToken,
+        previous: RowanSyntaxNode,
+        next: &RowanSyntaxToken,
     ) -> bool {
         self.trivia
-            .has_comments_after_node_before_token(previous, next)
+            .has_comments_after_node_before_token(&previous, next.clone())
     }
 
     pub(crate) fn has_comments_after_token_before_node(
         &self,
-        previous: SyntaxToken,
-        next: &SyntaxNode,
+        previous: &RowanSyntaxToken,
+        next: RowanSyntaxNode,
     ) -> bool {
         self.trivia
-            .has_comments_after_token_before_node(previous, next)
+            .has_comments_after_token_before_node(previous.clone(), &next)
     }
 
     pub(crate) fn has_comments_after_token_before_token(
         &self,
-        previous: SyntaxToken,
-        next: SyntaxToken,
+        previous: &RowanSyntaxToken,
+        next: &RowanSyntaxToken,
     ) -> bool {
         self.trivia
-            .has_comments_after_token_before_token(previous, next)
+            .has_comments_after_token_before_token(previous.clone(), next.clone())
     }
 
     pub(crate) fn comment_gap(
@@ -129,21 +132,24 @@ impl Formatter<'_> {
         self.trivia.comment_gap(start, end, has_previous, has_next)
     }
 
-    pub(crate) fn token_range(&self, node: &SyntaxNode, kind: TokenKind) -> Option<TextRange> {
-        self.token(node, kind).map(|token| token.range())
+    pub(crate) fn token_range(&self, node: RowanSyntaxNode, kind: TokenKind) -> Option<TextRange> {
+        self.token(node, kind).map(|token| token.text_range())
     }
 
-    pub(crate) fn token(&self, node: &SyntaxNode, kind: TokenKind) -> Option<SyntaxToken> {
-        node.significant_tokens().find(|token| token.kind() == kind)
+    pub(crate) fn token(&self, node: RowanSyntaxNode, kind: TokenKind) -> Option<RowanSyntaxToken> {
+        node.direct_significant_tokens()
+            .find(|token| token.kind().token_kind() == Some(kind))
     }
 
-    pub(crate) fn tokens<'a>(
+    pub(crate) fn tokens(
         &self,
-        node: &'a SyntaxNode,
+        node: RowanSyntaxNode,
         kind: TokenKind,
-    ) -> impl Iterator<Item = SyntaxToken> + 'a {
-        node.significant_tokens()
-            .filter(move |token| token.kind() == kind)
+    ) -> impl Iterator<Item = RowanSyntaxToken> {
+        node.direct_significant_tokens()
+            .filter(move |token| token.kind().token_kind() == Some(kind))
+            .collect::<Vec<_>>()
+            .into_iter()
     }
 
     pub(crate) fn gap_separator_doc(
@@ -272,8 +278,8 @@ impl Formatter<'_> {
 
     pub(crate) fn tight_comment_gap_after_node_before_token(
         &self,
-        previous: &SyntaxNode,
-        next: SyntaxToken,
+        previous: RowanSyntaxNode,
+        next: &RowanSyntaxToken,
     ) -> Doc {
         let (start, end) = self.range_after_node_before_token(previous, next);
         self.tight_comment_gap_doc(start, end)
@@ -281,8 +287,8 @@ impl Formatter<'_> {
 
     pub(crate) fn tight_comment_gap_after_token_before_node(
         &self,
-        previous: SyntaxToken,
-        next: &SyntaxNode,
+        previous: &RowanSyntaxToken,
+        next: RowanSyntaxNode,
     ) -> Doc {
         let (start, end) = self.range_after_token_before_node(previous, next);
         self.tight_comment_gap_doc(start, end)
@@ -290,8 +296,8 @@ impl Formatter<'_> {
 
     pub(crate) fn tight_comment_gap_after_token_before_token(
         &self,
-        previous: SyntaxToken,
-        next: SyntaxToken,
+        previous: &RowanSyntaxToken,
+        next: &RowanSyntaxToken,
     ) -> Doc {
         let (start, end) = self.range_after_token_before_token(previous, next);
         self.tight_comment_gap_doc(start, end)

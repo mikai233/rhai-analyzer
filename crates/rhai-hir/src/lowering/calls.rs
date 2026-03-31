@@ -3,9 +3,9 @@ use crate::model::ExprKind;
 use rhai_syntax::{AstNode, CallExpr, TextRange, TextSize};
 
 impl<'a> LoweringContext<'a> {
-    pub(crate) fn lower_call_expr(&mut self, call: CallExpr<'_>, scope: crate::ScopeId) {
+    pub(crate) fn lower_call_expr(&mut self, call: CallExpr, scope: crate::ScopeId) {
         let reference_start = self.file.references.len();
-        let callee_range = call.callee().map(|callee| callee.syntax().range());
+        let callee_range = call.callee().map(|callee| callee.syntax().text_range());
         if let Some(callee) = call.callee() {
             self.lower_expr(callee, scope);
         }
@@ -15,12 +15,12 @@ impl<'a> LoweringContext<'a> {
         let mut arg_exprs = Vec::new();
         if let Some(args) = call.args() {
             for arg in args.args() {
-                arg_ranges.push(arg.syntax().range());
+                arg_ranges.push(arg.syntax().text_range());
                 arg_exprs.push(self.lower_expr(arg, scope));
             }
         }
         self.new_call(
-            call.syntax().range(),
+            call.syntax().text_range(),
             scope,
             call.uses_caller_scope(),
             callee_range,

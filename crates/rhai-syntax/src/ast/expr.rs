@@ -9,35 +9,35 @@ use crate::ast::{
     is_literal_token, is_name_like_token, is_prefix_operator, nth_child, token_by_kind,
     token_children,
 };
-use crate::{SyntaxKind, SyntaxNode, SyntaxToken, TokenKind};
+use crate::{RowanSyntaxNode, RowanSyntaxToken, SyntaxKind, TokenKind};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Expr<'a> {
-    Name(NameExpr<'a>),
-    Literal(LiteralExpr<'a>),
-    Array(ArrayExpr<'a>),
-    Object(ObjectExpr<'a>),
-    If(IfExpr<'a>),
-    Switch(SwitchExpr<'a>),
-    While(WhileExpr<'a>),
-    Loop(LoopExpr<'a>),
-    For(ForExpr<'a>),
-    Do(DoExpr<'a>),
-    Path(PathExpr<'a>),
-    Closure(ClosureExpr<'a>),
-    InterpolatedString(InterpolatedStringExpr<'a>),
-    Unary(UnaryExpr<'a>),
-    Binary(BinaryExpr<'a>),
-    Assign(AssignExpr<'a>),
-    Paren(ParenExpr<'a>),
-    Call(CallExpr<'a>),
-    Index(IndexExpr<'a>),
-    Field(FieldExpr<'a>),
-    Block(BlockExpr<'a>),
-    Error(ErrorNode<'a>),
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Expr {
+    Name(NameExpr),
+    Literal(LiteralExpr),
+    Array(ArrayExpr),
+    Object(ObjectExpr),
+    If(IfExpr),
+    Switch(SwitchExpr),
+    While(WhileExpr),
+    Loop(LoopExpr),
+    For(ForExpr),
+    Do(DoExpr),
+    Path(PathExpr),
+    Closure(ClosureExpr),
+    InterpolatedString(InterpolatedStringExpr),
+    Unary(UnaryExpr),
+    Binary(BinaryExpr),
+    Assign(AssignExpr),
+    Paren(ParenExpr),
+    Call(CallExpr),
+    Index(IndexExpr),
+    Field(FieldExpr),
+    Block(BlockExpr),
+    Error(ErrorNode),
 }
 
-impl<'a> AstNode<'a> for Expr<'a> {
+impl AstNode for Expr {
     fn can_cast(kind: SyntaxKind) -> bool {
         matches!(
             kind,
@@ -66,8 +66,8 @@ impl<'a> AstNode<'a> for Expr<'a> {
         )
     }
 
-    fn cast(node: &'a SyntaxNode) -> Option<Self> {
-        match node.kind() {
+    fn cast(node: RowanSyntaxNode) -> Option<Self> {
+        match node.kind().syntax_kind()? {
             SyntaxKind::ExprName => Some(Self::Name(NameExpr { syntax: node })),
             SyntaxKind::ExprLiteral => Some(Self::Literal(LiteralExpr { syntax: node })),
             SyntaxKind::ExprArray => Some(Self::Array(ArrayExpr { syntax: node })),
@@ -98,7 +98,7 @@ impl<'a> AstNode<'a> for Expr<'a> {
         }
     }
 
-    fn syntax(self) -> &'a SyntaxNode {
+    fn syntax(&self) -> RowanSyntaxNode {
         match self {
             Self::Name(expr) => expr.syntax(),
             Self::Literal(expr) => expr.syntax(),
@@ -126,13 +126,13 @@ impl<'a> AstNode<'a> for Expr<'a> {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum StringPart<'a> {
-    Segment(StringSegment<'a>),
-    Interpolation(StringInterpolation<'a>),
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StringPart {
+    Segment(StringSegment),
+    Interpolation(StringInterpolation),
 }
 
-impl<'a> AstNode<'a> for StringPart<'a> {
+impl AstNode for StringPart {
     fn can_cast(kind: SyntaxKind) -> bool {
         matches!(
             kind,
@@ -140,8 +140,8 @@ impl<'a> AstNode<'a> for StringPart<'a> {
         )
     }
 
-    fn cast(node: &'a SyntaxNode) -> Option<Self> {
-        match node.kind() {
+    fn cast(node: RowanSyntaxNode) -> Option<Self> {
+        match node.kind().syntax_kind()? {
             SyntaxKind::StringSegment => Some(Self::Segment(StringSegment { syntax: node })),
             SyntaxKind::StringInterpolation => {
                 Some(Self::Interpolation(StringInterpolation { syntax: node }))
@@ -150,7 +150,7 @@ impl<'a> AstNode<'a> for StringPart<'a> {
         }
     }
 
-    fn syntax(self) -> &'a SyntaxNode {
+    fn syntax(&self) -> RowanSyntaxNode {
         match self {
             Self::Segment(part) => part.syntax(),
             Self::Interpolation(part) => part.syntax(),
@@ -158,316 +158,324 @@ impl<'a> AstNode<'a> for StringPart<'a> {
     }
 }
 
-impl<'a> NameExpr<'a> {
-    pub fn token(self) -> Option<SyntaxToken> {
-        find_token(self.syntax, is_name_like_token)
+impl NameExpr {
+    pub fn token(&self) -> Option<RowanSyntaxToken> {
+        find_token(&self.syntax, is_name_like_token)
     }
 }
 
-impl<'a> LiteralExpr<'a> {
-    pub fn token(self) -> Option<SyntaxToken> {
-        find_token(self.syntax, is_literal_token)
+impl LiteralExpr {
+    pub fn token(&self) -> Option<RowanSyntaxToken> {
+        find_token(&self.syntax, is_literal_token)
     }
 }
 
-impl<'a> ArrayExpr<'a> {
-    pub fn items(self) -> Option<ArrayItemList<'a>> {
-        child(self.syntax)
+impl ArrayExpr {
+    pub fn items(&self) -> Option<ArrayItemList> {
+        child(&self.syntax)
     }
 }
 
-impl<'a> ArrayItemList<'a> {
-    pub fn exprs(self) -> AstChildren<'a, Expr<'a>> {
-        children(self.syntax)
+impl ArrayItemList {
+    pub fn exprs(&self) -> AstChildren<Expr> {
+        children(&self.syntax)
     }
 }
 
-impl<'a> ObjectExpr<'a> {
-    pub fn field_list(self) -> Option<ObjectFieldList<'a>> {
-        child(self.syntax)
+impl ObjectExpr {
+    pub fn field_list(&self) -> Option<ObjectFieldList> {
+        child(&self.syntax)
     }
 }
 
-impl<'a> ObjectFieldList<'a> {
-    pub fn fields(self) -> AstChildren<'a, ObjectField<'a>> {
-        children(self.syntax)
+impl ObjectFieldList {
+    pub fn fields(&self) -> AstChildren<ObjectField> {
+        children(&self.syntax)
     }
 }
 
-impl<'a> ObjectField<'a> {
-    pub fn name_token(self) -> Option<SyntaxToken> {
-        find_token(self.syntax, |kind| {
+impl ObjectField {
+    pub fn name_token(&self) -> Option<RowanSyntaxToken> {
+        find_token(&self.syntax, |kind| {
             matches!(kind, TokenKind::Ident | TokenKind::String)
         })
     }
 
-    pub fn value(self) -> Option<Expr<'a>> {
-        child(self.syntax)
+    pub fn value(&self) -> Option<Expr> {
+        child(&self.syntax)
     }
 }
 
-impl<'a> IfExpr<'a> {
-    pub fn condition(self) -> Option<Expr<'a>> {
-        child(self.syntax)
+impl IfExpr {
+    pub fn condition(&self) -> Option<Expr> {
+        child(&self.syntax)
     }
 
-    pub fn then_branch(self) -> Option<BlockExpr<'a>> {
-        child(self.syntax)
+    pub fn then_branch(&self) -> Option<BlockExpr> {
+        child(&self.syntax)
     }
 
-    pub fn else_branch(self) -> Option<ElseBranch<'a>> {
-        child(self.syntax)
-    }
-}
-
-impl<'a> ElseBranch<'a> {
-    pub fn body(self) -> Option<Expr<'a>> {
-        child(self.syntax)
+    pub fn else_branch(&self) -> Option<ElseBranch> {
+        child(&self.syntax)
     }
 }
 
-impl<'a> SwitchExpr<'a> {
-    pub fn scrutinee(self) -> Option<Expr<'a>> {
-        child(self.syntax)
-    }
-
-    pub fn arm_list(self) -> Option<SwitchArmList<'a>> {
-        child(self.syntax)
+impl ElseBranch {
+    pub fn body(&self) -> Option<Expr> {
+        child(&self.syntax)
     }
 }
 
-impl<'a> SwitchArmList<'a> {
-    pub fn arms(self) -> AstChildren<'a, SwitchArm<'a>> {
-        children(self.syntax)
+impl SwitchExpr {
+    pub fn scrutinee(&self) -> Option<Expr> {
+        child(&self.syntax)
+    }
+
+    pub fn arm_list(&self) -> Option<SwitchArmList> {
+        child(&self.syntax)
     }
 }
 
-impl<'a> SwitchArm<'a> {
-    pub fn patterns(self) -> Option<SwitchPatternList<'a>> {
-        child(self.syntax)
-    }
-
-    pub fn value(self) -> Option<Expr<'a>> {
-        child(self.syntax)
+impl SwitchArmList {
+    pub fn arms(&self) -> AstChildren<SwitchArm> {
+        children(&self.syntax)
     }
 }
 
-impl<'a> SwitchPatternList<'a> {
-    pub fn exprs(self) -> AstChildren<'a, Expr<'a>> {
-        children(self.syntax)
+impl SwitchArm {
+    pub fn patterns(&self) -> Option<SwitchPatternList> {
+        child(&self.syntax)
     }
 
-    pub fn wildcard_token(self) -> Option<SyntaxToken> {
-        token_by_kind(self.syntax, TokenKind::Underscore)
-    }
-}
-
-impl<'a> WhileExpr<'a> {
-    pub fn condition(self) -> Option<Expr<'a>> {
-        child(self.syntax)
-    }
-
-    pub fn body(self) -> Option<BlockExpr<'a>> {
-        child(self.syntax)
+    pub fn value(&self) -> Option<Expr> {
+        child(&self.syntax)
     }
 }
 
-impl<'a> LoopExpr<'a> {
-    pub fn body(self) -> Option<BlockExpr<'a>> {
-        child(self.syntax)
+impl SwitchPatternList {
+    pub fn exprs(&self) -> AstChildren<Expr> {
+        children(&self.syntax)
+    }
+
+    pub fn wildcard_token(&self) -> Option<RowanSyntaxToken> {
+        token_by_kind(&self.syntax, TokenKind::Underscore)
     }
 }
 
-impl<'a> ForExpr<'a> {
-    pub fn bindings(self) -> Option<ForBindings<'a>> {
-        child(self.syntax)
+impl WhileExpr {
+    pub fn condition(&self) -> Option<Expr> {
+        child(&self.syntax)
     }
 
-    pub fn iterable(self) -> Option<Expr<'a>> {
-        child(self.syntax)
-    }
-
-    pub fn body(self) -> Option<BlockExpr<'a>> {
-        child(self.syntax)
+    pub fn body(&self) -> Option<BlockExpr> {
+        child(&self.syntax)
     }
 }
 
-impl<'a> ForBindings<'a> {
-    pub fn names(self) -> impl Iterator<Item = SyntaxToken> + 'a {
-        token_children(self.syntax).filter(|token| is_binding_token(token.kind()))
+impl LoopExpr {
+    pub fn body(&self) -> Option<BlockExpr> {
+        child(&self.syntax)
     }
 }
 
-impl<'a> DoExpr<'a> {
-    pub fn body(self) -> Option<BlockExpr<'a>> {
-        child(self.syntax)
+impl ForExpr {
+    pub fn bindings(&self) -> Option<ForBindings> {
+        child(&self.syntax)
     }
 
-    pub fn condition(self) -> Option<DoCondition<'a>> {
-        child(self.syntax)
+    pub fn iterable(&self) -> Option<Expr> {
+        child(&self.syntax)
+    }
+
+    pub fn body(&self) -> Option<BlockExpr> {
+        child(&self.syntax)
     }
 }
 
-impl<'a> DoCondition<'a> {
-    pub fn keyword_token(self) -> Option<SyntaxToken> {
-        find_token(self.syntax, |kind| {
+impl ForBindings {
+    pub fn names(&self) -> impl Iterator<Item = RowanSyntaxToken> {
+        let syntax = self.syntax.clone();
+        token_children(&syntax)
+            .filter(|token| token.kind().token_kind().is_some_and(is_binding_token))
+            .collect::<Vec<_>>()
+            .into_iter()
+    }
+}
+
+impl DoExpr {
+    pub fn body(&self) -> Option<BlockExpr> {
+        child(&self.syntax)
+    }
+
+    pub fn condition(&self) -> Option<DoCondition> {
+        child(&self.syntax)
+    }
+}
+
+impl DoCondition {
+    pub fn keyword_token(&self) -> Option<RowanSyntaxToken> {
+        find_token(&self.syntax, |kind| {
             matches!(kind, TokenKind::WhileKw | TokenKind::UntilKw)
         })
     }
 
-    pub fn expr(self) -> Option<Expr<'a>> {
-        child(self.syntax)
+    pub fn expr(&self) -> Option<Expr> {
+        child(&self.syntax)
     }
 }
 
-impl<'a> PathExpr<'a> {
-    pub fn base(self) -> Option<Expr<'a>> {
-        child(self.syntax)
+impl PathExpr {
+    pub fn base(&self) -> Option<Expr> {
+        child(&self.syntax)
     }
 
-    pub fn segments(self) -> impl Iterator<Item = SyntaxToken> + 'a {
-        token_children(self.syntax).filter(|token| is_name_like_token(token.kind()))
-    }
-}
-
-impl<'a> ClosureExpr<'a> {
-    pub fn params(self) -> Option<ClosureParamList<'a>> {
-        child(self.syntax)
-    }
-
-    pub fn body(self) -> Option<Expr<'a>> {
-        child(self.syntax)
+    pub fn segments(&self) -> impl Iterator<Item = RowanSyntaxToken> {
+        let syntax = self.syntax.clone();
+        token_children(&syntax)
+            .filter(|token| token.kind().token_kind().is_some_and(is_name_like_token))
+            .collect::<Vec<_>>()
+            .into_iter()
     }
 }
 
-impl<'a> InterpolatedStringExpr<'a> {
-    pub fn part_list(self) -> Option<StringPartList<'a>> {
-        child(self.syntax)
+impl ClosureExpr {
+    pub fn params(&self) -> Option<ClosureParamList> {
+        child(&self.syntax)
+    }
+
+    pub fn body(&self) -> Option<Expr> {
+        child(&self.syntax)
     }
 }
 
-impl<'a> StringPartList<'a> {
-    pub fn parts(self) -> AstChildren<'a, StringPart<'a>> {
-        children(self.syntax)
+impl InterpolatedStringExpr {
+    pub fn part_list(&self) -> Option<StringPartList> {
+        child(&self.syntax)
     }
 }
 
-impl<'a> StringSegment<'a> {
-    pub fn text_token(self) -> Option<SyntaxToken> {
-        token_by_kind(self.syntax, TokenKind::StringText)
+impl StringPartList {
+    pub fn parts(&self) -> AstChildren<StringPart> {
+        children(&self.syntax)
     }
 }
 
-impl<'a> StringInterpolation<'a> {
-    pub fn body(self) -> Option<InterpolationBody<'a>> {
-        child(self.syntax)
+impl StringSegment {
+    pub fn text_token(&self) -> Option<RowanSyntaxToken> {
+        token_by_kind(&self.syntax, TokenKind::StringText)
     }
 }
 
-impl<'a> InterpolationBody<'a> {
-    pub fn item_list(self) -> Option<InterpolationItemList<'a>> {
-        child(self.syntax)
+impl StringInterpolation {
+    pub fn body(&self) -> Option<InterpolationBody> {
+        child(&self.syntax)
     }
 }
 
-impl<'a> InterpolationItemList<'a> {
-    pub fn items(self) -> AstChildren<'a, Item<'a>> {
-        children(self.syntax)
+impl InterpolationBody {
+    pub fn item_list(&self) -> Option<InterpolationItemList> {
+        child(&self.syntax)
     }
 }
 
-impl<'a> UnaryExpr<'a> {
-    pub fn operator_token(self) -> Option<SyntaxToken> {
-        find_token(self.syntax, is_prefix_operator)
-    }
-
-    pub fn expr(self) -> Option<Expr<'a>> {
-        child(self.syntax)
+impl InterpolationItemList {
+    pub fn items(&self) -> AstChildren<Item> {
+        children(&self.syntax)
     }
 }
 
-impl<'a> BinaryExpr<'a> {
-    pub fn lhs(self) -> Option<Expr<'a>> {
-        nth_child(self.syntax, 0)
+impl UnaryExpr {
+    pub fn operator_token(&self) -> Option<RowanSyntaxToken> {
+        find_token(&self.syntax, is_prefix_operator)
     }
 
-    pub fn operator_token(self) -> Option<SyntaxToken> {
-        find_token(self.syntax, is_binary_operator)
-    }
-
-    pub fn rhs(self) -> Option<Expr<'a>> {
-        nth_child(self.syntax, 1)
+    pub fn expr(&self) -> Option<Expr> {
+        child(&self.syntax)
     }
 }
 
-impl<'a> AssignExpr<'a> {
-    pub fn lhs(self) -> Option<Expr<'a>> {
-        nth_child(self.syntax, 0)
+impl BinaryExpr {
+    pub fn lhs(&self) -> Option<Expr> {
+        nth_child(&self.syntax, 0)
     }
 
-    pub fn operator_token(self) -> Option<SyntaxToken> {
-        find_token(self.syntax, is_assignment_operator)
+    pub fn operator_token(&self) -> Option<RowanSyntaxToken> {
+        find_token(&self.syntax, is_binary_operator)
     }
 
-    pub fn rhs(self) -> Option<Expr<'a>> {
-        nth_child(self.syntax, 1)
-    }
-}
-
-impl<'a> ParenExpr<'a> {
-    pub fn expr(self) -> Option<Expr<'a>> {
-        child(self.syntax)
+    pub fn rhs(&self) -> Option<Expr> {
+        nth_child(&self.syntax, 1)
     }
 }
 
-impl<'a> CallExpr<'a> {
-    pub fn callee(self) -> Option<Expr<'a>> {
-        nth_child(self.syntax, 0)
+impl AssignExpr {
+    pub fn lhs(&self) -> Option<Expr> {
+        nth_child(&self.syntax, 0)
     }
 
-    pub fn uses_caller_scope(self) -> bool {
-        token_by_kind(self.syntax, TokenKind::Bang).is_some()
+    pub fn operator_token(&self) -> Option<RowanSyntaxToken> {
+        find_token(&self.syntax, is_assignment_operator)
     }
 
-    pub fn args(self) -> Option<ArgList<'a>> {
-        child(self.syntax)
-    }
-}
-
-impl<'a> ArgList<'a> {
-    pub fn args(self) -> AstChildren<'a, Expr<'a>> {
-        children(self.syntax)
+    pub fn rhs(&self) -> Option<Expr> {
+        nth_child(&self.syntax, 1)
     }
 }
 
-impl<'a> IndexExpr<'a> {
-    pub fn receiver(self) -> Option<Expr<'a>> {
-        nth_child(self.syntax, 0)
-    }
-
-    pub fn index(self) -> Option<Expr<'a>> {
-        nth_child(self.syntax, 1)
+impl ParenExpr {
+    pub fn expr(&self) -> Option<Expr> {
+        child(&self.syntax)
     }
 }
 
-impl<'a> FieldExpr<'a> {
-    pub fn receiver(self) -> Option<Expr<'a>> {
-        child(self.syntax)
+impl CallExpr {
+    pub fn callee(&self) -> Option<Expr> {
+        nth_child(&self.syntax, 0)
     }
 
-    pub fn name_token(self) -> Option<SyntaxToken> {
-        find_token(self.syntax, is_name_like_token)
+    pub fn uses_caller_scope(&self) -> bool {
+        token_by_kind(&self.syntax, TokenKind::Bang).is_some()
     }
-}
 
-impl<'a> BlockExpr<'a> {
-    pub fn item_list(self) -> Option<BlockItemList<'a>> {
-        child(self.syntax)
+    pub fn args(&self) -> Option<ArgList> {
+        child(&self.syntax)
     }
 }
 
-impl<'a> BlockItemList<'a> {
-    pub fn items(self) -> AstChildren<'a, Item<'a>> {
-        children(self.syntax)
+impl ArgList {
+    pub fn args(&self) -> AstChildren<Expr> {
+        children(&self.syntax)
+    }
+}
+
+impl IndexExpr {
+    pub fn receiver(&self) -> Option<Expr> {
+        nth_child(&self.syntax, 0)
+    }
+
+    pub fn index(&self) -> Option<Expr> {
+        nth_child(&self.syntax, 1)
+    }
+}
+
+impl FieldExpr {
+    pub fn receiver(&self) -> Option<Expr> {
+        child(&self.syntax)
+    }
+
+    pub fn name_token(&self) -> Option<RowanSyntaxToken> {
+        find_token(&self.syntax, is_name_like_token)
+    }
+}
+
+impl BlockExpr {
+    pub fn item_list(&self) -> Option<BlockItemList> {
+        child(&self.syntax)
+    }
+}
+
+impl BlockItemList {
+    pub fn items(&self) -> AstChildren<Item> {
+        children(&self.syntax)
     }
 }

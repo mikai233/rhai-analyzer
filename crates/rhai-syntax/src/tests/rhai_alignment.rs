@@ -1,4 +1,5 @@
-use crate::{AstNode, Item, Root, SyntaxKind, parse_text};
+use crate::tests::node_kind;
+use crate::{AstNode, Root, parse_text};
 
 #[test]
 fn parses_function_items_with_private_modifier() {
@@ -10,9 +11,9 @@ fn parses_function_items_with_private_modifier() {
     let item = root
         .item_list()
         .and_then(|items| items.items().next())
-        .map(Item::syntax)
+        .map(|item| item.syntax())
         .expect("expected item node");
-    assert_eq!(item.kind(), SyntaxKind::ItemFn);
+    assert_eq!(node_kind(&item), crate::SyntaxKind::ItemFn);
 
     let tree = parse.debug_tree();
     assert!(tree.contains("ParamList"), "{tree}");

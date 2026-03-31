@@ -34,7 +34,7 @@ fn snapshot_exposes_cached_parse_hir_and_diagnostics() {
         snapshot.semantic_diagnostics(file_id),
         hir.diagnostics().as_slice()
     );
-    assert_eq!(hir.root_range, parse.root().range());
+    assert_eq!(hir.root_range, parse.root().text_range());
 }
 
 #[test]
