@@ -1,6 +1,8 @@
 use rhai_syntax::{AstNode, Expr, Item, Root, Stmt, parse_text};
 
-use crate::formatter::support::coverage::{FormatSupportLevel, expr_support};
+use crate::formatter::support::coverage::{
+    FormatSupportLevel, expr_support, item_support, stmt_support,
+};
 use crate::tests::assert_formats_to;
 
 #[test]
@@ -78,19 +80,159 @@ let message = `hello ${user?.name} ${value+1}`;
 }
 
 #[test]
-fn formatter_falls_back_to_raw_for_comment_sensitive_expression_boundaries() {
+fn formatter_formats_comment_sensitive_expression_operator_boundaries() {
     let source = r#"
 fn run(){
-let value=left /* keep */ + right;
-let user=object /* keep */ .field;
-let result=helper /* keep */ (value);
+let value=(left+1) /* keep */ + (right+2);
+target /* keep assign */ = source+1;
+let neg=! /* keep unary */ value;
+let wrapped=( /* keep paren */ value+1);
 }
 "#;
 
     let expected = r#"fn run() {
-    let value = left /* keep */ + right;
-    let user = object /* keep */ .field;
-    let result = helper /* keep */ (value);
+    let value = (left + 1) /* keep */ + (right + 2);
+    target /* keep assign */ = source + 1;
+    let neg = ! /* keep unary */ value;
+    let wrapped = ( /* keep paren */ value + 1);
+}
+"#;
+
+    assert_formats_to(source, expected);
+}
+
+#[test]
+fn formatter_support_matrix_marks_items_and_statements_structural() {
+    let source = r#"
+private fn demo(value) {
+    let local = value;
+    work(value) /* keep */;
+    continue;
+}
+
+let root_value = compute();
+"#;
+
+    let parse = parse_text(source);
+    let root = Root::cast(parse.root()).expect("expected root");
+    let items = root.items().collect::<Vec<_>>();
+
+    assert!(matches!(items[0], Item::Fn(_)));
+    assert_eq!(item_support(items[0]).level, FormatSupportLevel::Structural);
+    assert!(matches!(items[1], Item::Stmt(Stmt::Let(_))));
+    assert_eq!(item_support(items[1]).level, FormatSupportLevel::Structural);
+
+    let function = match items[0] {
+        Item::Fn(function) => function,
+        Item::Stmt(_) => panic!("expected function"),
+    };
+    let body = function.body().expect("expected function body");
+    let body_statements = body
+        .items()
+        .filter_map(|item| match item {
+            Item::Stmt(stmt) => Some(stmt),
+            Item::Fn(_) => None,
+        })
+        .collect::<Vec<_>>();
+
+    assert!(matches!(body_statements[0], Stmt::Let(_)));
+    assert_eq!(
+        stmt_support(body_statements[0]).level,
+        FormatSupportLevel::Structural
+    );
+    assert!(matches!(body_statements[1], Stmt::Expr(_)));
+    assert_eq!(
+        stmt_support(body_statements[1]).level,
+        FormatSupportLevel::Structural
+    );
+    assert!(matches!(body_statements[2], Stmt::Continue(_)));
+    assert_eq!(
+        stmt_support(body_statements[2]).level,
+        FormatSupportLevel::Structural
+    );
+}
+
+#[test]
+fn formatter_formats_comment_sensitive_statement_boundaries() {
+    let source = r#"
+fn run(){
+let value /* keep eq */ = /* keep rhs */ left+1 /* keep semi */;
+return /* keep return */ value+1 /* keep return semi */;
+throw /* keep throw */ error+1 /* keep throw semi */;
+helper(value+1) /* keep expr semi */;
+}
+"#;
+
+    let expected = r#"fn run() {
+    let value /* keep eq */ = /* keep rhs */ left + 1 /* keep semi */;
+    return /* keep return */ value + 1 /* keep return semi */;
+    throw /* keep throw */ error + 1 /* keep throw semi */;
+    helper(value + 1) /* keep expr semi */;
+}
+"#;
+
+    assert_formats_to(source, expected);
+}
+
+#[test]
+fn formatter_formats_comment_sensitive_suffix_and_binding_boundaries() {
+    let source = r#"
+fn run(){
+let indexed = source /* keep recv */ [ /* keep open */ index+1 /* keep close */ ];
+for (item /* keep comma */, /* keep second */ position) in items {
+item+position
+}
+let mapper = |left /* keep pipe comma */, /* keep right */ right| /* keep body */ left+right;
+}
+"#;
+
+    let expected = r#"fn run() {
+    let indexed = source /* keep recv */ [ /* keep open */ index + 1 /* keep close */ ];
+    for (item /* keep comma */, /* keep second */ position) in items {
+        item + position
+    }
+    let mapper = |left /* keep pipe comma */, /* keep right */ right| /* keep body */ left + right;
+}
+"#;
+
+    assert_formats_to(source, expected);
+}
+
+#[test]
+fn formatter_formats_comment_sensitive_clause_and_container_boundaries() {
+    let source = r#"
+import "tools" /* keep import alias */ as /* keep import name */ tools;
+export helper /* keep export alias */ as /* keep export name */ public_helper;
+
+fn run(data){
+let user=#{
+name /* keep colon */: /* keep value */ data.name,
+};
+let result=switch data.kind{
+alpha /* keep arrow */ => /* keep value */ 1,
+foo /* keep pipe */ | /* keep rhs */ bar /* keep arrow two */ => /* keep value two */ 2
+};
+while data.ready {
+continue /* keep continue */;
+}
+result
+}
+"#;
+
+    let expected = r#"import "tools" /* keep import alias */ as /* keep import name */ tools;
+
+export helper /* keep export alias */ as /* keep export name */ public_helper;
+
+fn run(data) {
+    let user = #{name /* keep colon */: /* keep value */ data.name};
+    let result = switch data.kind {
+        alpha /* keep arrow */ => /* keep value */ 1,
+        foo /* keep pipe */ | /* keep rhs */ bar /* keep arrow two */ => /* keep value two */ 2
+    };
+    while data.ready {
+        continue /* keep continue */;
+    }
+    result
 }
 "#;
 

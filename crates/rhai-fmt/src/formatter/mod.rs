@@ -5,12 +5,13 @@ pub(crate) mod trivia;
 
 use crate::{FormatOptions, FormatResult, RangeFormatResult};
 use rhai_syntax::{
-    AstNode, BlockExpr, Item, Root, SyntaxKind, SyntaxNode, SyntaxToken, TextRange, TextSize,
-    parse_text,
+    ArgList, ArrayItemList, AstNode, BlockExpr, ClosureParamList, Expr, Item, ParamList, Root,
+    SyntaxKind, SyntaxNode, SyntaxToken, TextRange, TextSize, parse_text,
 };
 
 use crate::formatter::layout::doc::Doc;
 use crate::formatter::layout::render::{render_doc, render_doc_with_indent};
+use crate::formatter::support::coverage::{FormatSupportLevel, expr_support};
 use crate::formatter::support::utils::{minimal_changed_region, ranges_intersect};
 
 pub fn format_text(text: &str, options: &FormatOptions) -> FormatResult {
@@ -79,6 +80,26 @@ pub fn format_range(
             &formatter.format_block_doc(block, owner.base_indent),
             owner.base_indent,
         ),
+        RangeOwnerKind::Expr(expr) => formatter.render_fragment(
+            &formatter.format_expr_doc(expr, owner.base_indent),
+            owner.base_indent,
+        ),
+        RangeOwnerKind::ParamList(params) => formatter.render_fragment(
+            &formatter.format_params_doc(Some(params), owner.base_indent),
+            owner.base_indent,
+        ),
+        RangeOwnerKind::ClosureParamList(params) => formatter.render_fragment(
+            &formatter.format_closure_params_doc(Some(params)),
+            owner.base_indent,
+        ),
+        RangeOwnerKind::ArgList(args) => formatter.render_fragment(
+            &formatter.format_arg_list_body_doc(args, owner.base_indent),
+            owner.base_indent,
+        ),
+        RangeOwnerKind::ArrayItemList(items) => formatter.render_fragment(
+            &formatter.format_array_item_list_body_doc(items, owner.base_indent),
+            owner.base_indent,
+        ),
     };
     let start = u32::from(owner.range.start()) as usize;
     let end = u32::from(owner.range.end()) as usize;
@@ -139,6 +160,11 @@ enum RangeOwnerKind<'a> {
     Root(Root<'a>),
     Item(Item<'a>),
     Block(BlockExpr<'a>),
+    Expr(Expr<'a>),
+    ParamList(ParamList<'a>),
+    ClosureParamList(ClosureParamList<'a>),
+    ArgList(ArgList<'a>),
+    ArrayItemList(ArrayItemList<'a>),
 }
 
 fn select_range_owner<'a>(root: Root<'a>, requested_range: TextRange) -> Option<RangeOwner<'a>> {
@@ -191,11 +217,60 @@ fn range_owner_for_node<'a>(node: &'a SyntaxNode, block_depth: usize) -> Option<
         });
     }
 
-    BlockExpr::cast(node).map(|block| RangeOwner {
-        range: node.range(),
-        base_indent: block_depth,
-        kind: RangeOwnerKind::Block(block),
-    })
+    if let Some(block) = BlockExpr::cast(node) {
+        return Some(RangeOwner {
+            range: node.range(),
+            base_indent: block_depth,
+            kind: RangeOwnerKind::Block(block),
+        });
+    }
+
+    if let Some(params) = ParamList::cast(node) {
+        return Some(RangeOwner {
+            range: node.range(),
+            base_indent: block_depth,
+            kind: RangeOwnerKind::ParamList(params),
+        });
+    }
+
+    if let Some(params) = ClosureParamList::cast(node) {
+        return Some(RangeOwner {
+            range: node.range(),
+            base_indent: block_depth,
+            kind: RangeOwnerKind::ClosureParamList(params),
+        });
+    }
+
+    if let Some(args) = ArgList::cast(node) {
+        return Some(RangeOwner {
+            range: node.range(),
+            base_indent: block_depth,
+            kind: RangeOwnerKind::ArgList(args),
+        });
+    }
+
+    if let Some(items) = ArrayItemList::cast(node) {
+        return Some(RangeOwner {
+            range: node.range(),
+            base_indent: block_depth,
+            kind: RangeOwnerKind::ArrayItemList(items),
+        });
+    }
+
+    Expr::cast(node)
+        .filter(|expr| range_owner_supports_expr(*expr))
+        .map(|expr| RangeOwner {
+            range: node.range(),
+            base_indent: block_depth,
+            kind: RangeOwnerKind::Expr(expr),
+        })
+}
+
+fn range_owner_supports_expr(expr: Expr<'_>) -> bool {
+    !matches!(
+        expr,
+        Expr::Name(_) | Expr::Literal(_) | Expr::Block(_) | Expr::Error(_)
+    ) && !matches!(expr_support(expr).level, FormatSupportLevel::RawFallback)
 }
 
 fn intersect_ranges(left: TextRange, right: TextRange) -> Option<TextRange> {

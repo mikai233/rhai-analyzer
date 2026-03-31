@@ -35,6 +35,7 @@ impl Doc {
         Self::Concat(parts)
     }
 
+    #[cfg(test)]
     pub(crate) fn join(parts: Vec<Doc>, separator: Doc) -> Self {
         let mut docs = Vec::new();
 

@@ -384,3 +384,64 @@ let value=module::service::profile?[index+offset].display_name;
         },
     );
 }
+
+#[test]
+fn formatter_wraps_long_statement_heads_under_width_constraints() {
+    let source = r#"
+fn run(){
+let outcome=module::service::profile;
+return module::service::profile;
+throw module::service::profile;
+}
+"#;
+
+    let expected = r#"fn run() {
+    let outcome
+        = module
+            ::service
+            ::profile;
+    return
+        module::service::profile;
+    throw
+        module::service::profile;
+}
+"#;
+
+    assert_formats_to_with_options(
+        source,
+        expected,
+        &FormatOptions {
+            max_line_length: 24,
+            ..FormatOptions::default()
+        },
+    );
+}
+
+#[test]
+fn formatter_wraps_long_switch_arm_values_under_width_constraints() {
+    let source = r#"
+fn run(mode){
+switch mode { very_long_pattern_name => module::service::profile, _ => fallback() }
+}
+"#;
+
+    let expected = r#"fn run(mode) {
+    switch mode {
+        very_long_pattern_name
+            => module
+                ::service
+                ::profile,
+        _ => fallback()
+    }
+}
+"#;
+
+    assert_formats_to_with_options(
+        source,
+        expected,
+        &FormatOptions {
+            max_line_length: 28,
+            ..FormatOptions::default()
+        },
+    );
+}

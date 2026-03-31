@@ -1,4 +1,5 @@
-use crate::{FormatOptions, format_range};
+use crate::tests::apply_range_edit;
+use crate::{ContainerLayoutStyle, FormatOptions, format_range};
 use rhai_syntax::{TextRange, TextSize};
 
 #[test]
@@ -43,5 +44,97 @@ fn range_formatter_expands_to_enclosing_block_boundary() {
     assert_eq!(
         result.text,
         "\n    let value = 1 + 2;\n    value\n".to_owned()
+    );
+}
+
+#[test]
+fn range_formatter_can_target_parameter_lists() {
+    let source = "fn run(alpha,beta,gamma,delta){delta}\n";
+    let selection_start =
+        u32::try_from(source.find("alpha").expect("expected params")).expect("offset");
+    let selection_end =
+        u32::try_from(source.find("){").expect("expected param list end")).expect("offset");
+    let result = format_range(
+        source,
+        TextRange::new(selection_start.into(), selection_end.into()),
+        &FormatOptions {
+            max_line_length: 16,
+            ..FormatOptions::default()
+        },
+    )
+    .expect("expected range formatting result");
+
+    assert_eq!(
+        apply_range_edit(source, result.range, &result.text),
+        "fn run(\n    alpha,\n    beta,\n    gamma,\n    delta,\n){delta}\n"
+    );
+}
+
+#[test]
+fn range_formatter_can_target_nested_array_expressions() {
+    let source = "fn run(){let values=[1,2,3];values}\n";
+    let selection_start =
+        u32::try_from(source.find("[").expect("expected array start")).expect("offset");
+    let selection_end =
+        u32::try_from(source.find("];").expect("expected array end") + 1).expect("offset");
+    let result = format_range(
+        source,
+        TextRange::new(selection_start.into(), selection_end.into()),
+        &FormatOptions {
+            container_layout: ContainerLayoutStyle::PreferMultiLine,
+            ..FormatOptions::default()
+        },
+    )
+    .expect("expected range formatting result");
+
+    assert_eq!(
+        apply_range_edit(source, result.range, &result.text),
+        "fn run(){let values=[\n        1,\n        2,\n        3,\n    ];values}\n"
+    );
+}
+
+#[test]
+fn range_formatter_can_target_array_item_lists() {
+    let source = "fn run(){let values=[alpha,beta,gamma,delta];}\n";
+    let selection_start =
+        u32::try_from(source.find("alpha").expect("expected array items")).expect("offset");
+    let selection_end =
+        u32::try_from(source.find("];").expect("expected array end")).expect("offset");
+    let result = format_range(
+        source,
+        TextRange::new(selection_start.into(), selection_end.into()),
+        &FormatOptions {
+            max_line_length: 18,
+            ..FormatOptions::default()
+        },
+    )
+    .expect("expected range formatting result");
+
+    assert_eq!(
+        apply_range_edit(source, result.range, &result.text),
+        "fn run(){let values=[\n        alpha,\n        beta,\n        gamma,\n        delta,\n];}\n"
+    );
+}
+
+#[test]
+fn range_formatter_can_target_call_argument_lists() {
+    let source = "fn run(){helper(alpha,beta,gamma,delta);}\n";
+    let selection_start =
+        u32::try_from(source.find("alpha").expect("expected args")).expect("offset");
+    let selection_end =
+        u32::try_from(source.find(");").expect("expected call end")).expect("offset");
+    let result = format_range(
+        source,
+        TextRange::new(selection_start.into(), selection_end.into()),
+        &FormatOptions {
+            max_line_length: 18,
+            ..FormatOptions::default()
+        },
+    )
+    .expect("expected range formatting result");
+
+    assert_eq!(
+        apply_range_edit(source, result.range, &result.text),
+        "fn run(){helper(\n        alpha,\n        beta,\n        gamma,\n        delta,\n);}\n"
     );
 }

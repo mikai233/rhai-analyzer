@@ -45,6 +45,42 @@ fn second() {
 }
 
 #[test]
+fn formatter_preserves_comments_between_function_signature_and_body() {
+    let source = r#"
+fn run(value)
+// explain body
+{
+value
+}
+"#;
+
+    let expected = r#"fn run(value)
+// explain body
+{
+    value
+}
+"#;
+
+    assert_formats_to(source, expected);
+}
+
+#[test]
+fn formatter_preserves_comments_inside_function_signatures() {
+    let source = r#"
+private /* keep private */ fn /* keep fn */ "Custom-Type" /* keep dot */ . /* keep name */ refresh /* keep params */ (value){
+value
+}
+"#;
+
+    let expected = r#"private /* keep private */ fn /* keep fn */ "Custom-Type" /* keep dot */ . /* keep name */ refresh /* keep params */ (value) {
+    value
+}
+"#;
+
+    assert_formats_to(source, expected);
+}
+
+#[test]
 fn formatter_preserves_extra_blank_lines_between_top_level_items() {
     let source = r#"
 fn first(){
@@ -88,6 +124,26 @@ value
     // after
     value
     /* trailing */
+}
+"#;
+
+    assert_formats_to(source, expected);
+}
+
+#[test]
+fn formatter_preserves_dangling_comments_in_empty_blocks() {
+    let source = r#"
+fn run(){
+if ready{
+// waiting
+}
+}
+"#;
+
+    let expected = r#"fn run() {
+    if ready {
+        // waiting
+    }
 }
 "#;
 
@@ -210,6 +266,28 @@ right,
 }
 
 #[test]
+fn formatter_preserves_dangling_comments_after_last_delimited_item() {
+    let source = r#"
+fn run(){
+process(
+value,
+// keep trailing arg comment
+);
+}
+"#;
+
+    let expected = r#"fn run() {
+    process(
+        value,
+        // keep trailing arg comment
+    );
+}
+"#;
+
+    assert_formats_to(source, expected);
+}
+
+#[test]
 fn formatter_preserves_dangling_comments_in_empty_delimited_containers() {
     let source = r#"
 fn run(){
@@ -275,6 +353,138 @@ label
         _ => 2
     };
     label
+}
+"#;
+
+    assert_formats_to(source, expected);
+}
+
+#[test]
+fn formatter_preserves_comments_between_while_or_loop_heads_and_bodies() {
+    let source = r#"
+fn run(value){
+while value > 0
+// loop while positive
+{
+value
+}
+
+loop
+// keep polling
+{
+break;
+}
+}
+"#;
+
+    let expected = r#"fn run(value) {
+    while value > 0
+    // loop while positive
+    {
+        value
+    }
+
+    loop
+    // keep polling
+    {
+        break;
+    }
+}
+"#;
+
+    assert_formats_to(source, expected);
+}
+
+#[test]
+fn formatter_preserves_comments_between_if_for_do_heads_and_bodies() {
+    let source = r#"
+fn run(items, ready){
+if ready
+// enter branch
+{
+items.len()
+} else
+// nested branch
+{
+0
+}
+
+for item in items
+// visit item
+{
+item
+}
+
+do
+// once first
+{
+step()
+}
+// stop when ready
+while ready
+}
+"#;
+
+    let expected = r#"fn run(items, ready) {
+    if ready
+    // enter branch
+    {
+        items.len()
+    } else
+    // nested branch
+    {
+        0
+    }
+
+    for item in items
+    // visit item
+    {
+        item
+    }
+
+    do
+    // once first
+    {
+        step()
+    }
+    // stop when ready
+    while ready
+}
+"#;
+
+    assert_formats_to(source, expected);
+}
+
+#[test]
+fn formatter_preserves_comments_between_try_catch_heads_and_bodies() {
+    let source = r#"
+fn run(){
+try
+// attempt work
+{
+work()
+}
+// recover below
+catch (err)
+// inspect error
+{
+log(err);
+}
+}
+"#;
+
+    let expected = r#"fn run() {
+    try
+    // attempt work
+    {
+        work()
+    }
+    // recover below
+    catch (err)
+    // inspect error
+    {
+        log(err);
+    }
 }
 "#;
 
