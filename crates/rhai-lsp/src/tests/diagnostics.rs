@@ -100,3 +100,64 @@ fn unused_diagnostics_are_published_as_warnings() {
     assert_eq!(unused.severity, DiagnosticSeverity::Warning);
     assert_eq!(unused.tags, vec![DiagnosticTag::Unnecessary]);
 }
+
+#[test]
+fn changing_importer_republishes_dependency_diagnostics_immediately() {
+    let mut server = Server::new();
+    let provider_uri = file_url("provider.rhai");
+    let consumer_uri = file_url("consumer.rhai");
+    let provider_text = r#"
+        let defaults = #{ name: "demo" };
+        fn make_config() {
+            defaults
+        }
+    "#;
+    let consumer_with_call = r#"
+        import "provider" as tools;
+        fn run() {
+            tools::make_config();
+        }
+    "#;
+    let consumer_without_call = r#"
+        import "provider" as tools;
+        fn run() {}
+    "#;
+
+    assert_valid_rhai_syntax(provider_text);
+    assert_valid_rhai_syntax(consumer_with_call);
+    assert_valid_rhai_syntax(consumer_without_call);
+
+    server
+        .open_document(provider_uri.clone(), 1, provider_text)
+        .expect("expected provider open to succeed");
+    let updates_with_call = server
+        .open_document(consumer_uri.clone(), 1, consumer_with_call)
+        .expect("expected consumer open to succeed");
+
+    let provider_update_with_call = updates_with_call
+        .iter()
+        .find(|update| update.uri == provider_uri)
+        .expect("expected provider diagnostics update when importer introduces regular call");
+    assert!(
+        provider_update_with_call
+            .diagnostics
+            .iter()
+            .any(|diagnostic| { diagnostic.message == "unresolved name `defaults`" })
+    );
+
+    let updates_without_call = server
+        .change_document(consumer_uri, 2, consumer_without_call)
+        .expect("expected consumer change to succeed");
+    let provider_update_without_call = updates_without_call
+        .iter()
+        .find(|update| update.uri == provider_uri)
+        .expect("expected provider diagnostics update when importer removes regular call");
+    assert!(
+        !provider_update_without_call
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message == "unresolved name `defaults`"),
+        "expected unresolved capture diagnostic to clear without regular calls, got {:?}",
+        provider_update_without_call.diagnostics
+    );
+}

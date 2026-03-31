@@ -295,6 +295,32 @@ fn semantic_diagnostics_report_unused_symbols() {
 }
 
 #[test]
+fn semantic_diagnostics_do_not_report_caller_scope_captures_as_unused_symbols() {
+    let parse = parse_valid(
+        r#"
+            export const DEFAULTS = #{ name: "demo" };
+
+            fn make_config() {
+                DEFAULTS
+            }
+        "#,
+    );
+    let hir = lower_file(&parse);
+    let diagnostics = hir
+        .diagnostics()
+        .into_iter()
+        .filter(|diagnostic| diagnostic.kind == SemanticDiagnosticKind::UnusedSymbol)
+        .collect::<Vec<_>>();
+
+    assert!(
+        !diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message == "unused symbol `DEFAULTS`"),
+        "expected caller-scope capture to count as usage, got {diagnostics:?}"
+    );
+}
+
+#[test]
 fn semantic_diagnostics_report_inconsistent_function_doc_types() {
     let parse = parse_valid(
         r#"

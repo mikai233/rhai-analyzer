@@ -347,6 +347,14 @@ impl AnalyzerDatabase {
             {
                 affected.insert(dependent, ());
             }
+            for dependency in previous_dependency_graph
+                .dependencies_by_file
+                .get(&file_id)
+                .into_iter()
+                .flat_map(|files| files.iter().copied())
+            {
+                affected.insert(dependency, ());
+            }
             for dependent in self
                 .workspace_indexes
                 .workspace_dependency_graph
@@ -356,6 +364,16 @@ impl AnalyzerDatabase {
                 .flat_map(|files| files.iter().copied())
             {
                 affected.insert(dependent, ());
+            }
+            for dependency in self
+                .workspace_indexes
+                .workspace_dependency_graph
+                .dependencies_by_file
+                .get(&file_id)
+                .into_iter()
+                .flat_map(|files| files.iter().copied())
+            {
+                affected.insert(dependency, ());
             }
         }
 
@@ -367,6 +385,14 @@ impl AnalyzerDatabase {
                 .flat_map(|files| files.iter().copied())
             {
                 affected.insert(dependent, ());
+            }
+            for dependency in previous_dependency_graph
+                .dependencies_by_file
+                .get(&removed.file_id)
+                .into_iter()
+                .flat_map(|files| files.iter().copied())
+            {
+                affected.insert(dependency, ());
             }
         }
 

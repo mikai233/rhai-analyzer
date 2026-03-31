@@ -325,6 +325,379 @@ fn builtin_global_functions_suppress_unresolved_name_diagnostics() {
 }
 
 #[test]
+fn caller_scope_captures_are_suppressed_when_function_has_no_calls() {
+    let mut db = AnalyzerDatabase::default();
+    db.apply_change(ChangeSet::single_file(
+        "main.rhai",
+        r#"
+            let value = 42;
+
+            fn helper() {
+                value
+            }
+        "#,
+        DocumentVersion(1),
+    ));
+
+    let snapshot = db.snapshot();
+    assert_workspace_files_have_no_syntax_diagnostics(&snapshot);
+    let file_id = snapshot
+        .vfs()
+        .file_id(Path::new("main.rhai"))
+        .expect("expected file id");
+
+    let diagnostics = snapshot.project_diagnostics(file_id);
+    assert!(
+        !diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message == "unresolved name `value`"),
+        "expected unresolved capture to stay hidden until normal calls exist, got {diagnostics:?}"
+    );
+}
+
+#[test]
+fn caller_scope_captures_are_suppressed_for_caller_scope_invocations() {
+    let mut db = AnalyzerDatabase::default();
+    db.apply_change(ChangeSet::single_file(
+        "main.rhai",
+        r#"
+            let value = 42;
+
+            fn helper() {
+                value
+            }
+
+            let result = call!(helper);
+        "#,
+        DocumentVersion(1),
+    ));
+
+    let snapshot = db.snapshot();
+    assert_workspace_files_have_no_syntax_diagnostics(&snapshot);
+    let file_id = snapshot
+        .vfs()
+        .file_id(Path::new("main.rhai"))
+        .expect("expected file id");
+
+    let diagnostics = snapshot.project_diagnostics(file_id);
+    assert!(
+        !diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message == "unresolved name `value`"),
+        "expected caller-scope call to suppress unresolved capture, got {diagnostics:?}"
+    );
+    assert!(!diagnostics.iter().any(|diagnostic| {
+        diagnostic
+            .message
+            .contains("must use caller scope (`call!`)")
+    }));
+}
+
+#[test]
+fn caller_scope_exported_consts_are_suppressed_when_function_has_no_calls() {
+    let mut db = AnalyzerDatabase::default();
+    db.apply_change(ChangeSet::single_file(
+        "main.rhai",
+        r#"
+            export const DEFAULTS = #{ name: "demo" };
+
+            fn make_config() {
+                DEFAULTS
+            }
+        "#,
+        DocumentVersion(1),
+    ));
+
+    let snapshot = db.snapshot();
+    assert_workspace_files_have_no_syntax_diagnostics(&snapshot);
+    let file_id = snapshot
+        .vfs()
+        .file_id(Path::new("main.rhai"))
+        .expect("expected file id");
+
+    let diagnostics = snapshot.project_diagnostics(file_id);
+    assert!(
+        !diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message == "unresolved name `DEFAULTS`"),
+        "expected uncalled function capture of exported const to stay hidden, got {diagnostics:?}"
+    );
+}
+
+#[test]
+fn caller_scope_captures_ignore_unrelated_same_name_calls_in_other_files() {
+    let mut db = AnalyzerDatabase::default();
+    db.apply_change(ChangeSet {
+        files: vec![
+            FileChange {
+                path: "main.rhai".into(),
+                text: r#"
+                    export const DEFAULTS = #{ name: "demo" };
+
+                    fn make_config(root) {
+                        #{
+                            root: root,
+                            defaults: DEFAULTS,
+                        }
+                    }
+                "#
+                .to_owned(),
+                version: DocumentVersion(1),
+            },
+            FileChange {
+                path: "other.rhai".into(),
+                text: r#"
+                    fn make_config() {
+                        1
+                    }
+
+                    make_config();
+                "#
+                .to_owned(),
+                version: DocumentVersion(1),
+            },
+        ],
+        removed_files: Vec::new(),
+        project: Some(ProjectConfig::default()),
+    });
+
+    let snapshot = db.snapshot();
+    assert_workspace_files_have_no_syntax_diagnostics(&snapshot);
+    let main = snapshot
+        .vfs()
+        .file_id(Path::new("main.rhai"))
+        .expect("expected main.rhai");
+
+    let diagnostics = snapshot.project_diagnostics(main);
+    assert!(
+        !diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message == "unresolved name `DEFAULTS`"),
+        "expected unrelated same-name call sites to not trigger caller-scope diagnostics, got {diagnostics:?}"
+    );
+}
+
+#[test]
+fn caller_scope_captures_report_function_and_regular_call_sites() {
+    let mut db = AnalyzerDatabase::default();
+    db.apply_change(ChangeSet::single_file(
+        "main.rhai",
+        r#"
+            let value = 42;
+
+            fn helper() {
+                value
+            }
+
+            let a = call!(helper);
+            let b = helper();
+        "#,
+        DocumentVersion(1),
+    ));
+
+    let snapshot = db.snapshot();
+    assert_workspace_files_have_no_syntax_diagnostics(&snapshot);
+    let file_id = snapshot
+        .vfs()
+        .file_id(Path::new("main.rhai"))
+        .expect("expected file id");
+
+    let diagnostics = snapshot.project_diagnostics(file_id);
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message == "unresolved name `value`"),
+        "expected function-body unresolved capture diagnostic, got {diagnostics:?}"
+    );
+    assert!(diagnostics.iter().any(|diagnostic| {
+        diagnostic.message
+            == "call to `helper` must use caller scope (`call!`) because the function references outer-scope names"
+    }));
+}
+
+#[test]
+fn caller_scope_captures_report_regular_imported_calls_across_files() {
+    let mut db = AnalyzerDatabase::default();
+    db.apply_change(ChangeSet {
+        files: vec![
+            FileChange {
+                path: "provider.rhai".into(),
+                text: r#"
+                    let defaults = #{ name: "demo" };
+                    fn make_config() {
+                        defaults
+                    }
+                "#
+                .to_owned(),
+                version: DocumentVersion(1),
+            },
+            FileChange {
+                path: "consumer.rhai".into(),
+                text: r#"
+                    import "provider" as tools;
+
+                    fn run() {
+                        tools::make_config();
+                    }
+                "#
+                .to_owned(),
+                version: DocumentVersion(1),
+            },
+        ],
+        removed_files: Vec::new(),
+        project: Some(ProjectConfig::default()),
+    });
+
+    let snapshot = db.snapshot();
+    assert_workspace_files_have_no_syntax_diagnostics(&snapshot);
+    let provider = snapshot
+        .vfs()
+        .file_id(Path::new("provider.rhai"))
+        .expect("expected provider.rhai");
+    let consumer = snapshot
+        .vfs()
+        .file_id(Path::new("consumer.rhai"))
+        .expect("expected consumer.rhai");
+    let imported_exports = snapshot
+        .linked_imports(consumer)
+        .iter()
+        .flat_map(|linked| linked.exports.iter())
+        .filter_map(|export| export.export.exported_name.clone())
+        .collect::<Vec<_>>();
+    assert!(
+        imported_exports.iter().any(|name| name == "make_config"),
+        "expected linked import to expose make_config, got {imported_exports:?}"
+    );
+
+    let provider_diagnostics = snapshot.project_diagnostics(provider);
+    assert!(
+        provider_diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message == "unresolved name `defaults`"),
+        "expected provider unresolved capture to stay visible once regular calls exist, got {provider_diagnostics:?}"
+    );
+
+    let consumer_diagnostics = snapshot.project_diagnostics(consumer);
+    assert!(consumer_diagnostics.iter().any(|diagnostic| {
+        diagnostic.message
+            == "call to `make_config` must use caller scope (`call!`) because the function references outer-scope names"
+    }), "expected consumer caller-scope diagnostic, got {consumer_diagnostics:?}");
+}
+
+#[test]
+fn imported_member_references_report_unresolved_after_provider_renames() {
+    let mut db = AnalyzerDatabase::default();
+    db.apply_change(ChangeSet {
+        files: vec![
+            FileChange {
+                path: "provider.rhai".into(),
+                text: r#"
+                    fn helper() { 1 }
+                    export const VALUE = 1;
+                "#
+                .to_owned(),
+                version: DocumentVersion(1),
+            },
+            FileChange {
+                path: "consumer.rhai".into(),
+                text: r#"
+                    import "provider" as tools;
+                    fn run() {
+                        tools::helper();
+                        let value = tools::VALUE;
+                    }
+                "#
+                .to_owned(),
+                version: DocumentVersion(1),
+            },
+        ],
+        removed_files: Vec::new(),
+        project: Some(ProjectConfig::default()),
+    });
+
+    db.apply_change(ChangeSet::single_file(
+        "provider.rhai",
+        r#"
+            fn renamed_helper() { 1 }
+            export const RENAMED = 1;
+        "#,
+        DocumentVersion(2),
+    ));
+
+    let snapshot = db.snapshot();
+    assert_workspace_files_have_no_syntax_diagnostics(&snapshot);
+    let consumer = snapshot
+        .vfs()
+        .file_id(Path::new("consumer.rhai"))
+        .expect("expected consumer.rhai");
+
+    let diagnostics = snapshot.project_diagnostics(consumer);
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| { diagnostic.message == "unresolved import member `tools::helper`" })
+    );
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| { diagnostic.message == "unresolved import member `tools::VALUE`" })
+    );
+}
+
+#[test]
+fn static_path_imports_report_missing_workspace_files() {
+    let mut db = AnalyzerDatabase::default();
+    db.apply_change(ChangeSet::single_file(
+        "main.rhai",
+        r#"
+            import "./missing_module" as missing;
+            fn run() {}
+        "#,
+        DocumentVersion(1),
+    ));
+
+    let snapshot = db.snapshot();
+    assert_workspace_files_have_no_syntax_diagnostics(&snapshot);
+    let file_id = snapshot
+        .vfs()
+        .file_id(Path::new("main.rhai"))
+        .expect("expected main.rhai");
+
+    let diagnostics = snapshot.project_diagnostics(file_id);
+    assert!(diagnostics.iter().any(|diagnostic| {
+        diagnostic.message
+            == "import module `./missing_module` does not resolve to an existing workspace file"
+    }));
+}
+
+#[test]
+fn static_named_imports_report_unresolved_modules() {
+    let mut db = AnalyzerDatabase::default();
+    db.apply_change(ChangeSet::single_file(
+        "main.rhai",
+        r#"
+            import "env" as env;
+            fn run() {}
+        "#,
+        DocumentVersion(1),
+    ));
+
+    let snapshot = db.snapshot();
+    assert_workspace_files_have_no_syntax_diagnostics(&snapshot);
+    let file_id = snapshot
+        .vfs()
+        .file_id(Path::new("main.rhai"))
+        .expect("expected main.rhai");
+
+    let diagnostics = snapshot.project_diagnostics(file_id);
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message == "unresolved import module `env`")
+    );
+}
+
+#[test]
 fn changing_exports_does_not_break_static_import_linkage() {
     let mut db = AnalyzerDatabase::default();
     db.apply_change(ChangeSet {
@@ -412,6 +785,48 @@ fn change_report_surfaces_dependency_affected_files_for_static_imports() {
     assert_eq!(impact.changed_files, vec![provider]);
     assert_eq!(impact.rebuilt_files, vec![provider]);
     assert_eq!(impact.dependency_affected_files, vec![consumer]);
+}
+
+#[test]
+fn change_report_marks_dependencies_affected_when_importers_change() {
+    let mut db = AnalyzerDatabase::default();
+    db.apply_change(ChangeSet {
+        files: vec![
+            FileChange {
+                path: "provider.rhai".into(),
+                text: "export const VALUE = 1;".to_owned(),
+                version: DocumentVersion(1),
+            },
+            FileChange {
+                path: "consumer.rhai".into(),
+                text: r#"import "provider" as tools;"#.to_owned(),
+                version: DocumentVersion(1),
+            },
+        ],
+        removed_files: Vec::new(),
+        project: None,
+    });
+
+    let impact = db.apply_change_report(ChangeSet::single_file(
+        "consumer.rhai",
+        "import \"provider\" as tools;\nfn run() {}",
+        DocumentVersion(2),
+    ));
+
+    let snapshot = db.snapshot();
+    assert_workspace_files_have_no_syntax_diagnostics(&snapshot);
+    let provider = snapshot
+        .vfs()
+        .file_id(Path::new("provider.rhai"))
+        .expect("expected provider.rhai");
+    let consumer = snapshot
+        .vfs()
+        .file_id(Path::new("consumer.rhai"))
+        .expect("expected consumer.rhai");
+
+    assert_eq!(impact.changed_files, vec![consumer]);
+    assert_eq!(impact.rebuilt_files, vec![consumer]);
+    assert_eq!(impact.dependency_affected_files, vec![provider]);
 }
 
 #[test]
@@ -552,6 +967,47 @@ fn goto_definition_on_import_module_reference_targets_provider_file() {
 }
 
 #[test]
+fn goto_definition_resolves_outer_scope_captures_inside_functions() {
+    let mut db = AnalyzerDatabase::default();
+    db.apply_change(ChangeSet::single_file(
+        "main.rhai",
+        r#"
+            export const DEFAULTS = #{ name: "demo" };
+
+            fn make_config() {
+                let config = #{
+                    defaults: DEFAULTS,
+                };
+                config
+            }
+        "#,
+        DocumentVersion(1),
+    ));
+
+    let snapshot = db.snapshot();
+    assert_workspace_files_have_no_syntax_diagnostics(&snapshot);
+    let file_id = snapshot
+        .vfs()
+        .file_id(Path::new("main.rhai"))
+        .expect("expected main.rhai");
+    let text = snapshot.file_text(file_id).expect("expected file text");
+
+    let usage_offset = offset_in(&text, "defaults: DEFAULTS") + TextSize::from(10);
+    let declaration_offset = offset_in(&text, "DEFAULTS =");
+    let definitions = snapshot.goto_definition(file_id, usage_offset);
+
+    assert_eq!(definitions.len(), 1);
+    assert_eq!(definitions[0].file_id, file_id);
+    assert!(
+        definitions[0]
+            .target
+            .full_range
+            .contains(declaration_offset),
+        "expected goto definition to target outer captured const, got {definitions:?}"
+    );
+}
+
+#[test]
 fn find_references_on_import_alias_reports_current_file_usages() {
     let mut db = AnalyzerDatabase::default();
     db.apply_change(ChangeSet {
@@ -680,6 +1136,46 @@ fn find_references_on_imported_path_member_reaches_provider_symbol() {
         "expected imported path reference, got {:?}",
         references.references
     );
+}
+
+#[test]
+fn find_references_include_outer_scope_captures_inside_functions() {
+    let mut db = AnalyzerDatabase::default();
+    db.apply_change(ChangeSet::single_file(
+        "main.rhai",
+        r#"
+            export const DEFAULTS = #{ name: "demo" };
+
+            fn make_config() {
+                let config = #{
+                    defaults: DEFAULTS,
+                };
+                config
+            }
+        "#,
+        DocumentVersion(1),
+    ));
+
+    let snapshot = db.snapshot();
+    assert_workspace_files_have_no_syntax_diagnostics(&snapshot);
+    let file_id = snapshot
+        .vfs()
+        .file_id(Path::new("main.rhai"))
+        .expect("expected main.rhai");
+    let text = snapshot.file_text(file_id).expect("expected file text");
+
+    let declaration_offset = offset_in(&text, "DEFAULTS =");
+    let usage_offset = offset_in(&text, "defaults: DEFAULTS") + TextSize::from(10);
+    let references = snapshot
+        .find_references(file_id, declaration_offset)
+        .expect("expected project references");
+
+    assert_eq!(references.targets.len(), 1);
+    assert!(references.references.iter().any(|reference| {
+        reference.file_id == file_id
+            && reference.kind == ProjectReferenceKind::Reference
+            && reference.range.contains(usage_offset)
+    }));
 }
 
 #[test]
