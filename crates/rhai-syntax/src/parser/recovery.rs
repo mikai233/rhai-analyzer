@@ -1,16 +1,15 @@
-use crate::parser::Parser;
+use crate::parser::{BuildElement, BuildNode, Parser, node_element, token_element};
 use crate::syntax::{
-    SyntaxError, SyntaxKind, SyntaxNode, SyntaxToken, TextRange, TextSize, TokenKind, empty_range,
-    node_element, token_element,
+    SyntaxError, SyntaxKind, SyntaxToken, TextRange, TextSize, TokenKind, empty_range,
 };
 
 impl<'a> Parser<'a> {
-    pub(crate) fn parse_required_block(&mut self, message: &'static str) -> SyntaxNode {
+    pub(crate) fn parse_required_block(&mut self, message: &'static str) -> BuildNode {
         if self.at(TokenKind::OpenBrace) {
             self.parse_block_expr()
         } else {
             self.record_error(message, empty_range(self.current_offset()));
-            SyntaxNode::with_range(
+            BuildNode::with_range(
                 SyntaxKind::Error,
                 empty_range(self.current_offset()),
                 Vec::new(),
@@ -18,15 +17,15 @@ impl<'a> Parser<'a> {
         }
     }
 
-    pub(crate) fn bump_element(&mut self, expect_message: &'static str) -> crate::SyntaxElement {
-        token_element(self.bump().expect(expect_message))
+    pub(crate) fn bump_element(&mut self, expect_message: &'static str) -> BuildElement {
+        token_element(self.bump().expect(expect_message), self.source)
     }
 
     pub(crate) fn eat(
         &mut self,
         kind: TokenKind,
         expect_message: &'static str,
-    ) -> Option<crate::SyntaxElement> {
+    ) -> Option<BuildElement> {
         self.at(kind).then(|| self.bump_element(expect_message))
     }
 
@@ -35,7 +34,7 @@ impl<'a> Parser<'a> {
         kind: TokenKind,
         error_message: &'static str,
         expect_message: &'static str,
-    ) -> crate::SyntaxElement {
+    ) -> BuildElement {
         self.eat(kind, expect_message)
             .unwrap_or_else(|| self.missing_error(error_message))
     }
@@ -44,7 +43,7 @@ impl<'a> Parser<'a> {
         &mut self,
         error_message: &'static str,
         expect_message: &'static str,
-    ) -> crate::SyntaxElement {
+    ) -> BuildElement {
         if self.at(TokenKind::Ident) {
             self.bump_element(expect_message)
         } else {
@@ -63,7 +62,7 @@ impl<'a> Parser<'a> {
         &mut self,
         error_message: &'static str,
         expect_message: &'static str,
-    ) -> crate::SyntaxElement {
+    ) -> BuildElement {
         if self.at_binding_start() {
             self.bump_element(expect_message)
         } else {
@@ -75,7 +74,7 @@ impl<'a> Parser<'a> {
         &mut self,
         error_message: &'static str,
         expect_message: &'static str,
-    ) -> crate::SyntaxElement {
+    ) -> BuildElement {
         if matches!(
             self.peek_kind(),
             Some(TokenKind::Ident | TokenKind::GlobalKw)
@@ -90,7 +89,7 @@ impl<'a> Parser<'a> {
         &mut self,
         error_message: &'static str,
         expect_message: &'static str,
-    ) -> crate::SyntaxElement {
+    ) -> BuildElement {
         if self.at_name_like() {
             self.bump_element(expect_message)
         } else {
@@ -102,7 +101,7 @@ impl<'a> Parser<'a> {
         &mut self,
         error_message: &'static str,
         expect_message: &'static str,
-    ) -> crate::SyntaxElement {
+    ) -> BuildElement {
         if self.at_object_field_start() {
             self.bump_element(expect_message)
         } else {
@@ -110,27 +109,27 @@ impl<'a> Parser<'a> {
         }
     }
 
-    pub(crate) fn missing_error(&mut self, message: &'static str) -> crate::SyntaxElement {
+    pub(crate) fn missing_error(&mut self, message: &'static str) -> BuildElement {
         self.record_error(message, empty_range(self.current_offset()));
-        node_element(SyntaxNode::with_range(
+        node_element(BuildNode::with_range(
             SyntaxKind::Error,
             empty_range(self.current_offset()),
             Vec::new(),
         ))
     }
 
-    pub(crate) fn empty_error_node(&mut self, message: &'static str) -> SyntaxNode {
+    pub(crate) fn empty_error_node(&mut self, message: &'static str) -> BuildNode {
         let range = empty_range(self.current_offset());
         self.record_error(message, range);
-        SyntaxNode::with_range(SyntaxKind::Error, range, Vec::new())
+        BuildNode::with_range(SyntaxKind::Error, range, Vec::new())
     }
 
-    pub(crate) fn unexpected_token_error(&mut self, message: &'static str) -> SyntaxNode {
+    pub(crate) fn unexpected_token_error(&mut self, message: &'static str) -> BuildNode {
         let token = self.bump().expect("unexpected token should be present");
         self.record_error(message, token.range());
-        SyntaxNode::new(
+        BuildNode::new(
             SyntaxKind::Error,
-            vec![token_element(token)],
+            vec![token_element(token, self.source)],
             token.range().start(),
         )
     }
@@ -220,6 +219,7 @@ impl<'a> Parser<'a> {
                     | TokenKind::String
                     | TokenKind::RawString
                     | TokenKind::BacktickString
+                    | TokenKind::Backtick
                     | TokenKind::Char
                     | TokenKind::TrueKw
                     | TokenKind::FalseKw
@@ -289,183 +289,6 @@ impl<'a> Parser<'a> {
         }
         None
     }
-}
-
-pub(crate) enum InterpolatedPart {
-    Text(TextRange),
-    Interpolation {
-        start: TextRange,
-        body_range: TextRange,
-        end: TextRange,
-    },
-}
-
-pub(crate) fn make_absolute_range(start: usize, end: usize) -> TextRange {
-    TextRange::new(
-        TextSize::from(u32::try_from(start).unwrap_or(u32::MAX)),
-        TextSize::from(u32::try_from(end).unwrap_or(u32::MAX)),
-    )
-}
-
-pub(crate) fn find_interpolation_end(text: &str, cursor: &mut usize) -> Option<usize> {
-    let mut depth = 1usize;
-
-    while *cursor < text.len() {
-        if text[*cursor..].starts_with("//") {
-            *cursor += 2;
-            while *cursor < text.len() && next_char_at(text, *cursor) != '\n' {
-                *cursor += next_char_at(text, *cursor).len_utf8();
-            }
-            continue;
-        }
-
-        if text[*cursor..].starts_with("/*") {
-            skip_block_comment(text, cursor);
-            continue;
-        }
-
-        if is_raw_string_at(text, *cursor) {
-            skip_raw_string(text, cursor);
-            continue;
-        }
-
-        let next = next_char_at(text, *cursor);
-        match next {
-            '"' => skip_quoted_string(text, cursor, '"', true),
-            '\'' => skip_quoted_string(text, cursor, '\'', true),
-            '`' => skip_backtick_string(text, cursor),
-            '{' => {
-                depth += 1;
-                *cursor += 1;
-            }
-            '}' => {
-                depth -= 1;
-                if depth == 0 {
-                    return Some(*cursor);
-                }
-                *cursor += 1;
-            }
-            _ => {
-                *cursor += next.len_utf8();
-            }
-        }
-    }
-
-    None
-}
-
-pub(crate) fn skip_block_comment(text: &str, cursor: &mut usize) {
-    *cursor += 2;
-    let mut depth = 1usize;
-
-    while *cursor < text.len() && depth > 0 {
-        if text[*cursor..].starts_with("/*") {
-            *cursor += 2;
-            depth += 1;
-        } else if text[*cursor..].starts_with("*/") {
-            *cursor += 2;
-            depth -= 1;
-        } else {
-            *cursor += next_char_at(text, *cursor).len_utf8();
-        }
-    }
-}
-
-pub(crate) fn skip_quoted_string(
-    text: &str,
-    cursor: &mut usize,
-    terminator: char,
-    allow_escapes: bool,
-) {
-    *cursor += terminator.len_utf8();
-
-    while *cursor < text.len() {
-        let next = next_char_at(text, *cursor);
-        *cursor += next.len_utf8();
-
-        if allow_escapes && next == '\\' && *cursor < text.len() {
-            *cursor += next_char_at(text, *cursor).len_utf8();
-            continue;
-        }
-
-        if next == terminator {
-            break;
-        }
-    }
-}
-
-pub(crate) fn skip_backtick_string(text: &str, cursor: &mut usize) {
-    *cursor += 1;
-
-    while *cursor < text.len() {
-        if text[*cursor..].starts_with("``") {
-            *cursor += 2;
-            continue;
-        }
-
-        if text[*cursor..].starts_with("${") {
-            *cursor += 2;
-            if let Some(end) = find_interpolation_end(text, cursor) {
-                *cursor = end + 1;
-            } else {
-                break;
-            }
-            continue;
-        }
-
-        let next = next_char_at(text, *cursor);
-        *cursor += next.len_utf8();
-        if next == '`' {
-            break;
-        }
-    }
-}
-
-pub(crate) fn is_raw_string_at(text: &str, mut cursor: usize) -> bool {
-    while cursor < text.len() && text[cursor..].starts_with('#') {
-        cursor += 1;
-    }
-    cursor < text.len() && text[cursor..].starts_with('"')
-}
-
-pub(crate) fn skip_raw_string(text: &str, cursor: &mut usize) {
-    let mut hashes = 0usize;
-    while *cursor < text.len() && text[*cursor..].starts_with('#') {
-        hashes += 1;
-        *cursor += 1;
-    }
-
-    *cursor += 1;
-
-    while *cursor < text.len() {
-        let next = next_char_at(text, *cursor);
-        *cursor += next.len_utf8();
-        if next != '"' {
-            continue;
-        }
-
-        let mut lookahead = *cursor;
-        let mut matched = true;
-        for _ in 0..hashes {
-            if lookahead >= text.len() || !text[lookahead..].starts_with('#') {
-                matched = false;
-                break;
-            }
-            lookahead += 1;
-        }
-
-        if matched {
-            *cursor = lookahead;
-            break;
-        }
-    }
-}
-
-pub(crate) fn next_char_at(text: &str, offset: usize) -> char {
-    text[offset..]
-        .chars()
-        .next()
-        .expect("valid parser cursor offset")
 }
 
 pub(crate) fn infix_binding_power(kind: TokenKind) -> Option<(u8, u8, SyntaxKind)> {

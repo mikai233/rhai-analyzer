@@ -1,10 +1,10 @@
-use crate::parser::Parser;
-use crate::syntax::{SyntaxKind, SyntaxNode, TokenKind, empty_range, node_element};
+use crate::parser::{BuildElement, BuildNode, Parser, node_element};
+use crate::syntax::{SyntaxKind, TokenKind, empty_range};
 
 impl<'a> Parser<'a> {
     fn finish_statement(
         &mut self,
-        children: &mut Vec<crate::SyntaxElement>,
+        children: &mut Vec<BuildElement>,
         can_omit_semicolon_before_next: bool,
     ) {
         if let Some(semicolon) = self.eat(TokenKind::Semicolon, "`;` token should be present") {
@@ -17,7 +17,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn expr_stmt_can_omit_semicolon_before_next(expr: &SyntaxNode) -> bool {
+    fn expr_stmt_can_omit_semicolon_before_next(expr: &BuildNode) -> bool {
         matches!(
             expr.kind(),
             SyntaxKind::ExprIf
@@ -29,7 +29,7 @@ impl<'a> Parser<'a> {
         )
     }
 
-    pub(crate) fn parse_stmt(&mut self) -> SyntaxNode {
+    pub(crate) fn parse_stmt(&mut self) -> BuildNode {
         if self.at_fn_item_start() {
             return self.parse_fn_item();
         }
@@ -48,7 +48,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    pub(crate) fn parse_let_stmt(&mut self) -> SyntaxNode {
+    pub(crate) fn parse_let_stmt(&mut self) -> BuildNode {
         let start = self.current_offset();
         let mut children = Vec::new();
         children.push(self.bump_element("`let` token should be present"));
@@ -68,7 +68,7 @@ impl<'a> Parser<'a> {
         self.finish_node(SyntaxKind::StmtLet, children, start)
     }
 
-    pub(crate) fn parse_const_stmt(&mut self) -> SyntaxNode {
+    pub(crate) fn parse_const_stmt(&mut self) -> BuildNode {
         let start = self.current_offset();
         let mut children = vec![self.bump_element("`const` token should be present")];
 
@@ -94,7 +94,7 @@ impl<'a> Parser<'a> {
         self.finish_node(SyntaxKind::StmtConst, children, start)
     }
 
-    pub(crate) fn parse_import_stmt(&mut self) -> SyntaxNode {
+    pub(crate) fn parse_import_stmt(&mut self) -> BuildNode {
         let start = self.current_offset();
         let mut children = vec![self.bump_element("`import` token should be present")];
 
@@ -113,7 +113,7 @@ impl<'a> Parser<'a> {
         self.finish_node(SyntaxKind::StmtImport, children, start)
     }
 
-    pub(crate) fn parse_export_stmt(&mut self) -> SyntaxNode {
+    pub(crate) fn parse_export_stmt(&mut self) -> BuildNode {
         let start = self.current_offset();
         let mut children = vec![self.bump_element("`export` token should be present")];
 
@@ -170,7 +170,7 @@ impl<'a> Parser<'a> {
         self.finish_node(SyntaxKind::StmtExport, children, start)
     }
 
-    pub(crate) fn parse_value_stmt(&mut self, kind: SyntaxKind) -> SyntaxNode {
+    pub(crate) fn parse_value_stmt(&mut self, kind: SyntaxKind) -> BuildNode {
         let start = self.current_offset();
         let mut children = vec![self.bump_element("statement keyword token should be present")];
 
@@ -183,7 +183,7 @@ impl<'a> Parser<'a> {
         self.finish_node(kind, children, start)
     }
 
-    pub(crate) fn parse_continue_stmt(&mut self) -> SyntaxNode {
+    pub(crate) fn parse_continue_stmt(&mut self) -> BuildNode {
         let start = self.current_offset();
         let mut children = vec![self.bump_element("`continue` token should be present")];
 
@@ -192,7 +192,7 @@ impl<'a> Parser<'a> {
         self.finish_node(SyntaxKind::StmtContinue, children, start)
     }
 
-    pub(crate) fn parse_try_stmt(&mut self) -> SyntaxNode {
+    pub(crate) fn parse_try_stmt(&mut self) -> BuildNode {
         let start = self.current_offset();
         let mut children = vec![self.bump_element("`try` token should be present")];
         children.push(node_element(
@@ -208,7 +208,7 @@ impl<'a> Parser<'a> {
         self.finish_node(SyntaxKind::StmtTry, children, start)
     }
 
-    pub(crate) fn parse_expr_stmt(&mut self) -> SyntaxNode {
+    pub(crate) fn parse_expr_stmt(&mut self) -> BuildNode {
         let start = self.current_offset();
         let expr = self.parse_expr(0);
         let can_omit_semicolon_before_next = Self::expr_stmt_can_omit_semicolon_before_next(&expr);

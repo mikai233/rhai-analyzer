@@ -109,8 +109,8 @@ pub fn lex_text(text: &str) -> Lexed {
                 TokenKind::Char
             }
             '`' => {
-                offset = lex_backtick_string(text, offset, &mut errors);
-                TokenKind::BacktickString
+                offset = lex_backtick_token_or_parts(text, offset, &mut tokens, &mut errors);
+                continue;
             }
             c if is_ident_start(c) => {
                 offset = consume_while(text, offset, is_ident_continue);
@@ -491,6 +491,114 @@ fn lex_backtick_string(text: &str, mut offset: usize, errors: &mut Vec<SyntaxErr
     }
 
     offset
+}
+
+fn lex_backtick_token_or_parts(
+    text: &str,
+    mut offset: usize,
+    tokens: &mut Vec<SyntaxToken>,
+    errors: &mut Vec<SyntaxError>,
+) -> usize {
+    let start = offset;
+    offset += 1;
+    let mut cursor = offset;
+    let mut segment_start = offset;
+    let mut terminated = false;
+    let mut structured = false;
+
+    while cursor < text.len() {
+        if starts_with(text, cursor, "``") {
+            cursor += 2;
+            continue;
+        }
+
+        if starts_with(text, cursor, "${") {
+            if !structured {
+                tokens.push(SyntaxToken::new(
+                    TokenKind::Backtick,
+                    text_range(start, start + 1),
+                ));
+                structured = true;
+            }
+
+            if segment_start < cursor {
+                tokens.push(SyntaxToken::new(
+                    TokenKind::StringText,
+                    text_range(segment_start, cursor),
+                ));
+            }
+
+            let interpolation_start = cursor;
+            cursor += 2;
+            tokens.push(SyntaxToken::new(
+                TokenKind::InterpolationStart,
+                text_range(interpolation_start, interpolation_start + 2),
+            ));
+
+            let interpolation_end = lex_interpolation_block(text, cursor, errors);
+            let close_brace_start = interpolation_end.saturating_sub(1);
+
+            if close_brace_start > cursor {
+                let body_lexed = lex_text(&text[cursor..close_brace_start])
+                    .shifted(TextSize::from(cursor as u32));
+                let (body_tokens, body_errors) = body_lexed.into_parts();
+                tokens.extend(body_tokens);
+                errors.extend(body_errors);
+            }
+
+            if close_brace_start < text.len() && matches_char(text, close_brace_start, '}') {
+                tokens.push(SyntaxToken::new(
+                    TokenKind::CloseBrace,
+                    text_range(close_brace_start, interpolation_end),
+                ));
+            }
+
+            cursor = interpolation_end;
+            segment_start = cursor;
+            continue;
+        }
+
+        let next = next_char(text, cursor);
+        cursor += next.len_utf8();
+
+        if next == '`' {
+            terminated = true;
+            break;
+        }
+    }
+
+    if !terminated {
+        errors.push(SyntaxError::new(
+            "unterminated back-tick string literal",
+            text_range(start, text.len()),
+        ));
+    }
+
+    if !structured {
+        tokens.push(SyntaxToken::new(
+            TokenKind::BacktickString,
+            text_range(start, cursor),
+        ));
+        return cursor;
+    }
+
+    let closing_start = cursor.saturating_sub(1);
+    let string_end = if terminated { closing_start } else { cursor };
+    if segment_start < string_end {
+        tokens.push(SyntaxToken::new(
+            TokenKind::StringText,
+            text_range(segment_start, string_end),
+        ));
+    }
+
+    if terminated {
+        tokens.push(SyntaxToken::new(
+            TokenKind::Backtick,
+            text_range(closing_start, cursor),
+        ));
+    }
+
+    cursor
 }
 
 fn lex_interpolation_block(text: &str, mut offset: usize, errors: &mut Vec<SyntaxError>) -> usize {

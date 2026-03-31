@@ -1,7 +1,7 @@
 use rhai_db::DatabaseSnapshot;
 use rhai_syntax::{
     ArrayExpr, AstNode, BlockExpr, CatchClause, Expr, ForExpr, IfExpr, Item, ObjectExpr, Root,
-    Stmt, SwitchExpr, SyntaxToken, TextRange, TokenKind, TryStmt, WhileExpr,
+    RowanSyntaxNode, Stmt, SwitchExpr, TextRange, TokenKind, TryStmt, WhileExpr,
 };
 use rhai_vfs::FileId;
 
@@ -12,8 +12,9 @@ pub(crate) fn folding_ranges(snapshot: &DatabaseSnapshot, file_id: FileId) -> Ve
         return Vec::new();
     };
 
-    let mut ranges = comment_folding_ranges(parse.tokens(), parse.text());
-    let Some(root) = Root::cast(parse.root()) else {
+    let root_syntax = parse.root();
+    let mut ranges = comment_folding_ranges(&root_syntax, parse.text());
+    let Some(root) = Root::cast(root_syntax) else {
         return ranges;
     };
 
@@ -28,25 +29,31 @@ pub(crate) fn folding_ranges(snapshot: &DatabaseSnapshot, file_id: FileId) -> Ve
     ranges
 }
 
-fn comment_folding_ranges(tokens: &[SyntaxToken], source: &str) -> Vec<FoldingRange> {
+fn comment_folding_ranges(root: &RowanSyntaxNode, _source: &str) -> Vec<FoldingRange> {
     let mut ranges = Vec::new();
     let mut run_start = None;
     let mut run_end = None;
     let mut pending_gap_allows_continuation = false;
 
-    for token in tokens {
-        match token.kind() {
+    for token in root
+        .descendants_with_tokens()
+        .filter_map(|element| element.into_token())
+    {
+        let Some(kind) = token.kind().token_kind() else {
+            continue;
+        };
+        match kind {
             TokenKind::LineComment | TokenKind::DocLineComment => {
                 if run_start.is_some() && !pending_gap_allows_continuation {
                     maybe_push_comment_run(&mut ranges, run_start, run_end);
                     run_start = None;
                 }
-                run_start.get_or_insert(token.range().start());
-                run_end = Some(token.range().end());
+                run_start.get_or_insert(token.text_range().start());
+                run_end = Some(token.text_range().end());
                 pending_gap_allows_continuation = false;
             }
             TokenKind::Whitespace if run_start.is_some() => {
-                pending_gap_allows_continuation = !contains_blank_line(token.text(source));
+                pending_gap_allows_continuation = !contains_blank_line(token.text());
             }
             _ => {
                 maybe_push_comment_run(&mut ranges, run_start, run_end);

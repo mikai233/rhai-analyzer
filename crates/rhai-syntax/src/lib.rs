@@ -20,8 +20,7 @@ pub use parser::parse_text;
 pub use syntax::{
     Parse, RhaiKind, RhaiLanguage, RowanGreenNode, RowanGreenToken, RowanNodeOrToken,
     RowanSyntaxElement, RowanSyntaxKind, RowanSyntaxNode, RowanSyntaxNodeExt, RowanSyntaxToken,
-    SyntaxElement, SyntaxError, SyntaxKind, SyntaxNode, SyntaxToken, TextRange, TextSize,
-    TokenKind,
+    SyntaxError, SyntaxKind, SyntaxToken, TextRange, TextSize, TokenKind,
 };
 pub use trivia::{
     AttachedComment, CommentKind, GapTrivia, TriviaBoundary, TriviaSlot, TriviaStore,

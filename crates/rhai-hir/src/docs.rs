@@ -1,4 +1,4 @@
-use rhai_syntax::{SyntaxToken, TextRange, TextSize, TokenKind};
+use rhai_syntax::{RowanSyntaxNode, TextRange, TextSize, TokenKind};
 
 use crate::ty::{TypeRef, parse_type_ref};
 
@@ -23,11 +23,21 @@ pub enum DocTag {
 }
 
 pub fn collect_doc_block(
-    tokens: &[SyntaxToken],
-    source: &str,
+    root: &RowanSyntaxNode,
+    _source: &str,
     item_start: TextSize,
 ) -> Option<DocBlock> {
-    let pivot = tokens.partition_point(|token| token.range().end() <= item_start);
+    let tokens: Vec<_> = root
+        .descendants_with_tokens()
+        .filter_map(|element| element.into_token())
+        .filter_map(|token| {
+            token
+                .kind()
+                .token_kind()
+                .map(|kind| (kind, token.text_range(), token.text().to_string()))
+        })
+        .collect();
+    let pivot = tokens.partition_point(|(_, range, _)| range.end() <= item_start);
     if pivot == 0 {
         return None;
     }
@@ -36,14 +46,14 @@ pub fn collect_doc_block(
     let mut cursor = pivot;
     while cursor > 0 {
         cursor -= 1;
-        let token = tokens[cursor];
+        let token = &tokens[cursor];
 
-        match token.kind() {
+        match token.0 {
             TokenKind::DocLineComment | TokenKind::DocBlockComment => {
                 doc_tokens.push(token);
             }
             TokenKind::Whitespace => {
-                if token.text(source).matches('\n').count() > 1 {
+                if token.2.matches('\n').count() > 1 {
                     break;
                 }
             }
@@ -57,14 +67,11 @@ pub fn collect_doc_block(
     }
 
     doc_tokens.reverse();
-    let start = doc_tokens.first()?.range().start();
-    let end = doc_tokens.last()?.range().end();
+    let start = doc_tokens.first()?.1.start();
+    let end = doc_tokens.last()?.1.end();
     let range = TextRange::new(start, end);
 
-    let lines: Vec<_> = doc_tokens
-        .iter()
-        .flat_map(|token| normalize_doc_comment(token, source))
-        .collect();
+    let lines: Vec<_> = doc_tokens.iter().flat_map(normalize_doc_comment).collect();
     let text = lines.join("\n");
     let tags = lines
         .iter()
@@ -79,9 +86,9 @@ pub fn collect_doc_block(
     })
 }
 
-fn normalize_doc_comment(token: &SyntaxToken, source: &str) -> Vec<String> {
-    let text = token.text(source);
-    match token.kind() {
+fn normalize_doc_comment(token: &&(TokenKind, TextRange, String)) -> Vec<String> {
+    let text = token.2.as_str();
+    match token.0 {
         TokenKind::DocLineComment => vec![
             text.trim_start_matches("///")
                 .trim_start_matches("//!")
@@ -146,7 +153,7 @@ fn split_name_and_type(input: &str) -> Option<(&str, &str)> {
 
 #[cfg(test)]
 mod tests {
-    use rhai_syntax::{TextSize, lex_text, parse_text};
+    use rhai_syntax::{TextSize, parse_text};
 
     use crate::ty::TypeRef;
 
@@ -171,9 +178,9 @@ mod tests {
 fn add(x, y) { x + y }
 "#;
         assert_valid_rhai_syntax(source);
-        let lexed = lex_text(source);
+        let parse = parse_text(source);
         let fn_offset = TextSize::from(u32::try_from(source.find("fn").unwrap()).unwrap());
-        let docs = collect_doc_block(lexed.tokens(), source, fn_offset).expect("expected docs");
+        let docs = collect_doc_block(&parse.root(), source, fn_offset).expect("expected docs");
 
         assert_eq!(docs.lines[0], "Adds values.");
         assert_eq!(
@@ -196,20 +203,20 @@ fn add(x, y) { x + y }
     fn stops_doc_attachment_at_blank_lines() {
         let source = "/// first\n\nfn value() {}";
         assert_valid_rhai_syntax(source);
-        let lexed = lex_text(source);
+        let parse = parse_text(source);
         let fn_offset = TextSize::from(u32::try_from(source.find("fn").unwrap()).unwrap());
 
-        assert!(collect_doc_block(lexed.tokens(), source, fn_offset).is_none());
+        assert!(collect_doc_block(&parse.root(), source, fn_offset).is_none());
     }
 
     #[test]
     fn does_not_attach_docs_past_a_previous_statement() {
         let source = "/// @type int\nlet first = value;\nlet second = first;";
         assert_valid_rhai_syntax(source);
-        let lexed = lex_text(source);
+        let parse = parse_text(source);
         let second_offset =
             TextSize::from(u32::try_from(source.find("let second").unwrap()).unwrap());
 
-        assert!(collect_doc_block(lexed.tokens(), source, second_offset).is_none());
+        assert!(collect_doc_block(&parse.root(), source, second_offset).is_none());
     }
 }

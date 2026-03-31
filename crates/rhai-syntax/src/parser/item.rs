@@ -1,8 +1,8 @@
-use crate::parser::Parser;
-use crate::syntax::{SyntaxKind, SyntaxNode, TokenKind, empty_range, node_element, token_element};
+use crate::parser::{BuildElement, BuildNode, Parser, node_element, token_element};
+use crate::syntax::{SyntaxKind, TokenKind, empty_range};
 
 impl<'a> Parser<'a> {
-    pub(crate) fn parse_fn_item(&mut self) -> SyntaxNode {
+    pub(crate) fn parse_fn_item(&mut self) -> BuildNode {
         let start = self.current_offset();
         let mut children = Vec::new();
 
@@ -30,15 +30,16 @@ impl<'a> Parser<'a> {
         self.finish_node(SyntaxKind::ItemFn, children, start)
     }
 
-    pub(crate) fn parse_fn_name_parts(&mut self) -> Vec<crate::SyntaxElement> {
+    pub(crate) fn parse_fn_name_parts(&mut self) -> Vec<BuildElement> {
         let mut children = Vec::new();
 
         match self.peek_kind() {
             Some(TokenKind::Ident) => {
-                children
-                    .push(token_element(self.bump().expect(
-                        "function name or typed receiver token should be present",
-                    )));
+                children.push(token_element(
+                    self.bump()
+                        .expect("function name or typed receiver token should be present"),
+                    self.source,
+                ));
 
                 if self.at(TokenKind::Dot) {
                     children.push(self.bump_element("`.` token should be present"));
@@ -52,6 +53,7 @@ impl<'a> Parser<'a> {
                 children.push(token_element(
                     self.bump()
                         .expect("typed receiver string token should be present"),
+                    self.source,
                 ));
 
                 if self.at(TokenKind::Dot) {
@@ -75,7 +77,7 @@ impl<'a> Parser<'a> {
         children
     }
 
-    pub(crate) fn parse_catch_clause(&mut self) -> SyntaxNode {
+    pub(crate) fn parse_catch_clause(&mut self) -> BuildNode {
         let start = self.current_offset();
         let mut children = vec![self.bump_element("`catch` token should be present")];
 
@@ -99,7 +101,7 @@ impl<'a> Parser<'a> {
         self.finish_node(SyntaxKind::CatchClause, children, start)
     }
 
-    pub(crate) fn parse_alias_clause(&mut self) -> SyntaxNode {
+    pub(crate) fn parse_alias_clause(&mut self) -> BuildNode {
         let start = self.current_offset();
         let mut children = vec![self.bump_element("`as` token should be present")];
         children.push(
@@ -109,7 +111,7 @@ impl<'a> Parser<'a> {
         self.finish_node(SyntaxKind::AliasClause, children, start)
     }
 
-    pub(crate) fn parse_param_list(&mut self) -> SyntaxNode {
+    pub(crate) fn parse_param_list(&mut self) -> BuildNode {
         let start = self.current_offset();
         let mut children = Vec::new();
 
@@ -151,12 +153,12 @@ impl<'a> Parser<'a> {
         self.finish_node(SyntaxKind::ParamList, children, start)
     }
 
-    pub(crate) fn parse_closure_param_list(&mut self) -> SyntaxNode {
+    pub(crate) fn parse_closure_param_list(&mut self) -> BuildNode {
         let start = self.current_offset();
         let open = self
             .bump()
             .expect("leading closure delimiter token should be present");
-        let mut children = vec![token_element(open)];
+        let mut children = vec![token_element(open, self.source)];
 
         if open.kind() == TokenKind::PipePipe {
             return self.finish_node(SyntaxKind::ClosureParamList, children, start);

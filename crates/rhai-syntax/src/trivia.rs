@@ -1,6 +1,27 @@
-use crate::{
-    RowanSyntaxElement, RowanSyntaxNode, RowanSyntaxToken, SyntaxToken, TextRange, TokenKind,
-};
+use crate::{RowanSyntaxElement, RowanSyntaxNode, RowanSyntaxToken, TextRange, TokenKind};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TriviaToken {
+    kind: TokenKind,
+    range: TextRange,
+}
+
+impl TriviaToken {
+    fn from_rowan(token: &RowanSyntaxToken) -> Option<Self> {
+        Some(Self {
+            kind: token.kind().token_kind()?,
+            range: token.text_range(),
+        })
+    }
+
+    fn kind(self) -> TokenKind {
+        self.kind
+    }
+
+    fn range(self) -> TextRange {
+        self.range
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TriviaSlot {
@@ -69,24 +90,34 @@ impl GapTrivia {
 
 #[derive(Debug, Clone, Default)]
 pub struct TriviaStore {
-    trivia_tokens: Vec<SyntaxToken>,
-    comment_tokens: Vec<SyntaxToken>,
+    trivia_tokens: Vec<TriviaToken>,
+    comment_tokens: Vec<TriviaToken>,
     line_starts: Vec<usize>,
 }
 
 impl TriviaStore {
-    pub fn new(source: &str, tokens: &[SyntaxToken]) -> Self {
+    pub fn new(source: &str, root: &RowanSyntaxNode) -> Self {
+        let mut trivia_tokens = Vec::new();
+        let mut comment_tokens = Vec::new();
+
+        for token in root
+            .descendants_with_tokens()
+            .filter_map(|element| element.into_token())
+        {
+            let Some(token) = TriviaToken::from_rowan(&token) else {
+                continue;
+            };
+            if token.kind().is_trivia() {
+                trivia_tokens.push(token);
+                if comment_kind(token.kind()).is_some() {
+                    comment_tokens.push(token);
+                }
+            }
+        }
+
         Self {
-            trivia_tokens: tokens
-                .iter()
-                .copied()
-                .filter(|token| token.kind().is_trivia())
-                .collect(),
-            comment_tokens: tokens
-                .iter()
-                .copied()
-                .filter(|token| comment_kind(token.kind()).is_some())
-                .collect(),
+            trivia_tokens,
+            comment_tokens,
             line_starts: collect_line_starts(source),
         }
     }
@@ -516,13 +547,13 @@ fn collect_line_starts(text: &str) -> Vec<usize> {
     starts
 }
 
-fn token_in_range(token: SyntaxToken, start: usize, end: usize) -> bool {
+fn token_in_range(token: TriviaToken, start: usize, end: usize) -> bool {
     let token_start = u32::from(token.range().start()) as usize;
     let token_end = u32::from(token.range().end()) as usize;
     token_start >= start && token_end <= end
 }
 
-fn token_in_usize_range(token: SyntaxToken, start: usize, end: usize) -> bool {
+fn token_in_usize_range(token: TriviaToken, start: usize, end: usize) -> bool {
     let token_start = u32::from(token.range().start()) as usize;
     let token_end = u32::from(token.range().end()) as usize;
     start <= token_start && token_end <= end

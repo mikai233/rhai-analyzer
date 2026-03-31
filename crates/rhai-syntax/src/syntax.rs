@@ -2,7 +2,7 @@ pub use text_size::{TextRange, TextSize};
 
 use std::sync::Arc;
 
-use rowan::{GreenNodeBuilder, Language};
+use rowan::Language;
 use thiserror::Error;
 
 use crate::TriviaStore;
@@ -398,8 +398,8 @@ pub enum RhaiLanguage {}
 
 pub type RowanSyntaxKind = rowan::SyntaxKind;
 pub type RowanSyntaxNode = rowan::SyntaxNode<RhaiLanguage>;
-pub type RowanSyntaxToken = rowan::SyntaxToken<RhaiLanguage>;
 pub type RowanSyntaxElement = rowan::SyntaxElement<RhaiLanguage>;
+pub type RowanSyntaxToken = rowan::SyntaxToken<RhaiLanguage>;
 pub type RowanNodeOrToken = rowan::NodeOrToken<RowanSyntaxNode, RowanSyntaxToken>;
 pub type RowanGreenNode = rowan::GreenNode;
 pub type RowanGreenToken = rowan::GreenToken;
@@ -789,130 +789,6 @@ impl Language for RhaiLanguage {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SyntaxElement {
-    Node(Box<SyntaxNode>),
-    Token(SyntaxToken),
-}
-
-impl SyntaxElement {
-    pub fn as_node(&self) -> Option<&SyntaxNode> {
-        match self {
-            Self::Node(node) => Some(node),
-            Self::Token(_) => None,
-        }
-    }
-
-    pub fn as_token(&self) -> Option<SyntaxToken> {
-        match self {
-            Self::Node(_) => None,
-            Self::Token(token) => Some(*token),
-        }
-    }
-
-    pub fn range(&self) -> TextRange {
-        match self {
-            Self::Node(node) => node.range(),
-            Self::Token(token) => token.range(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SyntaxNode {
-    kind: SyntaxKind,
-    range: TextRange,
-    children: Vec<SyntaxElement>,
-}
-
-impl SyntaxNode {
-    pub fn new(kind: SyntaxKind, children: Vec<SyntaxElement>, fallback_offset: TextSize) -> Self {
-        let range = match (children.first(), children.last()) {
-            (Some(first), Some(last)) => TextRange::new(first.range().start(), last.range().end()),
-            _ => TextRange::new(fallback_offset, fallback_offset),
-        };
-
-        Self {
-            kind,
-            range,
-            children,
-        }
-    }
-
-    pub fn with_range(kind: SyntaxKind, range: TextRange, children: Vec<SyntaxElement>) -> Self {
-        Self {
-            kind,
-            range,
-            children,
-        }
-    }
-
-    pub fn kind(&self) -> SyntaxKind {
-        self.kind
-    }
-
-    pub fn range(&self) -> TextRange {
-        self.range
-    }
-
-    pub fn children(&self) -> &[SyntaxElement] {
-        self.raw_children()
-    }
-
-    pub fn raw_children(&self) -> &[SyntaxElement] {
-        &self.children
-    }
-
-    pub fn significant_children(&self) -> impl Iterator<Item = &SyntaxElement> {
-        self.raw_children().iter().filter(|element| match element {
-            SyntaxElement::Token(token) => !token.kind().is_trivia(),
-            SyntaxElement::Node(_) => true,
-        })
-    }
-
-    pub fn child_nodes(&self) -> impl Iterator<Item = &SyntaxNode> {
-        self.raw_children()
-            .iter()
-            .filter_map(SyntaxElement::as_node)
-    }
-
-    pub fn raw_tokens(&self) -> impl Iterator<Item = SyntaxToken> + '_ {
-        self.raw_children()
-            .iter()
-            .filter_map(SyntaxElement::as_token)
-    }
-
-    pub fn significant_tokens(&self) -> impl Iterator<Item = SyntaxToken> + '_ {
-        self.raw_tokens().filter(|token| !token.kind().is_trivia())
-    }
-
-    pub fn first_significant_token(&self) -> Option<SyntaxToken> {
-        first_significant_token_in(self)
-    }
-
-    pub fn last_significant_token(&self) -> Option<SyntaxToken> {
-        last_significant_token_in(self)
-    }
-
-    pub fn significant_range(&self) -> TextRange {
-        match (
-            self.first_significant_token(),
-            self.last_significant_token(),
-        ) {
-            (Some(first), Some(last)) => TextRange::new(first.range().start(), last.range().end()),
-            _ => self.range(),
-        }
-    }
-
-    pub fn structural_range(&self) -> TextRange {
-        let end = self
-            .last_significant_token()
-            .map(|token| token.range().end())
-            .unwrap_or_else(|| self.range().end());
-        TextRange::new(self.range().start(), end.max(self.range().start()))
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 #[error("{message}")]
 pub struct SyntaxError {
@@ -940,28 +816,19 @@ impl SyntaxError {
 #[derive(Debug, Clone)]
 pub struct Parse {
     text: Arc<str>,
-    tokens: Vec<SyntaxToken>,
     trivia: TriviaStore,
-    syntax_root: SyntaxNode,
-    rowan_green: RowanGreenNode,
+    green: RowanGreenNode,
     errors: Vec<SyntaxError>,
 }
 
 impl Parse {
-    pub fn new(
-        text: Arc<str>,
-        tokens: Vec<SyntaxToken>,
-        root: SyntaxNode,
-        errors: Vec<SyntaxError>,
-    ) -> Self {
-        let trivia = TriviaStore::new(&text, &tokens);
-        let rowan_green = build_rowan_green(&root, &text);
+    pub(crate) fn new(text: Arc<str>, green: RowanGreenNode, errors: Vec<SyntaxError>) -> Self {
+        let root = RowanSyntaxNode::new_root(green.clone());
+        let trivia = TriviaStore::new(&text, &root);
         Self {
             text,
-            tokens,
             trivia,
-            syntax_root: root,
-            rowan_green,
+            green,
             errors,
         }
     }
@@ -971,11 +838,7 @@ impl Parse {
     }
 
     pub fn root(&self) -> RowanSyntaxNode {
-        RowanSyntaxNode::new_root(self.rowan_green.clone())
-    }
-
-    pub fn tokens(&self) -> &[SyntaxToken] {
-        &self.tokens
+        RowanSyntaxNode::new_root(self.green.clone())
     }
 
     pub fn trivia(&self) -> &TriviaStore {
@@ -988,57 +851,63 @@ impl Parse {
 
     pub fn debug_tree(&self) -> String {
         let mut out = String::new();
-        self.write_node(&mut out, &self.syntax_root, 0);
+        self.write_syntax_node(&mut out, &self.root(), 0);
         out
     }
 
     pub fn debug_tree_compact(&self) -> String {
         let mut out = String::new();
-        self.write_compact_node(&mut out, &self.syntax_root, 0);
+        self.write_compact_syntax_node(&mut out, &self.root(), 0);
         out
     }
 
-    fn write_node(&self, out: &mut String, node: &SyntaxNode, indent: usize) {
+    fn write_syntax_node(&self, out: &mut String, node: &RowanSyntaxNode, indent: usize) {
+        let Some(kind) = node.kind().syntax_kind() else {
+            return;
+        };
         push_indent(out, indent);
-        push_range(out, node.range());
-        out.push_str(&format!("{:?}\n", node.kind()));
+        push_range(out, node.text_range());
+        out.push_str(&format!("{kind:?}\n"));
 
-        for child in node.children() {
+        for child in node.children_with_tokens() {
             match child {
-                SyntaxElement::Node(node) => self.write_node(out, node, indent + 2),
-                SyntaxElement::Token(token) => {
-                    if token.kind().is_trivia() {
+                RowanNodeOrToken::Node(node) => self.write_syntax_node(out, &node, indent + 2),
+                RowanNodeOrToken::Token(token) => {
+                    let Some(kind) = token.kind().token_kind() else {
+                        continue;
+                    };
+                    if kind.is_trivia() {
                         continue;
                     }
                     push_indent(out, indent + 2);
-                    push_range(out, token.range());
-                    out.push_str(&format!(
-                        "{:?} {:?}\n",
-                        token.kind(),
-                        token.text(&self.text)
-                    ));
+                    push_range(out, token.text_range());
+                    out.push_str(&format!("{kind:?} {:?}\n", token.text()));
                 }
             }
         }
     }
 
-    fn write_compact_node(&self, out: &mut String, node: &SyntaxNode, indent: usize) {
+    fn write_compact_syntax_node(&self, out: &mut String, node: &RowanSyntaxNode, indent: usize) {
+        let Some(kind) = node.kind().syntax_kind() else {
+            return;
+        };
         push_indent(out, indent);
-        out.push_str(&format!("{:?}\n", node.kind()));
+        out.push_str(&format!("{kind:?}\n"));
 
-        for child in node.children() {
+        for child in node.children_with_tokens() {
             match child {
-                SyntaxElement::Node(node) => self.write_compact_node(out, node, indent + 2),
-                SyntaxElement::Token(token) => {
-                    if token.kind().is_trivia() {
+                RowanNodeOrToken::Node(node) => {
+                    self.write_compact_syntax_node(out, &node, indent + 2)
+                }
+                RowanNodeOrToken::Token(token) => {
+                    let Some(kind) = token.kind().token_kind() else {
+                        continue;
+                    };
+                    if kind.is_trivia() {
                         continue;
                     }
                     push_indent(out, indent + 2);
-                    out.push_str(&format!(
-                        "{:?} {:?}\n",
-                        token.kind(),
-                        token.text(&self.text)
-                    ));
+                    out.push_str(&format!("{kind:?} {:?}\n", token.text()));
                 }
             }
         }
@@ -1119,14 +988,6 @@ fn is_significant_rowan_token(token: &RowanSyntaxToken) -> bool {
         .is_some_and(|kind| !kind.is_trivia())
 }
 
-pub(crate) fn node_element(node: SyntaxNode) -> SyntaxElement {
-    SyntaxElement::Node(Box::new(node))
-}
-
-pub(crate) fn token_element(token: SyntaxToken) -> SyntaxElement {
-    SyntaxElement::Token(token)
-}
-
 pub(crate) fn empty_range(offset: TextSize) -> TextRange {
     TextRange::new(offset, offset)
 }
@@ -1145,55 +1006,4 @@ fn push_range(out: &mut String, range: TextRange) {
     let start = u32::from(range.start());
     let end = u32::from(range.end());
     out.push_str(&format!("{start}..{end} "));
-}
-
-fn first_significant_token_in(node: &SyntaxNode) -> Option<SyntaxToken> {
-    for child in node.raw_children() {
-        match child {
-            SyntaxElement::Token(token) if !token.kind().is_trivia() => return Some(*token),
-            SyntaxElement::Node(child_node) => {
-                if let Some(token) = first_significant_token_in(child_node) {
-                    return Some(token);
-                }
-            }
-            _ => {}
-        }
-    }
-
-    None
-}
-
-fn last_significant_token_in(node: &SyntaxNode) -> Option<SyntaxToken> {
-    for child in node.raw_children().iter().rev() {
-        match child {
-            SyntaxElement::Token(token) if !token.kind().is_trivia() => return Some(*token),
-            SyntaxElement::Node(child_node) => {
-                if let Some(token) = last_significant_token_in(child_node) {
-                    return Some(token);
-                }
-            }
-            _ => {}
-        }
-    }
-
-    None
-}
-
-fn build_rowan_green(root: &SyntaxNode, source: &str) -> RowanGreenNode {
-    let mut builder = GreenNodeBuilder::new();
-    push_rowan_node(&mut builder, root, source);
-    builder.finish()
-}
-
-fn push_rowan_node(builder: &mut GreenNodeBuilder<'_>, node: &SyntaxNode, source: &str) {
-    builder.start_node(node.kind().to_rowan());
-    for child in node.raw_children() {
-        match child {
-            SyntaxElement::Node(child_node) => push_rowan_node(builder, child_node, source),
-            SyntaxElement::Token(token) => {
-                builder.token(token.kind().to_rowan(), token.text(source));
-            }
-        }
-    }
-    builder.finish_node();
 }

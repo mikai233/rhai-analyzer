@@ -1,7 +1,7 @@
 use crate::{SemanticToken, SemanticTokenKind, SemanticTokenModifier};
 use rhai_db::DatabaseSnapshot;
 use rhai_hir::{FileHir, ReferenceKind, SymbolKind};
-use rhai_syntax::{SyntaxToken, TextSize, TokenKind};
+use rhai_syntax::{RowanSyntaxNodeExt, SyntaxToken, TextSize, TokenKind};
 use rhai_vfs::FileId;
 
 struct TokenContext<'a> {
@@ -16,17 +16,26 @@ pub(crate) fn semantic_tokens(snapshot: &DatabaseSnapshot, file_id: FileId) -> V
     let Some(parse) = snapshot.parse(file_id) else {
         return Vec::new();
     };
+    let root = parse.root();
+    let tokens: Vec<_> = root
+        .raw_tokens()
+        .filter_map(|token| {
+            token
+                .kind()
+                .token_kind()
+                .map(|kind| SyntaxToken::new(kind, token.text_range()))
+        })
+        .collect();
     let hir = snapshot.hir(file_id);
     let context = TokenContext {
         snapshot,
         file_id,
         hir: hir.as_deref(),
-        tokens: parse.tokens(),
+        tokens: &tokens,
         source: parse.text(),
     };
 
-    parse
-        .tokens()
+    tokens
         .iter()
         .enumerate()
         .filter_map(|(index, token)| semantic_token(&context, index, *token))

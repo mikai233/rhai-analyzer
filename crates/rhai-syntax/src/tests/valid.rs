@@ -96,7 +96,9 @@ fn lexes_extended_rhai_token_set() {
     assert!(kinds.contains(&TokenKind::ConstKw));
     assert!(kinds.contains(&TokenKind::HashBraceOpen));
     assert!(kinds.contains(&TokenKind::Colon));
-    assert!(kinds.contains(&TokenKind::BacktickString));
+    assert!(kinds.contains(&TokenKind::Backtick));
+    assert!(kinds.contains(&TokenKind::StringText));
+    assert!(kinds.contains(&TokenKind::InterpolationStart));
     assert!(kinds.contains(&TokenKind::IfKw));
     assert!(kinds.contains(&TokenKind::GtEq));
     assert!(kinds.contains(&TokenKind::AmpAmp));
@@ -193,7 +195,27 @@ fn lexes_interpolation_with_nested_lexical_forms() {
             TokenKind::LetKw,
             TokenKind::Ident,
             TokenKind::Eq,
-            TokenKind::BacktickString,
+            TokenKind::Backtick,
+            TokenKind::StringText,
+            TokenKind::InterpolationStart,
+            TokenKind::Ident,
+            TokenKind::OpenParen,
+            TokenKind::Int,
+            TokenKind::Comma,
+            TokenKind::RawString,
+            TokenKind::Comma,
+            TokenKind::Backtick,
+            TokenKind::StringText,
+            TokenKind::InterpolationStart,
+            TokenKind::Ident,
+            TokenKind::CloseBrace,
+            TokenKind::Backtick,
+            TokenKind::CloseParen,
+            TokenKind::Plus,
+            TokenKind::String,
+            TokenKind::CloseBrace,
+            TokenKind::StringText,
+            TokenKind::Backtick,
             TokenKind::Semicolon,
         ]
     );
