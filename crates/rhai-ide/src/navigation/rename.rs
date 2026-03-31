@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use rhai_db::{DatabaseSnapshot, ProjectRenamePlan};
+use rhai_syntax::TextRange;
 
 use crate::support::convert::{
     navigation_target_from_identity, reference_location_from_db, text_size,
@@ -25,6 +26,9 @@ pub(crate) fn prepare_rename(
     if let Some(prepared) = prepare_static_import_module_rename(snapshot, position, &new_name) {
         return Some(prepared);
     }
+    if let Some(prepared) = prepare_object_field_rename(snapshot, position, &new_name) {
+        return Some(prepared);
+    }
 
     let db_plan = snapshot.rename_plan(position.file_id, text_size(position.offset), new_name)?;
     let plan = rename_plan_from_db(&db_plan);
@@ -37,6 +41,109 @@ pub(crate) fn prepare_rename(
         plan,
         source_change,
     })
+}
+
+fn prepare_object_field_rename(
+    snapshot: &DatabaseSnapshot,
+    position: FilePosition,
+    new_name: &str,
+) -> Option<PreparedRename> {
+    let offset = text_size(position.offset);
+    let hir = snapshot.hir(position.file_id)?;
+    let on_field_reference = hir.reference_at_offset(offset).is_some_and(|reference_id| {
+        hir.reference(reference_id).kind == rhai_hir::ReferenceKind::Field
+    });
+    let on_field_declaration = hir
+        .object_fields
+        .iter()
+        .any(|field| field.range.contains(offset));
+    if !on_field_reference && !on_field_declaration {
+        return None;
+    }
+
+    let references = snapshot.find_references(position.file_id, offset)?;
+    let has_object_field_definition = references.references.iter().any(|reference| {
+        reference.kind == rhai_db::ProjectReferenceKind::Definition
+            && snapshot
+                .hir(reference.file_id)
+                .is_some_and(|definition_hir| {
+                    definition_hir
+                        .object_fields
+                        .iter()
+                        .any(|field| field.range == reference.range)
+                })
+    });
+    if !has_object_field_definition {
+        return None;
+    }
+
+    let mut issues = Vec::new();
+    if new_name.trim().is_empty() {
+        issues.push(RenameIssue {
+            file_id: position.file_id,
+            message: "field name cannot be empty".to_owned(),
+            range: TextRange::new(offset, offset),
+        });
+    } else if !is_valid_field_identifier(new_name) {
+        issues.push(RenameIssue {
+            file_id: position.file_id,
+            message: "field name must be a valid identifier".to_owned(),
+            range: TextRange::new(offset, offset),
+        });
+    }
+
+    let occurrences = references
+        .references
+        .iter()
+        .map(reference_location_from_db)
+        .collect::<Vec<_>>();
+    let source_change = issues.is_empty().then(|| {
+        let mut edits_by_file = BTreeMap::<_, Vec<TextEdit>>::new();
+        for reference in &references.references {
+            edits_by_file
+                .entry(reference.file_id)
+                .or_default()
+                .push(TextEdit::replace(reference.range, new_name.to_owned()));
+        }
+        let file_edits = edits_by_file
+            .into_iter()
+            .map(|(file_id, mut edits)| {
+                edits.sort_by(|left, right| {
+                    left.range
+                        .start()
+                        .cmp(&right.range.start())
+                        .then_with(|| left.range.end().cmp(&right.range.end()))
+                });
+                FileTextEdit::new(file_id, edits)
+            })
+            .collect::<Vec<_>>();
+        SourceChange::new(file_edits)
+    });
+
+    Some(PreparedRename {
+        plan: RenamePlan {
+            new_name: new_name.to_owned(),
+            targets: references
+                .targets
+                .iter()
+                .map(navigation_target_from_identity)
+                .collect(),
+            occurrences,
+            issues,
+        },
+        source_change,
+    })
+}
+
+fn is_valid_field_identifier(name: &str) -> bool {
+    let mut chars = name.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    if !(first == '_' || first.is_ascii_alphabetic()) {
+        return false;
+    }
+    chars.all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
 }
 
 fn prepare_static_import_module_rename(

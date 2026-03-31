@@ -8,6 +8,7 @@ use lsp_types::{
     SemanticTokenType, SemanticTokensServerCapabilities,
 };
 use rhai_fmt::{ContainerLayoutStyle, ImportSortOrder};
+use rhai_syntax::TextSize;
 
 use crate::handlers::queries::semantic_token_legend;
 use crate::protocol::rename_to_workspace_edit;
@@ -784,6 +785,125 @@ fn static_imports_can_load_modules_outside_workspace_roots() {
     );
 
     let _ = fs::remove_dir_all(&base);
+}
+
+#[test]
+fn goto_and_references_resolve_local_symbols_in_object_field_values() {
+    let mut server = Server::new();
+    let uri = file_url("main.rhai");
+    let text = r#"
+        fn make_config(root, mode) {
+            let workspace_name = workspace::name(root);
+            let config = #{
+                mode: mode,
+                workspace: workspace_name,
+            };
+            config
+        }
+    "#;
+
+    assert_valid_rhai_syntax(text);
+    server
+        .open_document(uri.clone(), 1, text)
+        .expect("expected open_document to succeed");
+
+    let mode_decl = offset_in(text, "root, mode") + 6;
+    let mode_usage = offset_in(text, "mode: mode") + 7;
+    let workspace_decl = offset_in(text, "workspace_name =");
+    let workspace_usage = offset_in(text, "workspace: workspace_name") + 11;
+
+    let mode_definitions = server
+        .goto_definition(&uri, mode_usage)
+        .expect("expected goto definition query to succeed");
+    assert_eq!(mode_definitions.len(), 1);
+    assert!(
+        mode_definitions[0]
+            .full_range
+            .contains(TextSize::from(mode_decl))
+    );
+
+    let workspace_definitions = server
+        .goto_definition(&uri, workspace_usage)
+        .expect("expected goto definition query to succeed");
+    assert_eq!(workspace_definitions.len(), 1);
+    assert!(
+        workspace_definitions[0]
+            .full_range
+            .contains(TextSize::from(workspace_decl))
+    );
+
+    let mode_references = server
+        .find_references(&uri, mode_decl)
+        .expect("expected references query to succeed")
+        .expect("expected references");
+    assert!(mode_references.references.iter().any(|reference| {
+        reference.file_id == mode_definitions[0].file_id
+            && reference.range.contains(TextSize::from(mode_usage))
+    }));
+
+    let workspace_references = server
+        .find_references(&uri, workspace_decl)
+        .expect("expected references query to succeed")
+        .expect("expected references");
+    assert!(workspace_references.references.iter().any(|reference| {
+        reference.file_id == workspace_definitions[0].file_id
+            && reference.range.contains(TextSize::from(workspace_usage))
+    }));
+}
+
+#[test]
+fn rename_updates_object_field_usages_across_files() {
+    let mut server = Server::new();
+    let provider_uri = file_url("provider.rhai");
+    let consumer_uri = file_url("consumer.rhai");
+    let provider_text = r#"
+        export const DEFAULTS = #{
+            name: "demo",
+            watch: true,
+        };
+    "#;
+    let consumer_text = r#"
+        import "provider" as tools;
+        let value = tools::DEFAULTS.name;
+    "#;
+
+    assert_valid_rhai_syntax(provider_text);
+    assert_valid_rhai_syntax(consumer_text);
+    server
+        .open_document(provider_uri.clone(), 1, provider_text)
+        .expect("expected provider open to succeed");
+    server
+        .open_document(consumer_uri.clone(), 1, consumer_text)
+        .expect("expected consumer open to succeed");
+
+    let prepared = server
+        .rename(
+            &provider_uri,
+            offset_in(provider_text, "name: \"demo\""),
+            "title".to_owned(),
+        )
+        .expect("expected rename query to succeed")
+        .expect("expected prepared rename");
+    assert!(
+        prepared.plan.issues.is_empty(),
+        "{:?}",
+        prepared.plan.issues
+    );
+
+    let source_change = prepared
+        .source_change
+        .expect("expected object field rename source change");
+    assert!(
+        source_change.file_edits.len() >= 2,
+        "expected provider+consumer edits, got {:?}",
+        source_change.file_edits
+    );
+    assert!(
+        source_change
+            .file_edits
+            .iter()
+            .all(|file_edit| file_edit.edits.iter().all(|edit| edit.new_text == "title"))
+    );
 }
 
 #[test]

@@ -1179,6 +1179,178 @@ fn find_references_include_outer_scope_captures_inside_functions() {
 }
 
 #[test]
+fn navigation_resolves_param_and_local_refs_inside_object_field_values() {
+    let mut db = AnalyzerDatabase::default();
+    db.apply_change(ChangeSet::single_file(
+        "main.rhai",
+        r#"
+            fn make_config(root, mode) {
+                let workspace_name = workspace::name(root);
+                let config = #{
+                    mode: mode,
+                    workspace: workspace_name,
+                };
+                config
+            }
+        "#,
+        DocumentVersion(1),
+    ));
+
+    let snapshot = db.snapshot();
+    assert_workspace_files_have_no_syntax_diagnostics(&snapshot);
+    let file_id = snapshot
+        .vfs()
+        .file_id(Path::new("main.rhai"))
+        .expect("expected main.rhai");
+    let text = snapshot.file_text(file_id).expect("expected file text");
+
+    let mode_decl_offset = offset_in(&text, "root, mode") + TextSize::from(6);
+    let mode_usage_offset = offset_in(&text, "mode: mode") + TextSize::from(7);
+    let mode_definitions = snapshot.goto_definition(file_id, mode_usage_offset);
+    assert_eq!(mode_definitions.len(), 1);
+    assert!(
+        mode_definitions[0]
+            .target
+            .full_range
+            .contains(mode_decl_offset),
+        "expected mode usage to target parameter definition, got {mode_definitions:?}"
+    );
+
+    let workspace_decl_offset = offset_in(&text, "workspace_name =");
+    let workspace_usage_offset = offset_in(&text, "workspace: workspace_name") + TextSize::from(11);
+    let workspace_definitions = snapshot.goto_definition(file_id, workspace_usage_offset);
+    assert_eq!(workspace_definitions.len(), 1);
+    assert!(
+        workspace_definitions[0]
+            .target
+            .full_range
+            .contains(workspace_decl_offset),
+        "expected workspace_name usage to target local definition, got {workspace_definitions:?}"
+    );
+
+    let mode_references = snapshot
+        .find_references(file_id, mode_decl_offset)
+        .expect("expected mode references");
+    assert!(mode_references.references.iter().any(|reference| {
+        reference.file_id == file_id
+            && reference.kind == ProjectReferenceKind::Reference
+            && reference.range.contains(mode_usage_offset)
+    }));
+
+    let workspace_references = snapshot
+        .find_references(file_id, workspace_decl_offset)
+        .expect("expected workspace_name references");
+    assert!(workspace_references.references.iter().any(|reference| {
+        reference.file_id == file_id
+            && reference.kind == ProjectReferenceKind::Reference
+            && reference.range.contains(workspace_usage_offset)
+    }));
+}
+
+#[test]
+fn goto_definition_resolves_object_field_member_access_to_field_declaration() {
+    let mut db = AnalyzerDatabase::default();
+    db.apply_change(ChangeSet::single_file(
+        "main.rhai",
+        r#"
+            export const DEFAULTS = #{
+                name: "demo",
+                watch: true,
+            };
+
+            let value = DEFAULTS.name;
+        "#,
+        DocumentVersion(1),
+    ));
+
+    let snapshot = db.snapshot();
+    assert_workspace_files_have_no_syntax_diagnostics(&snapshot);
+    let file_id = snapshot
+        .vfs()
+        .file_id(Path::new("main.rhai"))
+        .expect("expected main.rhai");
+    let text = snapshot.file_text(file_id).expect("expected file text");
+
+    let declaration_offset = offset_in(&text, "name: \"demo\"");
+    let usage_offset = offset_in(&text, "DEFAULTS.name") + TextSize::from(9);
+    let definitions = snapshot.goto_definition(file_id, usage_offset);
+
+    assert_eq!(definitions.len(), 1);
+    assert_eq!(definitions[0].file_id, file_id);
+    assert!(
+        definitions[0]
+            .target
+            .full_range
+            .contains(declaration_offset),
+        "expected field member access to resolve to object field declaration, got {definitions:?}"
+    );
+}
+
+#[test]
+fn find_references_for_object_field_declaration_include_cross_file_member_accesses() {
+    let mut db = AnalyzerDatabase::default();
+    db.apply_change(ChangeSet {
+        files: vec![
+            FileChange {
+                path: "provider.rhai".into(),
+                text: r#"
+                    export const DEFAULTS = #{
+                        name: "demo",
+                        watch: true,
+                    };
+                "#
+                .to_owned(),
+                version: DocumentVersion(1),
+            },
+            FileChange {
+                path: "consumer.rhai".into(),
+                text: r#"
+                    import "provider" as tools;
+
+                    let value = tools::DEFAULTS.name;
+                "#
+                .to_owned(),
+                version: DocumentVersion(1),
+            },
+        ],
+        removed_files: Vec::new(),
+        project: Some(ProjectConfig::default()),
+    });
+
+    let snapshot = db.snapshot();
+    assert_workspace_files_have_no_syntax_diagnostics(&snapshot);
+    let provider = snapshot
+        .vfs()
+        .file_id(Path::new("provider.rhai"))
+        .expect("expected provider.rhai");
+    let consumer = snapshot
+        .vfs()
+        .file_id(Path::new("consumer.rhai"))
+        .expect("expected consumer.rhai");
+    let provider_text = snapshot
+        .file_text(provider)
+        .expect("expected provider text");
+    let consumer_text = snapshot
+        .file_text(consumer)
+        .expect("expected consumer text");
+
+    let declaration_offset = offset_in(&provider_text, "name: \"demo\"");
+    let usage_offset = offset_in(&consumer_text, "DEFAULTS.name") + TextSize::from(9);
+    let references = snapshot
+        .find_references(provider, declaration_offset)
+        .expect("expected object field references");
+
+    assert!(references.references.iter().any(|reference| {
+        reference.file_id == provider && reference.kind == ProjectReferenceKind::Definition
+    }));
+    assert!(references.references.iter().any(|reference| {
+        reference.file_id == consumer
+            && reference.kind == ProjectReferenceKind::Reference
+            && reference.range.contains(usage_offset)
+    }));
+}
+
+#[test]
 fn project_rename_plan_for_exports_does_not_include_module_import_paths() {
     let mut db = AnalyzerDatabase::default();
     db.apply_change(ChangeSet {

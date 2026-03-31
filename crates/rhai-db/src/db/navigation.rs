@@ -4,16 +4,37 @@ use crate::db::imports::{
 };
 use crate::db::query_support::cached_navigation_target;
 use crate::db::rename::project_reference_kind_rank;
+use crate::infer::{field_value_exprs_from_expr, field_value_exprs_from_symbol};
 use crate::types::{
     LocatedCallHierarchyItem, LocatedIncomingCall, LocatedNavigationTarget, LocatedOutgoingCall,
     LocatedProjectReference, LocatedSymbolIdentity, LocatedWorkspaceSymbol, ProjectReferenceKind,
     ProjectReferences,
 };
 use rhai_hir::{FileBackedSymbolIdentity, FileHir, ReferenceId, ScopeId, SymbolId, SymbolKind};
-use rhai_syntax::TextSize;
+use rhai_syntax::{TextRange, TextSize};
 use rhai_vfs::FileId;
 use std::collections::BTreeMap;
 use std::sync::Arc;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+struct ObjectFieldDeclKey {
+    file_id: FileId,
+    start: TextSize,
+    end: TextSize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ObjectFieldDecl {
+    key: ObjectFieldDeclKey,
+    owner_symbol: Option<SymbolId>,
+    owner_kind: Option<SymbolKind>,
+}
+
+impl ObjectFieldDecl {
+    fn range(self) -> TextRange {
+        TextRange::new(self.key.start, self.key.end)
+    }
+}
 
 impl DatabaseSnapshot {
     pub fn goto_definition(
@@ -24,14 +45,23 @@ impl DatabaseSnapshot {
         if let Some(target) = self.goto_import_module_target(file_id, offset) {
             return vec![target];
         }
+        if let Some(targets) = self.object_field_goto_targets(file_id, offset)
+            && !targets.is_empty()
+        {
+            return targets;
+        }
 
         self.project_targets_at(file_id, offset)
             .iter()
-            .flat_map(|target| self.navigation_targets_for_identity(&target.symbol))
+            .flat_map(|target| self.navigation_targets_for_location(target))
             .collect()
     }
 
     pub fn find_references(&self, file_id: FileId, offset: TextSize) -> Option<ProjectReferences> {
+        if let Some(references) = self.object_field_project_references(file_id, offset) {
+            return Some(references);
+        }
+
         let targets = self.project_targets_at(file_id, offset);
         if targets.is_empty() {
             return None;
@@ -43,21 +73,18 @@ impl DatabaseSnapshot {
         })
     }
 
-    fn navigation_targets_for_identity(
+    fn navigation_targets_for_location(
         &self,
-        identity: &FileBackedSymbolIdentity,
+        location: &LocatedSymbolIdentity,
     ) -> Vec<LocatedNavigationTarget> {
-        let mut targets = self
-            .locate_symbol(identity)
-            .iter()
-            .filter_map(|location| {
-                let analysis = self.analysis.get(&location.file_id)?;
-                Some(LocatedNavigationTarget {
-                    file_id: location.file_id,
-                    target: cached_navigation_target(analysis, location.symbol.symbol),
-                })
-            })
-            .collect::<Vec<_>>();
+        let Some(analysis) = self.analysis.get(&location.file_id) else {
+            return Vec::new();
+        };
+
+        let mut targets = vec![LocatedNavigationTarget {
+            file_id: location.file_id,
+            target: cached_navigation_target(analysis, location.symbol.symbol),
+        }];
 
         targets.sort_by(|left, right| {
             left.file_id.0.cmp(&right.file_id.0).then_with(|| {
@@ -93,16 +120,20 @@ impl DatabaseSnapshot {
             }
 
             if let Some(symbol) = analysis.hir.definition_of(reference_id) {
-                return self
-                    .locate_symbol(&analysis.hir.file_backed_symbol_identity(symbol))
-                    .to_vec();
+                return self.symbol_locations_for_file_symbol(
+                    file_id,
+                    analysis.hir.as_ref(),
+                    symbol,
+                );
             }
             if let Some(symbol) =
                 resolve_unresolved_name_in_outer_scope(analysis.hir.as_ref(), reference_id)
             {
-                return self
-                    .locate_symbol(&analysis.hir.file_backed_symbol_identity(symbol))
-                    .to_vec();
+                return self.symbol_locations_for_file_symbol(
+                    file_id,
+                    analysis.hir.as_ref(),
+                    symbol,
+                );
             }
 
             if analysis.hir.reference(reference_id).kind == rhai_hir::ReferenceKind::Field
@@ -133,8 +164,358 @@ impl DatabaseSnapshot {
             return Vec::new();
         };
 
-        self.locate_symbol(&analysis.hir.file_backed_symbol_identity(symbol))
-            .to_vec()
+        self.symbol_locations_for_file_symbol(file_id, analysis.hir.as_ref(), symbol)
+    }
+
+    fn symbol_locations_for_file_symbol(
+        &self,
+        file_id: FileId,
+        hir: &FileHir,
+        symbol: SymbolId,
+    ) -> Vec<LocatedSymbolIdentity> {
+        let identity = hir.file_backed_symbol_identity(symbol);
+        let locations = self.locate_symbol(&identity);
+        if !locations.is_empty() {
+            return locations.to_vec();
+        }
+
+        vec![LocatedSymbolIdentity {
+            file_id,
+            symbol: identity,
+        }]
+    }
+
+    fn object_field_goto_targets(
+        &self,
+        file_id: FileId,
+        offset: TextSize,
+    ) -> Option<Vec<LocatedNavigationTarget>> {
+        let declarations = self.object_field_declarations_at(file_id, offset)?;
+        if declarations.is_empty() {
+            return None;
+        }
+
+        let mut targets = declarations
+            .into_iter()
+            .map(|declaration| LocatedNavigationTarget {
+                file_id: declaration.key.file_id,
+                target: rhai_hir::NavigationTarget {
+                    symbol: declaration.owner_symbol.unwrap_or(SymbolId(0)),
+                    kind: declaration.owner_kind.unwrap_or(SymbolKind::Variable),
+                    full_range: declaration.range(),
+                    focus_range: declaration.range(),
+                },
+            })
+            .collect::<Vec<_>>();
+
+        targets.sort_by(|left, right| {
+            left.file_id
+                .0
+                .cmp(&right.file_id.0)
+                .then_with(|| {
+                    left.target
+                        .full_range
+                        .start()
+                        .cmp(&right.target.full_range.start())
+                })
+                .then_with(|| {
+                    left.target
+                        .full_range
+                        .end()
+                        .cmp(&right.target.full_range.end())
+                })
+        });
+        targets.dedup_by(|left, right| {
+            left.file_id == right.file_id && left.target.full_range == right.target.full_range
+        });
+        Some(targets)
+    }
+
+    fn object_field_project_references(
+        &self,
+        file_id: FileId,
+        offset: TextSize,
+    ) -> Option<ProjectReferences> {
+        let declarations = self.object_field_declarations_at(file_id, offset)?;
+        if declarations.is_empty() {
+            return None;
+        }
+
+        let mut references = declarations
+            .iter()
+            .map(|declaration| LocatedProjectReference {
+                file_id: declaration.key.file_id,
+                range: declaration.range(),
+                kind: ProjectReferenceKind::Definition,
+            })
+            .collect::<Vec<_>>();
+        let declaration_keys = declarations.iter().map(|decl| decl.key).collect::<Vec<_>>();
+
+        for (&candidate_file_id, candidate_analysis) in self.analysis.iter() {
+            for (index, reference) in candidate_analysis.hir.references.iter().enumerate() {
+                if reference.kind != rhai_hir::ReferenceKind::Field {
+                    continue;
+                }
+                let reference_id = ReferenceId(index as u32);
+                if self.object_field_reference_matches_declarations(
+                    candidate_file_id,
+                    candidate_analysis.hir.as_ref(),
+                    reference_id,
+                    &declaration_keys,
+                ) {
+                    references.push(LocatedProjectReference {
+                        file_id: candidate_file_id,
+                        range: reference.range,
+                        kind: ProjectReferenceKind::Reference,
+                    });
+                }
+            }
+        }
+
+        references.sort_by(|left, right| {
+            left.file_id
+                .0
+                .cmp(&right.file_id.0)
+                .then_with(|| left.range.start().cmp(&right.range.start()))
+                .then_with(|| left.range.end().cmp(&right.range.end()))
+                .then_with(|| {
+                    project_reference_kind_rank(left.kind)
+                        .cmp(&project_reference_kind_rank(right.kind))
+                })
+        });
+        references.dedup_by(|left, right| {
+            left.file_id == right.file_id && left.range == right.range && left.kind == right.kind
+        });
+
+        let mut targets = Vec::new();
+        for declaration in declarations {
+            let Some(symbol) = declaration.owner_symbol else {
+                continue;
+            };
+            let Some(analysis) = self.analysis.get(&declaration.key.file_id) else {
+                continue;
+            };
+            targets.extend(self.symbol_locations_for_file_symbol(
+                declaration.key.file_id,
+                analysis.hir.as_ref(),
+                symbol,
+            ));
+        }
+        targets.sort_by(|left, right| {
+            left.file_id
+                .0
+                .cmp(&right.file_id.0)
+                .then_with(|| {
+                    left.symbol
+                        .declaration_range
+                        .start()
+                        .cmp(&right.symbol.declaration_range.start())
+                })
+                .then_with(|| left.symbol.name.cmp(&right.symbol.name))
+        });
+        targets
+            .dedup_by(|left, right| left.file_id == right.file_id && left.symbol == right.symbol);
+
+        Some(ProjectReferences {
+            targets,
+            references,
+        })
+    }
+
+    fn object_field_reference_matches_declarations(
+        &self,
+        file_id: FileId,
+        hir: &FileHir,
+        reference_id: ReferenceId,
+        declaration_keys: &[ObjectFieldDeclKey],
+    ) -> bool {
+        self.object_field_declarations_for_reference(file_id, hir, reference_id)
+            .iter()
+            .any(|declaration| declaration_keys.contains(&declaration.key))
+    }
+
+    fn object_field_declarations_at(
+        &self,
+        file_id: FileId,
+        offset: TextSize,
+    ) -> Option<Vec<ObjectFieldDecl>> {
+        let analysis = self.analysis.get(&file_id)?;
+        let hir = analysis.hir.as_ref();
+
+        if let Some(reference_id) = hir.reference_at_offset(offset)
+            && hir.reference(reference_id).kind == rhai_hir::ReferenceKind::Field
+        {
+            let declarations =
+                self.object_field_declarations_for_reference(file_id, hir, reference_id);
+            if !declarations.is_empty() {
+                return Some(declarations);
+            }
+        }
+
+        let field = hir
+            .object_fields
+            .iter()
+            .find(|field| field.range.contains(offset))?;
+        let key = ObjectFieldDeclKey {
+            file_id,
+            start: field.range.start(),
+            end: field.range.end(),
+        };
+        let owner_symbol = self.owner_symbol_for_object_field(file_id, hir, field.range);
+        Some(vec![ObjectFieldDecl {
+            key,
+            owner_symbol,
+            owner_kind: owner_symbol.map(|symbol| hir.symbol(symbol).kind),
+        }])
+    }
+
+    fn object_field_declarations_for_reference(
+        &self,
+        file_id: FileId,
+        hir: &FileHir,
+        reference_id: ReferenceId,
+    ) -> Vec<ObjectFieldDecl> {
+        let Some(access) = hir
+            .member_accesses
+            .iter()
+            .find(|access| access.field_reference == reference_id)
+        else {
+            return Vec::new();
+        };
+        let field_name = hir.reference(reference_id).name.as_str();
+        self.object_field_declarations_for_receiver(file_id, hir, access.receiver, field_name)
+    }
+
+    fn object_field_declarations_for_receiver(
+        &self,
+        file_id: FileId,
+        hir: &FileHir,
+        receiver_expr: rhai_hir::ExprId,
+        field_name: &str,
+    ) -> Vec<ObjectFieldDecl> {
+        let mut declarations = self.object_field_decls_from_value_exprs(
+            file_id,
+            hir,
+            field_name,
+            field_value_exprs_from_expr(hir, receiver_expr, field_name),
+            None,
+        );
+
+        if hir.expr(receiver_expr).kind == rhai_hir::ExprKind::Path {
+            declarations.extend(self.object_field_decls_from_path_receiver(
+                file_id,
+                hir,
+                receiver_expr,
+                field_name,
+            ));
+        }
+
+        let mut by_key = BTreeMap::<ObjectFieldDeclKey, ObjectFieldDecl>::new();
+        for declaration in declarations {
+            by_key.entry(declaration.key).or_insert(declaration);
+        }
+        by_key.into_values().collect()
+    }
+
+    fn object_field_decls_from_path_receiver(
+        &self,
+        file_id: FileId,
+        hir: &FileHir,
+        receiver_expr: rhai_hir::ExprId,
+        field_name: &str,
+    ) -> Vec<ObjectFieldDecl> {
+        let Some(path) = hir.path_expr(receiver_expr) else {
+            return Vec::new();
+        };
+        let Some(reference_id) = path.segments.last().copied() else {
+            return Vec::new();
+        };
+
+        linked_import_targets_for_path_reference(self, file_id, hir, reference_id)
+            .into_iter()
+            .flat_map(|target| {
+                let provider = self.analysis.get(&target.file_id)?;
+                Some(self.object_field_decls_from_symbol(
+                    target.file_id,
+                    provider.hir.as_ref(),
+                    target.symbol.symbol,
+                    field_name,
+                ))
+            })
+            .flatten()
+            .collect()
+    }
+
+    fn object_field_decls_from_symbol(
+        &self,
+        file_id: FileId,
+        hir: &FileHir,
+        symbol: SymbolId,
+        field_name: &str,
+    ) -> Vec<ObjectFieldDecl> {
+        self.object_field_decls_from_value_exprs(
+            file_id,
+            hir,
+            field_name,
+            field_value_exprs_from_symbol(hir, symbol, field_name),
+            Some(symbol),
+        )
+    }
+
+    fn object_field_decls_from_value_exprs(
+        &self,
+        file_id: FileId,
+        hir: &FileHir,
+        field_name: &str,
+        value_exprs: Vec<rhai_hir::ExprId>,
+        owner_symbol_hint: Option<SymbolId>,
+    ) -> Vec<ObjectFieldDecl> {
+        let mut declarations = Vec::new();
+        for value_expr in value_exprs {
+            for field in hir
+                .object_fields
+                .iter()
+                .filter(|field| field.name == field_name && field.value == Some(value_expr))
+            {
+                let key = ObjectFieldDeclKey {
+                    file_id,
+                    start: field.range.start(),
+                    end: field.range.end(),
+                };
+                let owner_symbol = owner_symbol_hint
+                    .or_else(|| self.owner_symbol_for_object_field(file_id, hir, field.range));
+                declarations.push(ObjectFieldDecl {
+                    key,
+                    owner_symbol,
+                    owner_kind: owner_symbol.map(|symbol| hir.symbol(symbol).kind),
+                });
+            }
+        }
+        declarations
+    }
+
+    fn owner_symbol_for_object_field(
+        &self,
+        _file_id: FileId,
+        hir: &FileHir,
+        range: TextRange,
+    ) -> Option<SymbolId> {
+        for (index, _) in hir.symbols.iter().enumerate() {
+            let symbol = SymbolId(index as u32);
+            if hir
+                .value_flows_into(symbol)
+                .any(|flow| hir.expr(flow.expr).range.contains_range(range))
+            {
+                return Some(symbol);
+            }
+            if hir
+                .symbol_mutations_into(symbol)
+                .any(|mutation| hir.expr(mutation.value).range.contains_range(range))
+            {
+                return Some(symbol);
+            }
+        }
+        None
     }
 
     pub(crate) fn collect_project_references(
