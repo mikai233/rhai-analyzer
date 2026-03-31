@@ -1,6 +1,4 @@
-use crate::syntax::{
-    RowanGreenNode, RowanGreenToken, SyntaxKind, SyntaxToken, TextRange, TextSize, TokenKind,
-};
+use crate::syntax::{GreenNode, GreenToken, LexToken, SyntaxKind, TextRange, TextSize, TokenKind};
 use rowan::NodeOrToken;
 
 pub(crate) type BuildElement = NodeOrToken<BuildNode, BuildToken>;
@@ -9,15 +7,15 @@ pub(crate) type BuildElement = NodeOrToken<BuildNode, BuildToken>;
 pub(crate) struct BuildToken {
     kind: TokenKind,
     range: TextRange,
-    green: RowanGreenToken,
+    green: GreenToken,
 }
 
 impl BuildToken {
-    pub(crate) fn new(token: SyntaxToken, source: &str) -> Self {
+    pub(crate) fn new(token: LexToken, source: &str) -> Self {
         Self {
             kind: token.kind(),
             range: token.range(),
-            green: RowanGreenToken::new(token.kind().to_rowan(), token.text(source)),
+            green: GreenToken::new(token.kind().to_rowan(), token.text(source)),
         }
     }
 
@@ -33,7 +31,7 @@ impl BuildToken {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct BuildNode {
     range: TextRange,
-    green: RowanGreenNode,
+    green: GreenNode,
 }
 
 impl BuildNode {
@@ -51,8 +49,7 @@ impl BuildNode {
         range: TextRange,
         children: Vec<BuildElement>,
     ) -> Self {
-        let green =
-            RowanGreenNode::new(kind.to_rowan(), children.iter().map(build_element_to_green));
+        let green = GreenNode::new(kind.to_rowan(), children.iter().map(build_element_to_green));
         Self { range, green }
     }
 
@@ -64,7 +61,7 @@ impl BuildNode {
         self.range
     }
 
-    pub(crate) fn into_green(self) -> RowanGreenNode {
+    pub(crate) fn into_green(self) -> GreenNode {
         self.green
     }
 }
@@ -73,7 +70,7 @@ pub(crate) fn node_element(node: BuildNode) -> BuildElement {
     NodeOrToken::Node(node)
 }
 
-pub(crate) fn token_element(token: SyntaxToken, source: &str) -> BuildElement {
+pub(crate) fn token_element(token: LexToken, source: &str) -> BuildElement {
     NodeOrToken::Token(BuildToken::new(token, source))
 }
 
@@ -97,7 +94,7 @@ pub(crate) fn range_for_children(
     }
 }
 
-fn build_element_to_green(element: &BuildElement) -> NodeOrToken<RowanGreenNode, RowanGreenToken> {
+fn build_element_to_green(element: &BuildElement) -> NodeOrToken<GreenNode, GreenToken> {
     match element {
         NodeOrToken::Node(node) => NodeOrToken::Node(node.green.clone()),
         NodeOrToken::Token(token) => NodeOrToken::Token(token.green.clone()),

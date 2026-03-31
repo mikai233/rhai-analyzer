@@ -1,6 +1,6 @@
 use crate::parser::{BuildElement, BuildNode, Parser, node_element, token_element};
 use crate::syntax::{
-    SyntaxError, SyntaxKind, SyntaxToken, TextRange, TextSize, TokenKind, empty_range,
+    LexToken, SyntaxError, SyntaxKind, TextRange, TextSize, TokenKind, empty_range,
 };
 
 impl<'a> Parser<'a> {
@@ -138,19 +138,19 @@ impl<'a> Parser<'a> {
         self.errors.push(SyntaxError::new(message, range));
     }
 
-    pub(crate) fn peek(&self) -> Option<SyntaxToken> {
+    pub(crate) fn peek(&self) -> Option<LexToken> {
         self.next_significant_index(self.cursor)
             .and_then(|index| self.tokens.get(index).copied())
     }
 
-    pub(crate) fn bump(&mut self) -> Option<SyntaxToken> {
+    pub(crate) fn bump(&mut self) -> Option<LexToken> {
         let index = self.next_significant_index(self.cursor)?;
         let token = self.tokens[index];
         self.cursor = index + 1;
         Some(token)
     }
 
-    pub(crate) fn peek_n(&self, n: usize) -> Option<SyntaxToken> {
+    pub(crate) fn peek_n(&self, n: usize) -> Option<LexToken> {
         let mut index = self.cursor;
         let mut remaining = n;
         loop {

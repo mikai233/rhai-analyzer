@@ -1,17 +1,17 @@
-use crate::syntax::{SyntaxError, SyntaxToken, TextRange, TextSize, TokenKind};
+use crate::syntax::{LexToken, SyntaxError, TextRange, TextSize, TokenKind};
 
 #[derive(Debug, Clone)]
 pub struct Lexed {
-    tokens: Vec<SyntaxToken>,
+    tokens: Vec<LexToken>,
     errors: Vec<SyntaxError>,
 }
 
 impl Lexed {
-    pub fn new(tokens: Vec<SyntaxToken>, errors: Vec<SyntaxError>) -> Self {
+    pub fn new(tokens: Vec<LexToken>, errors: Vec<SyntaxError>) -> Self {
         Self { tokens, errors }
     }
 
-    pub fn tokens(&self) -> &[SyntaxToken] {
+    pub fn tokens(&self) -> &[LexToken] {
         &self.tokens
     }
 
@@ -19,7 +19,7 @@ impl Lexed {
         &self.errors
     }
 
-    pub fn into_parts(self) -> (Vec<SyntaxToken>, Vec<SyntaxError>) {
+    pub fn into_parts(self) -> (Vec<LexToken>, Vec<SyntaxError>) {
         (self.tokens, self.errors)
     }
 
@@ -32,7 +32,7 @@ impl Lexed {
             .tokens
             .into_iter()
             .map(|token| {
-                SyntaxToken::new(
+                LexToken::new(
                     token.kind(),
                     TextRange::new(token.range().start() + offset, token.range().end() + offset),
                 )
@@ -365,7 +365,7 @@ pub fn lex_text(text: &str) -> Lexed {
             }
         };
 
-        tokens.push(SyntaxToken::new(kind, text_range(start, offset)));
+        tokens.push(LexToken::new(kind, text_range(start, offset)));
     }
 
     Lexed::new(tokens, errors)
@@ -496,7 +496,7 @@ fn lex_backtick_string(text: &str, mut offset: usize, errors: &mut Vec<SyntaxErr
 fn lex_backtick_token_or_parts(
     text: &str,
     mut offset: usize,
-    tokens: &mut Vec<SyntaxToken>,
+    tokens: &mut Vec<LexToken>,
     errors: &mut Vec<SyntaxError>,
 ) -> usize {
     let start = offset;
@@ -514,7 +514,7 @@ fn lex_backtick_token_or_parts(
 
         if starts_with(text, cursor, "${") {
             if !structured {
-                tokens.push(SyntaxToken::new(
+                tokens.push(LexToken::new(
                     TokenKind::Backtick,
                     text_range(start, start + 1),
                 ));
@@ -522,7 +522,7 @@ fn lex_backtick_token_or_parts(
             }
 
             if segment_start < cursor {
-                tokens.push(SyntaxToken::new(
+                tokens.push(LexToken::new(
                     TokenKind::StringText,
                     text_range(segment_start, cursor),
                 ));
@@ -530,7 +530,7 @@ fn lex_backtick_token_or_parts(
 
             let interpolation_start = cursor;
             cursor += 2;
-            tokens.push(SyntaxToken::new(
+            tokens.push(LexToken::new(
                 TokenKind::InterpolationStart,
                 text_range(interpolation_start, interpolation_start + 2),
             ));
@@ -547,7 +547,7 @@ fn lex_backtick_token_or_parts(
             }
 
             if close_brace_start < text.len() && matches_char(text, close_brace_start, '}') {
-                tokens.push(SyntaxToken::new(
+                tokens.push(LexToken::new(
                     TokenKind::CloseBrace,
                     text_range(close_brace_start, interpolation_end),
                 ));
@@ -575,7 +575,7 @@ fn lex_backtick_token_or_parts(
     }
 
     if !structured {
-        tokens.push(SyntaxToken::new(
+        tokens.push(LexToken::new(
             TokenKind::BacktickString,
             text_range(start, cursor),
         ));
@@ -585,14 +585,14 @@ fn lex_backtick_token_or_parts(
     let closing_start = cursor.saturating_sub(1);
     let string_end = if terminated { closing_start } else { cursor };
     if segment_start < string_end {
-        tokens.push(SyntaxToken::new(
+        tokens.push(LexToken::new(
             TokenKind::StringText,
             text_range(segment_start, string_end),
         ));
     }
 
     if terminated {
-        tokens.push(SyntaxToken::new(
+        tokens.push(LexToken::new(
             TokenKind::Backtick,
             text_range(closing_start, cursor),
         ));

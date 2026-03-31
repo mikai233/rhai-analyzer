@@ -133,22 +133,22 @@ impl TokenKind {
         RhaiKind::from_token(self)
     }
 
-    pub const fn to_rowan(self) -> RowanSyntaxKind {
+    pub const fn to_rowan(self) -> RawSyntaxKind {
         self.to_rowan_kind().to_rowan()
     }
 
-    pub fn from_rowan(raw: RowanSyntaxKind) -> Option<Self> {
+    pub fn from_rowan(raw: RawSyntaxKind) -> Option<Self> {
         RhaiKind::from_rowan(raw).and_then(RhaiKind::token_kind)
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct SyntaxToken {
+pub struct LexToken {
     kind: TokenKind,
     range: TextRange,
 }
 
-impl SyntaxToken {
+impl LexToken {
     pub fn new(kind: TokenKind, range: TextRange) -> Self {
         Self { kind, range }
     }
@@ -396,34 +396,34 @@ pub enum RhaiKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum RhaiLanguage {}
 
-pub type RowanSyntaxKind = rowan::SyntaxKind;
-pub type RowanSyntaxNode = rowan::SyntaxNode<RhaiLanguage>;
-pub type RowanSyntaxElement = rowan::SyntaxElement<RhaiLanguage>;
-pub type RowanSyntaxToken = rowan::SyntaxToken<RhaiLanguage>;
-pub type RowanNodeOrToken = rowan::NodeOrToken<RowanSyntaxNode, RowanSyntaxToken>;
-pub type RowanGreenNode = rowan::GreenNode;
-pub type RowanGreenToken = rowan::GreenToken;
+pub type RawSyntaxKind = rowan::SyntaxKind;
+pub type SyntaxNode = rowan::SyntaxNode<RhaiLanguage>;
+pub type SyntaxElement = rowan::SyntaxElement<RhaiLanguage>;
+pub type SyntaxToken = rowan::SyntaxToken<RhaiLanguage>;
+pub type NodeOrToken = rowan::NodeOrToken<SyntaxNode, SyntaxToken>;
+pub type GreenNode = rowan::GreenNode;
+pub type GreenToken = rowan::GreenToken;
 
 impl SyntaxKind {
     pub const fn to_rowan_kind(self) -> RhaiKind {
         RhaiKind::from_syntax(self)
     }
 
-    pub const fn to_rowan(self) -> RowanSyntaxKind {
+    pub const fn to_rowan(self) -> RawSyntaxKind {
         self.to_rowan_kind().to_rowan()
     }
 
-    pub fn from_rowan(kind: RowanSyntaxKind) -> Option<Self> {
+    pub fn from_rowan(kind: RawSyntaxKind) -> Option<Self> {
         RhaiKind::from_rowan(kind).and_then(RhaiKind::syntax_kind)
     }
 }
 
 impl RhaiKind {
-    pub const fn to_rowan(self) -> RowanSyntaxKind {
+    pub const fn to_rowan(self) -> RawSyntaxKind {
         rowan::SyntaxKind(self as u16)
     }
 
-    pub fn from_rowan(kind: RowanSyntaxKind) -> Option<Self> {
+    pub fn from_rowan(kind: RawSyntaxKind) -> Option<Self> {
         if kind.0 <= Self::Error as u16 {
             // SAFETY: `RhaiKind` uses a dense `repr(u16)` layout and the bound
             // check above ensures the raw discriminant maps to a declared variant.
@@ -817,13 +817,13 @@ impl SyntaxError {
 pub struct Parse {
     text: Arc<str>,
     trivia: TriviaStore,
-    green: RowanGreenNode,
+    green: GreenNode,
     errors: Vec<SyntaxError>,
 }
 
 impl Parse {
-    pub(crate) fn new(text: Arc<str>, green: RowanGreenNode, errors: Vec<SyntaxError>) -> Self {
-        let root = RowanSyntaxNode::new_root(green.clone());
+    pub(crate) fn new(text: Arc<str>, green: GreenNode, errors: Vec<SyntaxError>) -> Self {
+        let root = SyntaxNode::new_root(green.clone());
         let trivia = TriviaStore::new(&text, &root);
         Self {
             text,
@@ -837,8 +837,8 @@ impl Parse {
         &self.text
     }
 
-    pub fn root(&self) -> RowanSyntaxNode {
-        RowanSyntaxNode::new_root(self.green.clone())
+    pub fn root(&self) -> SyntaxNode {
+        SyntaxNode::new_root(self.green.clone())
     }
 
     pub fn trivia(&self) -> &TriviaStore {
@@ -861,7 +861,7 @@ impl Parse {
         out
     }
 
-    fn write_syntax_node(&self, out: &mut String, node: &RowanSyntaxNode, indent: usize) {
+    fn write_syntax_node(&self, out: &mut String, node: &SyntaxNode, indent: usize) {
         let Some(kind) = node.kind().syntax_kind() else {
             return;
         };
@@ -871,8 +871,8 @@ impl Parse {
 
         for child in node.children_with_tokens() {
             match child {
-                RowanNodeOrToken::Node(node) => self.write_syntax_node(out, &node, indent + 2),
-                RowanNodeOrToken::Token(token) => {
+                NodeOrToken::Node(node) => self.write_syntax_node(out, &node, indent + 2),
+                NodeOrToken::Token(token) => {
                     let Some(kind) = token.kind().token_kind() else {
                         continue;
                     };
@@ -887,7 +887,7 @@ impl Parse {
         }
     }
 
-    fn write_compact_syntax_node(&self, out: &mut String, node: &RowanSyntaxNode, indent: usize) {
+    fn write_compact_syntax_node(&self, out: &mut String, node: &SyntaxNode, indent: usize) {
         let Some(kind) = node.kind().syntax_kind() else {
             return;
         };
@@ -896,10 +896,8 @@ impl Parse {
 
         for child in node.children_with_tokens() {
             match child {
-                RowanNodeOrToken::Node(node) => {
-                    self.write_compact_syntax_node(out, &node, indent + 2)
-                }
-                RowanNodeOrToken::Token(token) => {
+                NodeOrToken::Node(node) => self.write_compact_syntax_node(out, &node, indent + 2),
+                NodeOrToken::Token(token) => {
                     let Some(kind) = token.kind().token_kind() else {
                         continue;
                     };
@@ -914,46 +912,46 @@ impl Parse {
     }
 }
 
-pub trait RowanSyntaxNodeExt {
-    fn child_nodes(&self) -> impl Iterator<Item = RowanSyntaxNode>;
-    fn direct_raw_tokens(&self) -> impl Iterator<Item = RowanSyntaxToken>;
-    fn direct_significant_tokens(&self) -> impl Iterator<Item = RowanSyntaxToken>;
-    fn raw_tokens(&self) -> impl Iterator<Item = RowanSyntaxToken>;
-    fn significant_tokens(&self) -> impl Iterator<Item = RowanSyntaxToken>;
-    fn first_significant_token(&self) -> Option<RowanSyntaxToken>;
-    fn last_significant_token(&self) -> Option<RowanSyntaxToken>;
+pub trait SyntaxNodeExt {
+    fn child_nodes(&self) -> impl Iterator<Item = SyntaxNode>;
+    fn direct_raw_tokens(&self) -> impl Iterator<Item = SyntaxToken>;
+    fn direct_significant_tokens(&self) -> impl Iterator<Item = SyntaxToken>;
+    fn raw_tokens(&self) -> impl Iterator<Item = SyntaxToken>;
+    fn significant_tokens(&self) -> impl Iterator<Item = SyntaxToken>;
+    fn first_significant_token(&self) -> Option<SyntaxToken>;
+    fn last_significant_token(&self) -> Option<SyntaxToken>;
     fn significant_range(&self) -> TextRange;
     fn structural_range(&self) -> TextRange;
 }
 
-impl RowanSyntaxNodeExt for RowanSyntaxNode {
-    fn child_nodes(&self) -> impl Iterator<Item = RowanSyntaxNode> {
+impl SyntaxNodeExt for SyntaxNode {
+    fn child_nodes(&self) -> impl Iterator<Item = SyntaxNode> {
         self.children()
     }
 
-    fn direct_raw_tokens(&self) -> impl Iterator<Item = RowanSyntaxToken> {
+    fn direct_raw_tokens(&self) -> impl Iterator<Item = SyntaxToken> {
         self.children_with_tokens()
             .filter_map(|element| element.into_token())
     }
 
-    fn direct_significant_tokens(&self) -> impl Iterator<Item = RowanSyntaxToken> {
+    fn direct_significant_tokens(&self) -> impl Iterator<Item = SyntaxToken> {
         self.direct_raw_tokens().filter(is_significant_rowan_token)
     }
 
-    fn raw_tokens(&self) -> impl Iterator<Item = RowanSyntaxToken> {
+    fn raw_tokens(&self) -> impl Iterator<Item = SyntaxToken> {
         self.descendants_with_tokens()
             .filter_map(|element| element.into_token())
     }
 
-    fn significant_tokens(&self) -> impl Iterator<Item = RowanSyntaxToken> {
+    fn significant_tokens(&self) -> impl Iterator<Item = SyntaxToken> {
         self.raw_tokens().filter(is_significant_rowan_token)
     }
 
-    fn first_significant_token(&self) -> Option<RowanSyntaxToken> {
+    fn first_significant_token(&self) -> Option<SyntaxToken> {
         self.significant_tokens().next()
     }
 
-    fn last_significant_token(&self) -> Option<RowanSyntaxToken> {
+    fn last_significant_token(&self) -> Option<SyntaxToken> {
         self.significant_tokens().last()
     }
 
@@ -981,7 +979,7 @@ impl RowanSyntaxNodeExt for RowanSyntaxNode {
     }
 }
 
-fn is_significant_rowan_token(token: &RowanSyntaxToken) -> bool {
+fn is_significant_rowan_token(token: &SyntaxToken) -> bool {
     token
         .kind()
         .token_kind()

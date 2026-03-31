@@ -2,9 +2,9 @@ use rhai_syntax::{
     ArgList, ArrayExpr, ArrayItemList, AstNode, BinaryExpr, CallExpr, ClosureExpr,
     ClosureParamList, DoCondition, DoExpr, ElseBranch, Expr, FieldExpr, ForBindings, ForExpr,
     GapTrivia, IfExpr, IndexExpr, InterpolatedStringExpr, InterpolationItemList, LoopExpr,
-    ObjectExpr, ObjectField, ObjectFieldList, ParamList, ParenExpr, PathExpr, RowanSyntaxNode,
-    RowanSyntaxNodeExt, StringPart, StringPartList, SwitchArm, SwitchArmList, SwitchExpr,
-    SwitchPatternList, TextRange, TokenKind, TriviaBoundary, WhileExpr,
+    ObjectExpr, ObjectField, ObjectFieldList, ParamList, ParenExpr, PathExpr, StringPart,
+    StringPartList, SwitchArm, SwitchArmList, SwitchExpr, SwitchPatternList, SyntaxNode,
+    SyntaxNodeExt, TextRange, TokenKind, TriviaBoundary, WhileExpr,
 };
 
 use crate::ContainerLayoutStyle;
@@ -1659,7 +1659,7 @@ impl Formatter<'_> {
 
     fn format_comma_separated_body_doc(
         &self,
-        node: &RowanSyntaxNode,
+        node: &SyntaxNode,
         items: Vec<DelimitedItemDoc>,
     ) -> Doc {
         if items.is_empty() {
@@ -1734,7 +1734,7 @@ impl Formatter<'_> {
         hard_lines(gap.trailing_blank_lines_before_next + usize::from(include_terminal_newline))
     }
 
-    pub(crate) fn raw(&self, node: RowanSyntaxNode) -> String {
+    pub(crate) fn raw(&self, node: SyntaxNode) -> String {
         let start = u32::from(node.text_range().start()) as usize;
         let end = u32::from(node.text_range().end()) as usize;
         self.source[start..end].trim().to_owned()
@@ -2297,7 +2297,7 @@ impl Formatter<'_> {
 
     fn token_ranges<'a>(
         &self,
-        node: &'a RowanSyntaxNode,
+        node: &'a SyntaxNode,
         kind: TokenKind,
     ) -> impl Iterator<Item = TextRange> + 'a {
         node.direct_significant_tokens()
@@ -2314,7 +2314,7 @@ struct DelimitedItemDoc {
 
 #[derive(Debug, Clone, Copy)]
 struct DelimitedNodeSpec<'a> {
-    node: &'a RowanSyntaxNode,
+    node: &'a SyntaxNode,
     open_kind: TokenKind,
     close_kind: TokenKind,
     open: &'a str,

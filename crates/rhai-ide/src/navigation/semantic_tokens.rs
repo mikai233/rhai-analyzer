@@ -1,14 +1,14 @@
 use crate::{SemanticToken, SemanticTokenKind, SemanticTokenModifier};
 use rhai_db::DatabaseSnapshot;
 use rhai_hir::{FileHir, ReferenceKind, SymbolKind};
-use rhai_syntax::{RowanSyntaxNodeExt, SyntaxToken, TextSize, TokenKind};
+use rhai_syntax::{LexToken, SyntaxNodeExt, TextSize, TokenKind};
 use rhai_vfs::FileId;
 
 struct TokenContext<'a> {
     snapshot: &'a DatabaseSnapshot,
     file_id: FileId,
     hir: Option<&'a FileHir>,
-    tokens: &'a [SyntaxToken],
+    tokens: &'a [LexToken],
     source: &'a str,
 }
 
@@ -23,7 +23,7 @@ pub(crate) fn semantic_tokens(snapshot: &DatabaseSnapshot, file_id: FileId) -> V
             token
                 .kind()
                 .token_kind()
-                .map(|kind| SyntaxToken::new(kind, token.text_range()))
+                .map(|kind| LexToken::new(kind, token.text_range()))
         })
         .collect();
     let hir = snapshot.hir(file_id);
@@ -45,7 +45,7 @@ pub(crate) fn semantic_tokens(snapshot: &DatabaseSnapshot, file_id: FileId) -> V
 fn semantic_token(
     context: &TokenContext<'_>,
     index: usize,
-    token: SyntaxToken,
+    token: LexToken,
 ) -> Option<SemanticToken> {
     let kind = semantic_token_kind(context, index, token)?;
 
@@ -59,7 +59,7 @@ fn semantic_token(
 fn semantic_token_kind(
     context: &TokenContext<'_>,
     index: usize,
-    token: SyntaxToken,
+    token: LexToken,
 ) -> Option<SemanticTokenKind> {
     match token.kind() {
         TokenKind::LineComment
@@ -86,7 +86,7 @@ fn semantic_token_kind(
 fn semantic_token_modifiers(
     context: &TokenContext<'_>,
     index: usize,
-    token: SyntaxToken,
+    token: LexToken,
 ) -> Vec<SemanticTokenModifier> {
     let kind = semantic_token_kind(context, index, token);
     if is_typed_method_receiver(context.tokens, index) {
@@ -128,7 +128,7 @@ fn semantic_token_modifiers(
 fn classify_identifier_token(
     context: &TokenContext<'_>,
     index: usize,
-    token: SyntaxToken,
+    token: LexToken,
 ) -> Option<SemanticTokenKind> {
     if is_typed_method_receiver(context.tokens, index) {
         return Some(SemanticTokenKind::Type);
@@ -180,7 +180,7 @@ fn classify_identifier_token(
             }
             ReferenceKind::Name | ReferenceKind::This => {
                 if matches!(
-                    next_significant_token(context.tokens, index).map(SyntaxToken::kind),
+                    next_significant_token(context.tokens, index).map(LexToken::kind),
                     Some(TokenKind::ColonColon)
                 ) {
                     SemanticTokenKind::Namespace
@@ -232,7 +232,7 @@ fn symbol_kind_semantic_token_kind(kind: SymbolKind) -> SemanticTokenKind {
     }
 }
 
-fn is_typed_method_receiver(tokens: &[SyntaxToken], index: usize) -> bool {
+fn is_typed_method_receiver(tokens: &[LexToken], index: usize) -> bool {
     let token = tokens[index];
     if !matches!(token.kind(), TokenKind::Ident | TokenKind::String) {
         return false;
@@ -242,26 +242,26 @@ fn is_typed_method_receiver(tokens: &[SyntaxToken], index: usize) -> bool {
     let next = next_significant_token(tokens, index);
 
     matches!(
-        (previous.map(SyntaxToken::kind), next.map(SyntaxToken::kind)),
+        (previous.map(LexToken::kind), next.map(LexToken::kind)),
         (Some(TokenKind::FnKw), Some(TokenKind::Dot))
     )
 }
 
-fn is_method_callee_token(tokens: &[SyntaxToken], index: usize) -> bool {
+fn is_method_callee_token(tokens: &[LexToken], index: usize) -> bool {
     matches!(
-        next_significant_token(tokens, index).map(SyntaxToken::kind),
+        next_significant_token(tokens, index).map(LexToken::kind),
         Some(TokenKind::OpenParen)
     )
 }
 
-fn is_final_path_segment(tokens: &[SyntaxToken], index: usize) -> bool {
+fn is_final_path_segment(tokens: &[LexToken], index: usize) -> bool {
     !matches!(
-        next_significant_token(tokens, index).map(SyntaxToken::kind),
+        next_significant_token(tokens, index).map(LexToken::kind),
         Some(TokenKind::ColonColon)
     )
 }
 
-fn previous_significant_token(tokens: &[SyntaxToken], index: usize) -> Option<SyntaxToken> {
+fn previous_significant_token(tokens: &[LexToken], index: usize) -> Option<LexToken> {
     tokens[..index]
         .iter()
         .rev()
@@ -269,7 +269,7 @@ fn previous_significant_token(tokens: &[SyntaxToken], index: usize) -> Option<Sy
         .find(|token| !token.kind().is_trivia())
 }
 
-fn next_significant_token(tokens: &[SyntaxToken], index: usize) -> Option<SyntaxToken> {
+fn next_significant_token(tokens: &[LexToken], index: usize) -> Option<LexToken> {
     tokens[index + 1..]
         .iter()
         .copied()
@@ -368,7 +368,7 @@ fn is_default_library_token(
     context: &TokenContext<'_>,
     hir: &FileHir,
     index: usize,
-    token: SyntaxToken,
+    token: LexToken,
     kind: Option<SemanticTokenKind>,
 ) -> bool {
     let text = token.text(context.source);
@@ -401,7 +401,7 @@ fn is_default_library_token(
         if reference.kind == ReferenceKind::PathSegment
             || (reference.kind == ReferenceKind::Name
                 && matches!(
-                    next_significant_token(context.tokens, index).map(SyntaxToken::kind),
+                    next_significant_token(context.tokens, index).map(LexToken::kind),
                     Some(TokenKind::ColonColon)
                 ))
         {
@@ -435,7 +435,7 @@ fn host_type_named(snapshot: &DatabaseSnapshot, name: Option<&str>) -> bool {
         .any(|host_type| host_type.name == name)
 }
 
-fn typed_method_receiver_name(token: SyntaxToken, source: &str) -> Option<String> {
+fn typed_method_receiver_name(token: LexToken, source: &str) -> Option<String> {
     match token.kind() {
         TokenKind::Ident => Some(token.text(source).to_owned()),
         TokenKind::String => Some(unquote_type_name(token.text(source)).to_owned()),
@@ -451,9 +451,9 @@ fn unquote_type_name(text: &str) -> &str {
     }
 }
 
-fn is_call_like_token(tokens: &[SyntaxToken], index: usize) -> bool {
+fn is_call_like_token(tokens: &[LexToken], index: usize) -> bool {
     matches!(
-        next_significant_token(tokens, index).map(SyntaxToken::kind),
+        next_significant_token(tokens, index).map(LexToken::kind),
         Some(TokenKind::OpenParen | TokenKind::Bang)
     )
 }
@@ -591,7 +591,7 @@ fn is_path_external_signature(
     snapshot: &DatabaseSnapshot,
     hir: &FileHir,
     offset: TextSize,
-    tokens: &[SyntaxToken],
+    tokens: &[LexToken],
     index: usize,
 ) -> bool {
     external_signature_kind_for_path(snapshot, hir, offset, tokens, index).is_some()
@@ -601,7 +601,7 @@ fn external_signature_kind_for_path(
     snapshot: &DatabaseSnapshot,
     hir: &FileHir,
     offset: TextSize,
-    tokens: &[SyntaxToken],
+    tokens: &[LexToken],
     index: usize,
 ) -> Option<SemanticTokenKind> {
     let expr = hir.expr_at_offset(offset)?;

@@ -3,7 +3,7 @@ use crate::ast::{
     Root, RootItemList, Stmt, child, children, find_token, is_binding_token, is_param_token,
     token_by_kind, token_children,
 };
-use crate::{RowanSyntaxNode, RowanSyntaxToken, SyntaxKind, TokenKind};
+use crate::{SyntaxKind, SyntaxNode, SyntaxToken, TokenKind};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Item {
@@ -29,14 +29,14 @@ impl AstNode for Item {
         )
     }
 
-    fn cast(node: RowanSyntaxNode) -> Option<Self> {
+    fn cast(node: SyntaxNode) -> Option<Self> {
         match node.kind().syntax_kind()? {
             SyntaxKind::ItemFn => Some(Self::Fn(FnItem { syntax: node })),
             _ => Stmt::cast(node).map(Self::Stmt),
         }
     }
 
-    fn syntax(&self) -> RowanSyntaxNode {
+    fn syntax(&self) -> SyntaxNode {
         match self {
             Self::Fn(item) => item.syntax(),
             Self::Stmt(stmt) => stmt.syntax(),
@@ -61,7 +61,7 @@ impl FnItem {
         token_by_kind(&self.syntax, TokenKind::PrivateKw).is_some()
     }
 
-    pub fn name_token(&self) -> Option<RowanSyntaxToken> {
+    pub fn name_token(&self) -> Option<SyntaxToken> {
         let mut last_ident = None;
         for element in self.syntax.children_with_tokens() {
             match element {
@@ -85,7 +85,7 @@ impl FnItem {
         token_by_kind(&self.syntax, TokenKind::Dot).is_some()
     }
 
-    pub fn this_type_token(&self) -> Option<RowanSyntaxToken> {
+    pub fn this_type_token(&self) -> Option<SyntaxToken> {
         if !self.clone().is_typed_method() {
             return None;
         }
@@ -140,7 +140,7 @@ impl FnItem {
 }
 
 impl ParamList {
-    pub fn params(&self) -> impl Iterator<Item = RowanSyntaxToken> {
+    pub fn params(&self) -> impl Iterator<Item = SyntaxToken> {
         let syntax = self.syntax.clone();
         token_children(&syntax)
             .filter(|token| token.kind().token_kind().is_some_and(is_param_token))
@@ -150,7 +150,7 @@ impl ParamList {
 }
 
 impl ClosureParamList {
-    pub fn params(&self) -> impl Iterator<Item = RowanSyntaxToken> {
+    pub fn params(&self) -> impl Iterator<Item = SyntaxToken> {
         let syntax = self.syntax.clone();
         token_children(&syntax)
             .filter(|token| token.kind().token_kind().is_some_and(is_param_token))
@@ -160,7 +160,7 @@ impl ClosureParamList {
 }
 
 impl AliasClause {
-    pub fn alias_token(&self) -> Option<RowanSyntaxToken> {
+    pub fn alias_token(&self) -> Option<SyntaxToken> {
         find_token(&self.syntax, |kind| {
             matches!(kind, TokenKind::Ident | TokenKind::GlobalKw)
         })
@@ -168,7 +168,7 @@ impl AliasClause {
 }
 
 impl CatchClause {
-    pub fn binding_token(&self) -> Option<RowanSyntaxToken> {
+    pub fn binding_token(&self) -> Option<SyntaxToken> {
         find_token(&self.syntax, is_binding_token)
     }
 

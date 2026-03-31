@@ -2,7 +2,7 @@ use crate::ast::{
     AliasClause, AstNode, BlockExpr, BreakStmt, CatchClause, ConstStmt, ContinueStmt, ExportStmt,
     Expr, ExprStmt, ImportStmt, LetStmt, ReturnStmt, ThrowStmt, TryStmt, child, token_by_kind,
 };
-use crate::{RowanSyntaxNode, RowanSyntaxToken, SyntaxKind, TokenKind};
+use crate::{SyntaxKind, SyntaxNode, SyntaxToken, TokenKind};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Stmt {
@@ -35,7 +35,7 @@ impl AstNode for Stmt {
         )
     }
 
-    fn cast(node: RowanSyntaxNode) -> Option<Self> {
+    fn cast(node: SyntaxNode) -> Option<Self> {
         match node.kind().syntax_kind()? {
             SyntaxKind::StmtLet => Some(Self::Let(LetStmt { syntax: node })),
             SyntaxKind::StmtConst => Some(Self::Const(ConstStmt { syntax: node })),
@@ -51,7 +51,7 @@ impl AstNode for Stmt {
         }
     }
 
-    fn syntax(&self) -> RowanSyntaxNode {
+    fn syntax(&self) -> SyntaxNode {
         match self {
             Self::Let(stmt) => stmt.syntax(),
             Self::Const(stmt) => stmt.syntax(),
@@ -68,7 +68,7 @@ impl AstNode for Stmt {
 }
 
 impl LetStmt {
-    pub fn name_token(&self) -> Option<RowanSyntaxToken> {
+    pub fn name_token(&self) -> Option<SyntaxToken> {
         token_by_kind(&self.syntax, TokenKind::Ident)
     }
 
@@ -78,7 +78,7 @@ impl LetStmt {
 }
 
 impl ConstStmt {
-    pub fn name_token(&self) -> Option<RowanSyntaxToken> {
+    pub fn name_token(&self) -> Option<SyntaxToken> {
         token_by_kind(&self.syntax, TokenKind::Ident)
     }
 

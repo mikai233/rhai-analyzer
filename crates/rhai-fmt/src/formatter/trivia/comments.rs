@@ -1,6 +1,6 @@
 use rhai_syntax::{
-    AttachedComment, CommentKind, GapTrivia, RowanSyntaxNode, RowanSyntaxNodeExt, RowanSyntaxToken,
-    TextRange, TokenKind, TriviaBoundary,
+    AttachedComment, CommentKind, GapTrivia, SyntaxNode, SyntaxNodeExt, SyntaxToken, TextRange,
+    TokenKind, TriviaBoundary,
 };
 
 use crate::formatter::Formatter;
@@ -16,13 +16,13 @@ pub(crate) struct GapSeparatorOptions<'a> {
 }
 
 impl Formatter<'_> {
-    pub(crate) fn node_has_unowned_comments(&self, node: RowanSyntaxNode) -> bool {
+    pub(crate) fn node_has_unowned_comments(&self, node: SyntaxNode) -> bool {
         self.trivia.node_has_unowned_comments(&node)
     }
 
     pub(crate) fn node_has_unowned_comments_outside(
         &self,
-        node: RowanSyntaxNode,
+        node: SyntaxNode,
         allowed_ranges: &[(usize, usize)],
     ) -> bool {
         self.trivia
@@ -31,7 +31,7 @@ impl Formatter<'_> {
 
     pub(crate) fn node_has_unowned_comments_outside_boundaries(
         &self,
-        node: RowanSyntaxNode,
+        node: SyntaxNode,
         boundaries: &[TriviaBoundary],
     ) -> bool {
         self.trivia
@@ -44,8 +44,8 @@ impl Formatter<'_> {
 
     pub(crate) fn has_blank_line_between_nodes(
         &self,
-        previous: RowanSyntaxNode,
-        next: RowanSyntaxNode,
+        previous: SyntaxNode,
+        next: SyntaxNode,
     ) -> bool {
         self.trivia
             .has_blank_line_after_node_before_node(&previous, &next)
@@ -53,8 +53,8 @@ impl Formatter<'_> {
 
     pub(crate) fn is_whitespace_only_between_nodes(
         &self,
-        previous: RowanSyntaxNode,
-        next: RowanSyntaxNode,
+        previous: SyntaxNode,
+        next: SyntaxNode,
     ) -> bool {
         self.trivia
             .is_whitespace_only_after_node_before_node(&previous, &next)
@@ -62,16 +62,16 @@ impl Formatter<'_> {
 
     pub(crate) fn range_after_node_before_node(
         &self,
-        previous: RowanSyntaxNode,
-        next: RowanSyntaxNode,
+        previous: SyntaxNode,
+        next: SyntaxNode,
     ) -> (usize, usize) {
         self.trivia.range_after_node_before_node(&previous, &next)
     }
 
     pub(crate) fn range_after_node_before_token(
         &self,
-        previous: RowanSyntaxNode,
-        next: &RowanSyntaxToken,
+        previous: SyntaxNode,
+        next: &SyntaxToken,
     ) -> (usize, usize) {
         self.trivia
             .range_after_node_before_token(&previous, next.clone())
@@ -79,8 +79,8 @@ impl Formatter<'_> {
 
     pub(crate) fn range_after_token_before_node(
         &self,
-        previous: &RowanSyntaxToken,
-        next: RowanSyntaxNode,
+        previous: &SyntaxToken,
+        next: SyntaxNode,
     ) -> (usize, usize) {
         self.trivia
             .range_after_token_before_node(previous.clone(), &next)
@@ -88,8 +88,8 @@ impl Formatter<'_> {
 
     pub(crate) fn range_after_token_before_token(
         &self,
-        previous: &RowanSyntaxToken,
-        next: &RowanSyntaxToken,
+        previous: &SyntaxToken,
+        next: &SyntaxToken,
     ) -> (usize, usize) {
         self.trivia
             .range_after_token_before_token(previous.clone(), next.clone())
@@ -97,8 +97,8 @@ impl Formatter<'_> {
 
     pub(crate) fn has_comments_after_node_before_token(
         &self,
-        previous: RowanSyntaxNode,
-        next: &RowanSyntaxToken,
+        previous: SyntaxNode,
+        next: &SyntaxToken,
     ) -> bool {
         self.trivia
             .has_comments_after_node_before_token(&previous, next.clone())
@@ -106,8 +106,8 @@ impl Formatter<'_> {
 
     pub(crate) fn has_comments_after_token_before_node(
         &self,
-        previous: &RowanSyntaxToken,
-        next: RowanSyntaxNode,
+        previous: &SyntaxToken,
+        next: SyntaxNode,
     ) -> bool {
         self.trivia
             .has_comments_after_token_before_node(previous.clone(), &next)
@@ -115,8 +115,8 @@ impl Formatter<'_> {
 
     pub(crate) fn has_comments_after_token_before_token(
         &self,
-        previous: &RowanSyntaxToken,
-        next: &RowanSyntaxToken,
+        previous: &SyntaxToken,
+        next: &SyntaxToken,
     ) -> bool {
         self.trivia
             .has_comments_after_token_before_token(previous.clone(), next.clone())
@@ -132,20 +132,20 @@ impl Formatter<'_> {
         self.trivia.comment_gap(start, end, has_previous, has_next)
     }
 
-    pub(crate) fn token_range(&self, node: RowanSyntaxNode, kind: TokenKind) -> Option<TextRange> {
+    pub(crate) fn token_range(&self, node: SyntaxNode, kind: TokenKind) -> Option<TextRange> {
         self.token(node, kind).map(|token| token.text_range())
     }
 
-    pub(crate) fn token(&self, node: RowanSyntaxNode, kind: TokenKind) -> Option<RowanSyntaxToken> {
+    pub(crate) fn token(&self, node: SyntaxNode, kind: TokenKind) -> Option<SyntaxToken> {
         node.direct_significant_tokens()
             .find(|token| token.kind().token_kind() == Some(kind))
     }
 
     pub(crate) fn tokens(
         &self,
-        node: RowanSyntaxNode,
+        node: SyntaxNode,
         kind: TokenKind,
-    ) -> impl Iterator<Item = RowanSyntaxToken> {
+    ) -> impl Iterator<Item = SyntaxToken> {
         node.direct_significant_tokens()
             .filter(move |token| token.kind().token_kind() == Some(kind))
             .collect::<Vec<_>>()
@@ -278,8 +278,8 @@ impl Formatter<'_> {
 
     pub(crate) fn tight_comment_gap_after_node_before_token(
         &self,
-        previous: RowanSyntaxNode,
-        next: &RowanSyntaxToken,
+        previous: SyntaxNode,
+        next: &SyntaxToken,
     ) -> Doc {
         let (start, end) = self.range_after_node_before_token(previous, next);
         self.tight_comment_gap_doc(start, end)
@@ -287,8 +287,8 @@ impl Formatter<'_> {
 
     pub(crate) fn tight_comment_gap_after_token_before_node(
         &self,
-        previous: &RowanSyntaxToken,
-        next: RowanSyntaxNode,
+        previous: &SyntaxToken,
+        next: SyntaxNode,
     ) -> Doc {
         let (start, end) = self.range_after_token_before_node(previous, next);
         self.tight_comment_gap_doc(start, end)
@@ -296,8 +296,8 @@ impl Formatter<'_> {
 
     pub(crate) fn tight_comment_gap_after_token_before_token(
         &self,
-        previous: &RowanSyntaxToken,
-        next: &RowanSyntaxToken,
+        previous: &SyntaxToken,
+        next: &SyntaxToken,
     ) -> Doc {
         let (start, end) = self.range_after_token_before_token(previous, next);
         self.tight_comment_gap_doc(start, end)

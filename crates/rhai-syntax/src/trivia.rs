@@ -1,4 +1,4 @@
-use crate::{RowanSyntaxElement, RowanSyntaxNode, RowanSyntaxToken, TextRange, TokenKind};
+use crate::{SyntaxElement, SyntaxNode, SyntaxToken, TextRange, TokenKind};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct TriviaToken {
@@ -7,7 +7,7 @@ struct TriviaToken {
 }
 
 impl TriviaToken {
-    fn from_rowan(token: &RowanSyntaxToken) -> Option<Self> {
+    fn from_rowan(token: &SyntaxToken) -> Option<Self> {
         Some(Self {
             kind: token.kind().token_kind()?,
             range: token.text_range(),
@@ -32,10 +32,10 @@ pub enum TriviaSlot {
 
 #[derive(Debug, Clone)]
 pub enum TriviaBoundary {
-    NodeNode(RowanSyntaxNode, RowanSyntaxNode),
-    NodeToken(RowanSyntaxNode, RowanSyntaxToken),
-    TokenNode(RowanSyntaxToken, RowanSyntaxNode),
-    TokenToken(RowanSyntaxToken, RowanSyntaxToken),
+    NodeNode(SyntaxNode, SyntaxNode),
+    NodeToken(SyntaxNode, SyntaxToken),
+    TokenNode(SyntaxToken, SyntaxNode),
+    TokenToken(SyntaxToken, SyntaxToken),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -96,7 +96,7 @@ pub struct TriviaStore {
 }
 
 impl TriviaStore {
-    pub fn new(source: &str, root: &RowanSyntaxNode) -> Self {
+    pub fn new(source: &str, root: &SyntaxNode) -> Self {
         let mut trivia_tokens = Vec::new();
         let mut comment_tokens = Vec::new();
 
@@ -122,13 +122,13 @@ impl TriviaStore {
         }
     }
 
-    pub fn node_has_unowned_comments(&self, node: &RowanSyntaxNode) -> bool {
+    pub fn node_has_unowned_comments(&self, node: &SyntaxNode) -> bool {
         self.node_has_unowned_comments_outside(node, &[])
     }
 
     pub fn node_has_unowned_comments_outside(
         &self,
-        node: &RowanSyntaxNode,
+        node: &SyntaxNode,
         allowed_ranges: &[(usize, usize)],
     ) -> bool {
         let child_ranges = node
@@ -154,7 +154,7 @@ impl TriviaStore {
 
     pub fn node_has_unowned_comments_outside_slots(
         &self,
-        node: &RowanSyntaxNode,
+        node: &SyntaxNode,
         allowed_slots: &[TriviaSlot],
     ) -> bool {
         let allowed_ranges = allowed_slots
@@ -166,7 +166,7 @@ impl TriviaStore {
 
     pub fn node_has_unowned_comments_outside_boundaries(
         &self,
-        node: &RowanSyntaxNode,
+        node: &SyntaxNode,
         boundaries: &[TriviaBoundary],
     ) -> bool {
         let mut allowed_slots = Vec::with_capacity(boundaries.len());
@@ -203,8 +203,8 @@ impl TriviaStore {
 
     pub fn range_after_node_before_node(
         &self,
-        previous: &RowanSyntaxNode,
-        next: &RowanSyntaxNode,
+        previous: &SyntaxNode,
+        next: &SyntaxNode,
     ) -> (usize, usize) {
         (
             offset_after(previous.text_range()),
@@ -214,8 +214,8 @@ impl TriviaStore {
 
     pub fn range_after_node_before_token(
         &self,
-        previous: &RowanSyntaxNode,
-        next: RowanSyntaxToken,
+        previous: &SyntaxNode,
+        next: SyntaxToken,
     ) -> (usize, usize) {
         (
             offset_after(previous.text_range()),
@@ -225,8 +225,8 @@ impl TriviaStore {
 
     pub fn range_after_token_before_node(
         &self,
-        previous: RowanSyntaxToken,
-        next: &RowanSyntaxNode,
+        previous: SyntaxToken,
+        next: &SyntaxNode,
     ) -> (usize, usize) {
         (
             offset_after(previous.text_range()),
@@ -236,8 +236,8 @@ impl TriviaStore {
 
     pub fn range_after_token_before_token(
         &self,
-        previous: RowanSyntaxToken,
-        next: RowanSyntaxToken,
+        previous: SyntaxToken,
+        next: SyntaxToken,
     ) -> (usize, usize) {
         (
             offset_after(previous.text_range()),
@@ -247,8 +247,8 @@ impl TriviaStore {
 
     pub fn has_comments_after_node_before_node(
         &self,
-        previous: &RowanSyntaxNode,
-        next: &RowanSyntaxNode,
+        previous: &SyntaxNode,
+        next: &SyntaxNode,
     ) -> bool {
         let (start, end) = self.range_after_node_before_node(previous, next);
         self.range_has_comments(start, end)
@@ -256,8 +256,8 @@ impl TriviaStore {
 
     pub fn has_comments_after_node_before_token(
         &self,
-        previous: &RowanSyntaxNode,
-        next: RowanSyntaxToken,
+        previous: &SyntaxNode,
+        next: SyntaxToken,
     ) -> bool {
         let (start, end) = self.range_after_node_before_token(previous, next);
         self.range_has_comments(start, end)
@@ -265,8 +265,8 @@ impl TriviaStore {
 
     pub fn has_comments_after_token_before_node(
         &self,
-        previous: RowanSyntaxToken,
-        next: &RowanSyntaxNode,
+        previous: SyntaxToken,
+        next: &SyntaxNode,
     ) -> bool {
         let (start, end) = self.range_after_token_before_node(previous, next);
         self.range_has_comments(start, end)
@@ -274,8 +274,8 @@ impl TriviaStore {
 
     pub fn has_comments_after_token_before_token(
         &self,
-        previous: RowanSyntaxToken,
-        next: RowanSyntaxToken,
+        previous: SyntaxToken,
+        next: SyntaxToken,
     ) -> bool {
         let (start, end) = self.range_after_token_before_token(previous, next);
         self.range_has_comments(start, end)
@@ -283,8 +283,8 @@ impl TriviaStore {
 
     pub fn is_whitespace_only_after_node_before_node(
         &self,
-        previous: &RowanSyntaxNode,
-        next: &RowanSyntaxNode,
+        previous: &SyntaxNode,
+        next: &SyntaxNode,
     ) -> bool {
         let (start, end) = self.range_after_node_before_node(previous, next);
         self.range_is_whitespace_only(start, end)
@@ -292,8 +292,8 @@ impl TriviaStore {
 
     pub fn has_blank_line_after_node_before_node(
         &self,
-        previous: &RowanSyntaxNode,
-        next: &RowanSyntaxNode,
+        previous: &SyntaxNode,
+        next: &SyntaxNode,
     ) -> bool {
         let (start, end) = self.range_after_node_before_node(previous, next);
         self.range_has_blank_line(start, end)
@@ -301,9 +301,9 @@ impl TriviaStore {
 
     pub fn slot_after_node_before_node(
         &self,
-        owner: &RowanSyntaxNode,
-        previous: &RowanSyntaxNode,
-        next: &RowanSyntaxNode,
+        owner: &SyntaxNode,
+        previous: &SyntaxNode,
+        next: &SyntaxNode,
     ) -> Option<TriviaSlot> {
         self.slot_for_boundary(
             owner,
@@ -313,27 +313,27 @@ impl TriviaStore {
 
     pub fn slot_after_node_before_token(
         &self,
-        owner: &RowanSyntaxNode,
-        previous: &RowanSyntaxNode,
-        next: RowanSyntaxToken,
+        owner: &SyntaxNode,
+        previous: &SyntaxNode,
+        next: SyntaxToken,
     ) -> Option<TriviaSlot> {
         self.slot_for_boundary(owner, &TriviaBoundary::NodeToken(previous.clone(), next))
     }
 
     pub fn slot_after_token_before_node(
         &self,
-        owner: &RowanSyntaxNode,
-        previous: RowanSyntaxToken,
-        next: &RowanSyntaxNode,
+        owner: &SyntaxNode,
+        previous: SyntaxToken,
+        next: &SyntaxNode,
     ) -> Option<TriviaSlot> {
         self.slot_for_boundary(owner, &TriviaBoundary::TokenNode(previous, next.clone()))
     }
 
     pub fn slot_after_token_before_token(
         &self,
-        owner: &RowanSyntaxNode,
-        previous: RowanSyntaxToken,
-        next: RowanSyntaxToken,
+        owner: &SyntaxNode,
+        previous: SyntaxToken,
+        next: SyntaxToken,
     ) -> Option<TriviaSlot> {
         self.slot_for_boundary(owner, &TriviaBoundary::TokenToken(previous, next))
     }
@@ -408,8 +408,8 @@ impl TriviaStore {
 
     pub fn comment_gap_after_node_before_node(
         &self,
-        previous: &RowanSyntaxNode,
-        next: &RowanSyntaxNode,
+        previous: &SyntaxNode,
+        next: &SyntaxNode,
         has_previous: bool,
         has_next: bool,
     ) -> GapTrivia {
@@ -419,8 +419,8 @@ impl TriviaStore {
 
     pub fn comment_gap_after_node_before_token(
         &self,
-        previous: &RowanSyntaxNode,
-        next: RowanSyntaxToken,
+        previous: &SyntaxNode,
+        next: SyntaxToken,
         has_previous: bool,
         has_next: bool,
     ) -> GapTrivia {
@@ -430,8 +430,8 @@ impl TriviaStore {
 
     pub fn comment_gap_after_token_before_node(
         &self,
-        previous: RowanSyntaxToken,
-        next: &RowanSyntaxNode,
+        previous: SyntaxToken,
+        next: &SyntaxNode,
         has_previous: bool,
         has_next: bool,
     ) -> GapTrivia {
@@ -441,8 +441,8 @@ impl TriviaStore {
 
     pub fn comment_gap_after_token_before_token(
         &self,
-        previous: RowanSyntaxToken,
-        next: RowanSyntaxToken,
+        previous: SyntaxToken,
+        next: SyntaxToken,
         has_previous: bool,
         has_next: bool,
     ) -> GapTrivia {
@@ -462,7 +462,7 @@ impl TriviaStore {
 
     fn slot_for_boundary(
         &self,
-        owner: &RowanSyntaxNode,
+        owner: &SyntaxNode,
         boundary: &TriviaBoundary,
     ) -> Option<TriviaSlot> {
         let elements = significant_elements(owner);
@@ -477,7 +477,7 @@ impl TriviaStore {
         None
     }
 
-    fn slot_range(&self, owner: &RowanSyntaxNode, slot: TriviaSlot) -> Option<(usize, usize)> {
+    fn slot_range(&self, owner: &SyntaxNode, slot: TriviaSlot) -> Option<(usize, usize)> {
         let elements = significant_elements(owner);
         match slot {
             TriviaSlot::Leading => {
@@ -506,7 +506,7 @@ impl TriviaStore {
     }
 }
 
-fn significant_elements(owner: &RowanSyntaxNode) -> Vec<RowanSyntaxElement> {
+fn significant_elements(owner: &SyntaxNode) -> Vec<SyntaxElement> {
     owner
         .children_with_tokens()
         .filter(|element| match element {
@@ -519,7 +519,7 @@ fn significant_elements(owner: &RowanSyntaxNode) -> Vec<RowanSyntaxElement> {
         .collect()
 }
 
-fn element_range(element: &RowanSyntaxElement) -> TextRange {
+fn element_range(element: &SyntaxElement) -> TextRange {
     match element {
         rowan::NodeOrToken::Node(node) => node.text_range(),
         rowan::NodeOrToken::Token(token) => token.text_range(),
@@ -573,8 +573,8 @@ fn range_contains(container: TextRange, candidate: TextRange) -> bool {
 }
 
 fn boundary_matches(
-    left: &RowanSyntaxElement,
-    right: &RowanSyntaxElement,
+    left: &SyntaxElement,
+    right: &SyntaxElement,
     boundary: &TriviaBoundary,
 ) -> bool {
     match boundary {

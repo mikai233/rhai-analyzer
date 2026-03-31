@@ -9,7 +9,7 @@ use crate::ast::{
     is_literal_token, is_name_like_token, is_prefix_operator, nth_child, token_by_kind,
     token_children,
 };
-use crate::{RowanSyntaxNode, RowanSyntaxToken, SyntaxKind, TokenKind};
+use crate::{SyntaxKind, SyntaxNode, SyntaxToken, TokenKind};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Expr {
@@ -66,7 +66,7 @@ impl AstNode for Expr {
         )
     }
 
-    fn cast(node: RowanSyntaxNode) -> Option<Self> {
+    fn cast(node: SyntaxNode) -> Option<Self> {
         match node.kind().syntax_kind()? {
             SyntaxKind::ExprName => Some(Self::Name(NameExpr { syntax: node })),
             SyntaxKind::ExprLiteral => Some(Self::Literal(LiteralExpr { syntax: node })),
@@ -98,7 +98,7 @@ impl AstNode for Expr {
         }
     }
 
-    fn syntax(&self) -> RowanSyntaxNode {
+    fn syntax(&self) -> SyntaxNode {
         match self {
             Self::Name(expr) => expr.syntax(),
             Self::Literal(expr) => expr.syntax(),
@@ -140,7 +140,7 @@ impl AstNode for StringPart {
         )
     }
 
-    fn cast(node: RowanSyntaxNode) -> Option<Self> {
+    fn cast(node: SyntaxNode) -> Option<Self> {
         match node.kind().syntax_kind()? {
             SyntaxKind::StringSegment => Some(Self::Segment(StringSegment { syntax: node })),
             SyntaxKind::StringInterpolation => {
@@ -150,7 +150,7 @@ impl AstNode for StringPart {
         }
     }
 
-    fn syntax(&self) -> RowanSyntaxNode {
+    fn syntax(&self) -> SyntaxNode {
         match self {
             Self::Segment(part) => part.syntax(),
             Self::Interpolation(part) => part.syntax(),
@@ -159,13 +159,13 @@ impl AstNode for StringPart {
 }
 
 impl NameExpr {
-    pub fn token(&self) -> Option<RowanSyntaxToken> {
+    pub fn token(&self) -> Option<SyntaxToken> {
         find_token(&self.syntax, is_name_like_token)
     }
 }
 
 impl LiteralExpr {
-    pub fn token(&self) -> Option<RowanSyntaxToken> {
+    pub fn token(&self) -> Option<SyntaxToken> {
         find_token(&self.syntax, is_literal_token)
     }
 }
@@ -195,7 +195,7 @@ impl ObjectFieldList {
 }
 
 impl ObjectField {
-    pub fn name_token(&self) -> Option<RowanSyntaxToken> {
+    pub fn name_token(&self) -> Option<SyntaxToken> {
         find_token(&self.syntax, |kind| {
             matches!(kind, TokenKind::Ident | TokenKind::String)
         })
@@ -257,7 +257,7 @@ impl SwitchPatternList {
         children(&self.syntax)
     }
 
-    pub fn wildcard_token(&self) -> Option<RowanSyntaxToken> {
+    pub fn wildcard_token(&self) -> Option<SyntaxToken> {
         token_by_kind(&self.syntax, TokenKind::Underscore)
     }
 }
@@ -293,7 +293,7 @@ impl ForExpr {
 }
 
 impl ForBindings {
-    pub fn names(&self) -> impl Iterator<Item = RowanSyntaxToken> {
+    pub fn names(&self) -> impl Iterator<Item = SyntaxToken> {
         let syntax = self.syntax.clone();
         token_children(&syntax)
             .filter(|token| token.kind().token_kind().is_some_and(is_binding_token))
@@ -313,7 +313,7 @@ impl DoExpr {
 }
 
 impl DoCondition {
-    pub fn keyword_token(&self) -> Option<RowanSyntaxToken> {
+    pub fn keyword_token(&self) -> Option<SyntaxToken> {
         find_token(&self.syntax, |kind| {
             matches!(kind, TokenKind::WhileKw | TokenKind::UntilKw)
         })
@@ -329,7 +329,7 @@ impl PathExpr {
         child(&self.syntax)
     }
 
-    pub fn segments(&self) -> impl Iterator<Item = RowanSyntaxToken> {
+    pub fn segments(&self) -> impl Iterator<Item = SyntaxToken> {
         let syntax = self.syntax.clone();
         token_children(&syntax)
             .filter(|token| token.kind().token_kind().is_some_and(is_name_like_token))
@@ -361,7 +361,7 @@ impl StringPartList {
 }
 
 impl StringSegment {
-    pub fn text_token(&self) -> Option<RowanSyntaxToken> {
+    pub fn text_token(&self) -> Option<SyntaxToken> {
         token_by_kind(&self.syntax, TokenKind::StringText)
     }
 }
@@ -385,7 +385,7 @@ impl InterpolationItemList {
 }
 
 impl UnaryExpr {
-    pub fn operator_token(&self) -> Option<RowanSyntaxToken> {
+    pub fn operator_token(&self) -> Option<SyntaxToken> {
         find_token(&self.syntax, is_prefix_operator)
     }
 
@@ -399,7 +399,7 @@ impl BinaryExpr {
         nth_child(&self.syntax, 0)
     }
 
-    pub fn operator_token(&self) -> Option<RowanSyntaxToken> {
+    pub fn operator_token(&self) -> Option<SyntaxToken> {
         find_token(&self.syntax, is_binary_operator)
     }
 
@@ -413,7 +413,7 @@ impl AssignExpr {
         nth_child(&self.syntax, 0)
     }
 
-    pub fn operator_token(&self) -> Option<RowanSyntaxToken> {
+    pub fn operator_token(&self) -> Option<SyntaxToken> {
         find_token(&self.syntax, is_assignment_operator)
     }
 
@@ -463,7 +463,7 @@ impl FieldExpr {
         child(&self.syntax)
     }
 
-    pub fn name_token(&self) -> Option<RowanSyntaxToken> {
+    pub fn name_token(&self) -> Option<SyntaxToken> {
         find_token(&self.syntax, is_name_like_token)
     }
 }

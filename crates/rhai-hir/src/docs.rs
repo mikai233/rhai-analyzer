@@ -1,4 +1,4 @@
-use rhai_syntax::{RowanSyntaxNode, TextRange, TextSize, TokenKind};
+use rhai_syntax::{SyntaxNode, TextRange, TextSize, TokenKind};
 
 use crate::ty::{TypeRef, parse_type_ref};
 
@@ -23,7 +23,7 @@ pub enum DocTag {
 }
 
 pub fn collect_doc_block(
-    root: &RowanSyntaxNode,
+    root: &SyntaxNode,
     _source: &str,
     item_start: TextSize,
 ) -> Option<DocBlock> {

@@ -7,8 +7,8 @@ use crate::{FormatOptions, FormatResult, RangeFormatResult};
 use rhai_syntax::{
     AliasClause, ArgList, ArrayItemList, AstNode, BlockExpr, BlockItemList, CatchClause,
     ClosureParamList, DoCondition, ElseBranch, Expr, ForBindings, InterpolationItemList, Item,
-    ObjectFieldList, ParamList, Root, RootItemList, RowanSyntaxNode, RowanSyntaxNodeExt,
-    StringPartList, SwitchArmList, SwitchPatternList, SyntaxKind, TextRange, TextSize, TriviaStore,
+    ObjectFieldList, ParamList, Root, RootItemList, StringPartList, SwitchArmList,
+    SwitchPatternList, SyntaxKind, SyntaxNode, SyntaxNodeExt, TextRange, TextSize, TriviaStore,
     parse_text,
 };
 
@@ -231,7 +231,7 @@ fn select_range_owner(root: Root, requested_range: TextRange) -> Option<RangeOwn
 }
 
 fn find_nested_range_owner(
-    node: &RowanSyntaxNode,
+    node: &SyntaxNode,
     requested_range: TextRange,
     block_depth: usize,
 ) -> Option<RangeOwner> {
@@ -257,7 +257,7 @@ fn find_nested_range_owner(
     best
 }
 
-fn range_owner_for_node(node: &RowanSyntaxNode, block_depth: usize) -> Option<RangeOwner> {
+fn range_owner_for_node(node: &SyntaxNode, block_depth: usize) -> Option<RangeOwner> {
     if let Some(item) = Item::cast(node.clone()) {
         return Some(RangeOwner {
             range: node.structural_range(),

@@ -1,7 +1,7 @@
 use rhai_db::DatabaseSnapshot;
 use rhai_syntax::{
     ArrayExpr, AstNode, BlockExpr, CatchClause, Expr, ForExpr, IfExpr, Item, ObjectExpr, Root,
-    RowanSyntaxNode, Stmt, SwitchExpr, TextRange, TokenKind, TryStmt, WhileExpr,
+    Stmt, SwitchExpr, SyntaxNode, TextRange, TokenKind, TryStmt, WhileExpr,
 };
 use rhai_vfs::FileId;
 
@@ -29,7 +29,7 @@ pub(crate) fn folding_ranges(snapshot: &DatabaseSnapshot, file_id: FileId) -> Ve
     ranges
 }
 
-fn comment_folding_ranges(root: &RowanSyntaxNode, _source: &str) -> Vec<FoldingRange> {
+fn comment_folding_ranges(root: &SyntaxNode, _source: &str) -> Vec<FoldingRange> {
     let mut ranges = Vec::new();
     let mut run_start = None;
     let mut run_end = None;

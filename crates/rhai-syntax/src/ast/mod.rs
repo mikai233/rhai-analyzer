@@ -1,11 +1,11 @@
 use std::marker::PhantomData;
 
-use crate::{RowanSyntaxNode, RowanSyntaxToken, SyntaxKind, TokenKind};
+use crate::{SyntaxKind, SyntaxNode, SyntaxToken, TokenKind};
 
 pub trait AstNode: Clone + Sized {
     fn can_cast(kind: SyntaxKind) -> bool;
-    fn cast(node: RowanSyntaxNode) -> Option<Self>;
-    fn syntax(&self) -> RowanSyntaxNode;
+    fn cast(node: SyntaxNode) -> Option<Self>;
+    fn syntax(&self) -> SyntaxNode;
 }
 
 #[derive(Debug, Clone)]
@@ -15,7 +15,7 @@ pub struct AstChildren<N> {
 }
 
 impl<N> AstChildren<N> {
-    pub(crate) fn new(node: &RowanSyntaxNode) -> Self {
+    pub(crate) fn new(node: &SyntaxNode) -> Self {
         Self {
             inner: node.children(),
             marker: PhantomData,
@@ -38,7 +38,7 @@ macro_rules! simple_ast_node {
     ($name:ident, $kind:path) => {
         #[derive(Debug, Clone, PartialEq, Eq)]
         pub struct $name {
-            pub(crate) syntax: RowanSyntaxNode,
+            pub(crate) syntax: SyntaxNode,
         }
 
         impl AstNode for $name {
@@ -46,11 +46,11 @@ macro_rules! simple_ast_node {
                 kind == $kind
             }
 
-            fn cast(node: RowanSyntaxNode) -> Option<Self> {
+            fn cast(node: SyntaxNode) -> Option<Self> {
                 (node.kind().syntax_kind() == Some($kind)).then_some(Self { syntax: node })
             }
 
-            fn syntax(&self) -> RowanSyntaxNode {
+            fn syntax(&self) -> SyntaxNode {
                 self.syntax.clone()
             }
         }
@@ -121,30 +121,28 @@ pub use crate::ast::expr::{Expr, StringPart};
 pub use crate::ast::item::Item;
 pub use crate::ast::stmt::Stmt;
 
-pub(crate) fn children<N>(node: &RowanSyntaxNode) -> AstChildren<N>
+pub(crate) fn children<N>(node: &SyntaxNode) -> AstChildren<N>
 where
     N: AstNode,
 {
     AstChildren::new(node)
 }
 
-pub(crate) fn child<N>(node: &RowanSyntaxNode) -> Option<N>
+pub(crate) fn child<N>(node: &SyntaxNode) -> Option<N>
 where
     N: AstNode,
 {
     children(node).next()
 }
 
-pub(crate) fn nth_child<N>(node: &RowanSyntaxNode, index: usize) -> Option<N>
+pub(crate) fn nth_child<N>(node: &SyntaxNode, index: usize) -> Option<N>
 where
     N: AstNode,
 {
     children(node).nth(index)
 }
 
-pub(crate) fn token_children(
-    node: &RowanSyntaxNode,
-) -> impl Iterator<Item = RowanSyntaxToken> + '_ {
+pub(crate) fn token_children(node: &SyntaxNode) -> impl Iterator<Item = SyntaxToken> + '_ {
     node.children_with_tokens()
         .filter_map(|element| element.into_token())
         .filter(|token| {
@@ -155,11 +153,11 @@ pub(crate) fn token_children(
         })
 }
 
-pub(crate) fn token_by_kind(node: &RowanSyntaxNode, kind: TokenKind) -> Option<RowanSyntaxToken> {
+pub(crate) fn token_by_kind(node: &SyntaxNode, kind: TokenKind) -> Option<SyntaxToken> {
     token_children(node).find(|token| token.kind().token_kind() == Some(kind))
 }
 
-pub(crate) fn find_token<F>(node: &RowanSyntaxNode, mut predicate: F) -> Option<RowanSyntaxToken>
+pub(crate) fn find_token<F>(node: &SyntaxNode, mut predicate: F) -> Option<SyntaxToken>
 where
     F: FnMut(TokenKind) -> bool,
 {

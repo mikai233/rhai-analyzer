@@ -1,7 +1,7 @@
 use rhai_syntax::{
     AstNode, BlockExpr, BlockItemList, ConstStmt, Expr, ExprStmt, FnItem, ImportStmt, Item,
-    LetStmt, Root, RootItemList, RowanSyntaxNode, RowanSyntaxNodeExt, RowanSyntaxToken, Stmt,
-    TokenKind, TriviaBoundary,
+    LetStmt, Root, RootItemList, Stmt, SyntaxNode, SyntaxNodeExt, SyntaxToken, TokenKind,
+    TriviaBoundary,
 };
 
 use crate::ImportSortOrder;
@@ -837,7 +837,7 @@ impl Formatter<'_> {
 
     fn assignment_stmt_requires_raw_fallback(
         &self,
-        stmt: &RowanSyntaxNode,
+        stmt: &SyntaxNode,
         head_end_range: rhai_syntax::TextRange,
         value_expr: Option<Expr>,
         has_value: bool,
@@ -866,8 +866,8 @@ impl Formatter<'_> {
 
     fn value_stmt_requires_raw_fallback(
         &self,
-        stmt: &RowanSyntaxNode,
-        keyword_token: Option<RowanSyntaxToken>,
+        stmt: &SyntaxNode,
+        keyword_token: Option<SyntaxToken>,
         value_expr: Option<Expr>,
         has_value: bool,
     ) -> bool {
@@ -903,7 +903,7 @@ impl Formatter<'_> {
         self.node_has_unowned_comments_outside_boundaries(expr_stmt.syntax(), &allowed_boundaries)
     }
 
-    fn continue_stmt_requires_raw_fallback(&self, stmt: &RowanSyntaxNode) -> bool {
+    fn continue_stmt_requires_raw_fallback(&self, stmt: &SyntaxNode) -> bool {
         let Some(keyword_token) = self.token(stmt.clone(), TokenKind::ContinueKw) else {
             return self.node_has_unowned_comments(stmt.clone());
         };
@@ -919,7 +919,7 @@ impl Formatter<'_> {
 
     fn format_assignment_statement_doc(
         &self,
-        stmt: &RowanSyntaxNode,
+        stmt: &SyntaxNode,
         head: Doc,
         value: Doc,
         head_end: usize,
@@ -967,7 +967,7 @@ impl Formatter<'_> {
     fn statement_semicolon_doc(
         &self,
         value_range: Option<rhai_syntax::TextRange>,
-        stmt: &RowanSyntaxNode,
+        stmt: &SyntaxNode,
     ) -> Doc {
         let Some(semicolon_range) = self.token_range(stmt.clone(), TokenKind::Semicolon) else {
             return Doc::nil();
@@ -985,7 +985,7 @@ impl Formatter<'_> {
         ])
     }
 
-    fn keyword_semicolon_doc(&self, keyword_end: usize, stmt: &RowanSyntaxNode) -> Doc {
+    fn keyword_semicolon_doc(&self, keyword_end: usize, stmt: &SyntaxNode) -> Doc {
         let Some(semicolon_range) = self.token_range(stmt.clone(), TokenKind::Semicolon) else {
             return Doc::nil();
         };
@@ -1034,17 +1034,17 @@ impl Formatter<'_> {
         }
     }
 
-    fn function_signature_tokens(&self, function: &FnItem) -> Vec<RowanSyntaxToken> {
+    fn function_signature_tokens(&self, function: &FnItem) -> Vec<SyntaxToken> {
         let mut tokens = Vec::new();
 
         for child in function.syntax().children_with_tokens() {
             match child {
-                rhai_syntax::RowanSyntaxElement::Node(node)
+                rhai_syntax::SyntaxElement::Node(node)
                     if node.kind() == rhai_syntax::SyntaxKind::ParamList.to_rowan_kind() =>
                 {
                     break;
                 }
-                rhai_syntax::RowanSyntaxElement::Token(token)
+                rhai_syntax::SyntaxElement::Token(token)
                     if token
                         .kind()
                         .token_kind()
@@ -1199,17 +1199,14 @@ fn range_end(range: rhai_syntax::TextRange) -> usize {
     u32::from(range.end()) as usize
 }
 
-fn name_or_stmt_end(
-    name: Option<RowanSyntaxToken>,
-    stmt: &RowanSyntaxNode,
-) -> rhai_syntax::TextRange {
+fn name_or_stmt_end(name: Option<SyntaxToken>, stmt: &SyntaxNode) -> rhai_syntax::TextRange {
     name.map(|token| token.text_range())
         .unwrap_or_else(|| stmt.text_range())
 }
 
 fn function_signature_inline_separator(
-    previous: &RowanSyntaxToken,
-    current: &RowanSyntaxToken,
+    previous: &SyntaxToken,
+    current: &SyntaxToken,
 ) -> &'static str {
     match (previous.kind().token_kind(), current.kind().token_kind()) {
         (Some(TokenKind::PrivateKw), Some(TokenKind::FnKw)) => " ",

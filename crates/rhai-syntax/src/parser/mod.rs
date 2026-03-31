@@ -1,9 +1,7 @@
 use std::sync::Arc;
 
 use crate::lexer::lex_text;
-use crate::syntax::{
-    Parse, SyntaxError, SyntaxKind, SyntaxToken, TextRange, TextSize, text_size_of,
-};
+use crate::syntax::{LexToken, Parse, SyntaxError, SyntaxKind, TextRange, TextSize, text_size_of};
 use rowan::NodeOrToken;
 
 mod build;
@@ -29,7 +27,7 @@ pub fn parse_text(text: &str) -> Parse {
 }
 
 struct Parser<'a> {
-    tokens: Vec<SyntaxToken>,
+    tokens: Vec<LexToken>,
     cursor: usize,
     text_len: TextSize,
     errors: Vec<SyntaxError>,
@@ -38,7 +36,7 @@ struct Parser<'a> {
 }
 
 impl<'a> Parser<'a> {
-    fn new(tokens: Vec<SyntaxToken>, text_len: TextSize, source: &'a str) -> Self {
+    fn new(tokens: Vec<LexToken>, text_len: TextSize, source: &'a str) -> Self {
         Self {
             tokens,
             cursor: 0,
