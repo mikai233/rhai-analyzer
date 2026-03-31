@@ -1,6 +1,9 @@
 use std::collections::HashMap;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
+
+mod path;
+pub use path::VfsPath;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct FileId(pub u32);
@@ -10,13 +13,17 @@ pub struct DocumentVersion(pub i32);
 
 #[derive(Debug, Clone)]
 pub struct DocumentData {
-    path: PathBuf,
+    path: VfsPath,
     text: Arc<str>,
     version: DocumentVersion,
 }
 
 impl DocumentData {
     pub fn path(&self) -> &Path {
+        self.path.as_path()
+    }
+
+    pub fn vfs_path(&self) -> &VfsPath {
         &self.path
     }
 
@@ -37,17 +44,17 @@ impl DocumentData {
 pub struct VirtualFileSystem {
     next_file_id: u32,
     files_by_id: HashMap<FileId, DocumentData>,
-    ids_by_path: HashMap<PathBuf, FileId>,
+    ids_by_path: HashMap<VfsPath, FileId>,
 }
 
 impl VirtualFileSystem {
     pub fn set_file(
         &mut self,
-        path: impl Into<PathBuf>,
+        path: impl Into<VfsPath>,
         text: impl Into<String>,
         version: DocumentVersion,
     ) -> FileId {
-        let path = normalize_path(&path.into());
+        let path = path.into();
 
         if let Some(file_id) = self.ids_by_path.get(&path).copied() {
             self.files_by_id.insert(
@@ -76,7 +83,7 @@ impl VirtualFileSystem {
     }
 
     pub fn remove_file(&mut self, path: &Path) -> Option<FileId> {
-        let path = normalize_path(path);
+        let path = VfsPath::new(path);
         let file_id = self.ids_by_path.remove(&path)?;
         self.files_by_id.remove(&file_id);
         Some(file_id)
@@ -87,7 +94,7 @@ impl VirtualFileSystem {
     }
 
     pub fn file_id(&self, path: &Path) -> Option<FileId> {
-        self.ids_by_path.get(&normalize_path(path)).copied()
+        self.ids_by_path.get(&VfsPath::new(path)).copied()
     }
 
     pub fn file_text(&self, file_id: FileId) -> Option<Arc<str>> {
@@ -102,32 +109,12 @@ impl VirtualFileSystem {
 }
 
 pub fn normalize_path(path: &Path) -> PathBuf {
-    let mut normalized = PathBuf::new();
-
-    for component in path.components() {
-        match component {
-            Component::Prefix(prefix) => normalized.push(prefix.as_os_str()),
-            Component::RootDir => normalized.push(component.as_os_str()),
-            Component::CurDir => {}
-            Component::ParentDir => {
-                if !normalized.pop() {
-                    normalized.push(component.as_os_str());
-                }
-            }
-            Component::Normal(segment) => normalized.push(segment),
-        }
-    }
-
-    if normalized.as_os_str().is_empty() && !path.as_os_str().is_empty() {
-        PathBuf::from(".")
-    } else {
-        normalized
-    }
+    VfsPath::new(path).as_path().to_path_buf()
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{DocumentVersion, VirtualFileSystem, normalize_path};
+    use super::{DocumentVersion, VfsPath, VirtualFileSystem, normalize_path};
     use std::path::Path;
 
     #[test]
@@ -139,15 +126,15 @@ mod tests {
             DocumentVersion(1),
         );
 
+        // Both resolve to the same absolute path.
         assert_eq!(
             normalize_path(Path::new("src/./main.rhai")),
-            Path::new("src/main.rhai")
+            normalize_path(Path::new("src/main.rhai")),
         );
+        // Same logical file → same FileId.
         assert_eq!(vfs.file_id(Path::new("src/main.rhai")), Some(file_id));
-        assert_eq!(
-            vfs.file(file_id).expect("expected file").path(),
-            Path::new("src/main.rhai")
-        );
+        let stored = vfs.file(file_id).expect("expected file");
+        assert!(stored.path().ends_with("src/main.rhai"));
     }
 
     #[test]
@@ -161,5 +148,20 @@ mod tests {
         );
         assert!(vfs.file(file_id).is_none());
         assert!(vfs.file_id(Path::new("workspace/one.rhai")).is_none());
+    }
+
+    #[test]
+    fn mixed_separators_produce_same_identity() {
+        let a = VfsPath::new("src\\lib\\util.rhai");
+        let b = VfsPath::new("src/lib/util.rhai");
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn drive_letter_is_uppercased() {
+        let a = VfsPath::new("c:/Users/foo/main.rhai");
+        let b = VfsPath::new("C:/Users/foo/main.rhai");
+        assert_eq!(a, b);
+        assert!(a.to_string().starts_with("C:"));
     }
 }
