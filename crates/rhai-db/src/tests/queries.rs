@@ -2,7 +2,7 @@ use crate::tests::{assert_workspace_files_have_no_syntax_diagnostics, offset_in}
 use crate::{AnalyzerDatabase, ChangeSet, FileChange, ProjectReferenceKind};
 use rhai_project::ProjectConfig;
 use rhai_syntax::TextSize;
-use rhai_vfs::DocumentVersion;
+use rhai_vfs::{DocumentVersion, normalize_path};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -783,21 +783,21 @@ fn snapshot_tracks_source_roots_workspace_membership_and_normalized_paths() {
     assert_eq!(
         snapshot.source_root_paths(),
         vec![
-            Path::new("workspace/scripts").to_path_buf(),
-            Path::new("workspace/src").to_path_buf(),
+            normalize_path(Path::new("workspace/scripts")),
+            normalize_path(Path::new("workspace/src")),
         ]
     );
     assert_eq!(
         snapshot.normalized_path(main),
-        Some(Path::new("workspace/src/main.rhai"))
+        Some(normalize_path(Path::new("workspace/src/main.rhai")).as_path())
     );
     assert_eq!(
         snapshot.normalized_path(tool),
-        Some(Path::new("workspace/scripts/tool.rhai"))
+        Some(normalize_path(Path::new("workspace/scripts/tool.rhai")).as_path())
     );
     assert_eq!(
         snapshot.normalized_path(test),
-        Some(Path::new("workspace/tests/test.rhai"))
+        Some(normalize_path(Path::new("workspace/tests/test.rhai")).as_path())
     );
     assert!(snapshot.is_workspace_file(main));
     assert!(snapshot.is_workspace_file(tool));
@@ -836,7 +836,7 @@ fn analysis_dependencies_track_text_and_project_inputs() {
 
     assert_eq!(
         first_dependencies.parse.normalized_path,
-        Path::new("src/main.rhai")
+        normalize_path(Path::new("src/main.rhai"))
     );
     assert_eq!(
         first_dependencies.parse.document_version,
@@ -962,7 +962,10 @@ fn revision_stats_and_debug_view_surface_cache_activity() {
     let debug_view = warmed_snapshot.debug_view();
     assert_eq!(debug_view.revision, warmed_snapshot.revision());
     assert_eq!(debug_view.files.len(), 1);
-    assert_eq!(debug_view.files[0].normalized_path, Path::new("main.rhai"));
+    assert_eq!(
+        debug_view.files[0].normalized_path,
+        normalize_path(Path::new("main.rhai"))
+    );
     assert_eq!(debug_view.files[0].document_version, DocumentVersion(2));
     assert_eq!(debug_view.files[0].stats.file_id, file_id);
     assert_eq!(debug_view.files[0].stats.query_support_rebuilds, 1);

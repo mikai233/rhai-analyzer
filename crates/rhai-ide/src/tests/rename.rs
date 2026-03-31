@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use rhai_db::ChangeSet;
-use rhai_vfs::DocumentVersion;
+use rhai_vfs::{DocumentVersion, normalize_path};
 
 use crate::tests::assert_no_syntax_diagnostics;
 use crate::{AnalysisHost, FilePosition, ReferenceKind};
@@ -252,7 +252,7 @@ fn renaming_static_import_module_reference_renames_file_and_updates_imports() {
     assert_eq!(source_change.file_renames[0].file_id, demo);
     assert_eq!(
         source_change.file_renames[0].new_path,
-        Path::new("renamed_demo.rhai")
+        normalize_path(Path::new("renamed_demo.rhai"))
     );
 
     let consumer_edits = source_change
@@ -338,7 +338,7 @@ fn renaming_static_import_module_reference_preserves_path_prefixes() {
     assert_eq!(source_change.file_renames[0].file_id, provider);
     assert_eq!(
         source_change.file_renames[0].new_path,
-        Path::new("shared/renamed.rhai")
+        normalize_path(Path::new("shared/renamed.rhai"))
     );
     let consumer_edits = source_change
         .file_edits
