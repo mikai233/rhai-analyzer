@@ -1,7 +1,8 @@
 use anyhow::{Result, anyhow};
 use lsp_types::{
-    FoldingRange, FoldingRangeKind, FormattingOptions, Position, Range, SemanticToken,
-    SemanticTokenModifier, SemanticTokenType, SemanticTokens, SemanticTokensLegend, TextEdit, Uri,
+    FoldingRange, FoldingRangeKind, FormattingOptions, LinkedEditingRanges, Position, Range,
+    SelectionRange, SemanticToken, SemanticTokenModifier, SemanticTokenType, SemanticTokens,
+    SemanticTokensLegend, TextEdit, Uri,
 };
 use rhai_fmt::{FormatOptions as RhaiFormatOptions, IndentStyle};
 use rhai_ide::{
@@ -12,8 +13,10 @@ use rhai_ide::{
     SemanticTokenModifier as IdeSemanticTokenModifier, SignatureHelp, SourceChange,
     WorkspaceSymbol,
 };
+use rhai_syntax::{SyntaxNode, SyntaxNodeExt, TextRange, TextSize, TokenKind, parse_text};
 use rhai_vfs::FileId;
 
+use crate::protocol::text_range_to_lsp_range;
 use crate::state::{ServerState, WorkspaceSymbolMatch};
 
 impl ServerState {
@@ -25,6 +28,15 @@ impl ServerState {
     pub fn goto_definition(&self, uri: &Uri, offset: u32) -> Result<Vec<NavigationTarget>> {
         let (analysis, file_id) = self.analysis_for_open_document(uri)?;
         Ok(analysis.goto_definition(FilePosition { file_id, offset }))
+    }
+
+    pub fn goto_type_definition(&self, uri: &Uri, offset: u32) -> Result<Vec<NavigationTarget>> {
+        let (analysis, file_id) = self.analysis_for_open_document(uri)?;
+        Ok(analysis.goto_type_definition(FilePosition { file_id, offset }))
+    }
+
+    pub fn goto_declaration(&self, uri: &Uri, offset: u32) -> Result<Vec<NavigationTarget>> {
+        self.goto_definition(uri, offset)
     }
 
     pub fn find_references(&self, uri: &Uri, offset: u32) -> Result<Option<ReferencesResult>> {
@@ -40,6 +52,104 @@ impl ServerState {
     ) -> Result<Option<PreparedRename>> {
         let (analysis, file_id) = self.analysis_for_open_document(uri)?;
         Ok(analysis.rename(FilePosition { file_id, offset }, new_name))
+    }
+
+    pub fn prepare_rename(&self, uri: &Uri, offset: u32) -> Result<Option<PreparedRename>> {
+        let (analysis, file_id) = self.analysis_for_open_document(uri)?;
+        Ok(analysis.rename(FilePosition { file_id, offset }, String::new()))
+    }
+
+    pub fn linked_editing_ranges(
+        &self,
+        uri: &Uri,
+        offset: u32,
+    ) -> Result<Option<LinkedEditingRanges>> {
+        let prepared = self.prepare_rename(uri, offset)?;
+        let Some(prepared) = prepared else {
+            return Ok(None);
+        };
+        let text = crate::protocol::open_document_text_by_uri(self, uri)
+            .ok_or_else(|| anyhow!("document `{}` is not open", uri.as_str()))?;
+        let offset = TextSize::from(offset);
+        let active_range = rename_focus_range(&prepared, offset);
+        let Some(active_range) = active_range else {
+            return Ok(None);
+        };
+        let Some(active_text) = text_slice(text.as_ref(), active_range) else {
+            return Ok(None);
+        };
+        if !is_identifier_like(active_text) {
+            return Ok(None);
+        }
+
+        let (_, file_id) = self.analysis_for_open_document(uri)?;
+        let mut ranges = prepared
+            .plan
+            .targets
+            .iter()
+            .map(|target| target.focus_range)
+            .chain(
+                prepared
+                    .plan
+                    .occurrences
+                    .iter()
+                    .map(|occurrence| occurrence.range),
+            )
+            .filter(|range| {
+                range_contains_offset(*range, offset) || {
+                    prepared.plan.occurrences.iter().any(|occurrence| {
+                        occurrence.file_id == file_id && occurrence.range == *range
+                    }) || prepared
+                        .plan
+                        .targets
+                        .iter()
+                        .any(|target| target.file_id == file_id && target.focus_range == *range)
+                }
+            })
+            .filter_map(|range| {
+                let current = text_slice(text.as_ref(), range)?;
+                (current == active_text && is_identifier_like(current)).then_some(range)
+            })
+            .collect::<Vec<_>>();
+        ranges.sort_by_key(|range| (u32::from(range.start()), u32::from(range.end())));
+        ranges.dedup();
+
+        if ranges.len() < 2 {
+            return Ok(None);
+        }
+
+        let lsp_ranges = ranges
+            .into_iter()
+            .filter_map(|range| text_range_to_lsp_range(text.as_ref(), range))
+            .collect::<Vec<_>>();
+
+        Ok(Some(LinkedEditingRanges {
+            ranges: lsp_ranges,
+            word_pattern: Some(String::from(r"[A-Za-z_][A-Za-z0-9_]*")),
+        }))
+    }
+
+    pub fn selection_ranges(
+        &self,
+        uri: &Uri,
+        positions: &[Position],
+    ) -> Result<Vec<SelectionRange>> {
+        let text = crate::protocol::open_document_text_by_uri(self, uri)
+            .ok_or_else(|| anyhow!("document `{}` is not open", uri.as_str()))?;
+        let parse = parse_text(text.as_ref());
+        let root = parse.root();
+
+        positions
+            .iter()
+            .map(|position| {
+                let offset = position_to_offset_in_text(text.as_ref(), *position)
+                    .ok_or_else(|| anyhow!("position is outside document `{}`", uri.as_str()))?;
+                selection_range_chain_to_lsp(text.as_ref(), &root, TextSize::from(offset as u32))
+                    .ok_or_else(|| {
+                        anyhow!("unable to build selection range for `{}`", uri.as_str())
+                    })
+            })
+            .collect()
     }
 
     pub fn document_symbols(&self, uri: &Uri) -> Result<Vec<DocumentSymbol>> {
@@ -79,12 +189,22 @@ impl ServerState {
         Ok(analysis.signature_help(FilePosition { file_id, offset }))
     }
 
-    pub fn inlay_hints(&self, uri: &Uri) -> Result<Vec<InlayHint>> {
+    pub fn inlay_hints(&self, uri: &Uri, range: Option<Range>) -> Result<Vec<InlayHint>> {
         let (analysis, file_id) = self.analysis_for_open_document(uri)?;
+        let text = analysis
+            .file_text(file_id)
+            .ok_or_else(|| anyhow!("document `{}` is missing file text", uri.as_str()))?;
+        let requested_range = range
+            .map(|range| lsp_range_to_text_range(text.as_ref(), range))
+            .transpose()?;
+
         Ok(analysis
             .inlay_hints(file_id)
             .into_iter()
             .filter(|hint| self.inlay_hint_source_enabled(hint.source))
+            .filter(|hint| {
+                requested_range.is_none_or(|range| range.contains(TextSize::from(hint.offset)))
+            })
             .collect())
     }
 
@@ -131,6 +251,47 @@ impl ServerState {
         Ok(source_change_to_lsp_text_edits(text.as_ref(), change))
     }
 
+    pub fn format_on_type(
+        &self,
+        uri: &Uri,
+        position: Position,
+        ch: &str,
+        options: FormattingOptions,
+    ) -> Result<Option<Vec<TextEdit>>> {
+        if !matches!(ch, ";" | "}") {
+            return Ok(None);
+        }
+
+        let (analysis, file_id) = self.analysis_for_open_document(uri)?;
+        let text = analysis
+            .file_text(file_id)
+            .ok_or_else(|| anyhow!("document `{}` is missing file text", uri.as_str()))?;
+        let offset = position_to_offset_in_text(text.as_ref(), position)
+            .ok_or_else(|| anyhow!("position is outside document `{}`", uri.as_str()))?;
+        let trigger_offset = offset.saturating_sub(ch.len());
+        let trigger_range = TextRange::new(
+            TextSize::from(trigger_offset as u32),
+            TextSize::from(trigger_offset as u32),
+        );
+        let format_options = self.formatter_options(&options);
+
+        let change =
+            match analysis.format_range_with_options(file_id, trigger_range, &format_options) {
+                Some(change) => change,
+                None if ch == "}" => {
+                    let Some(change) =
+                        analysis.format_document_with_options(file_id, &format_options)
+                    else {
+                        return Ok(None);
+                    };
+                    return Ok(source_change_to_lsp_text_edits(text.as_ref(), change));
+                }
+                None => return Ok(None),
+            };
+
+        Ok(source_change_to_lsp_text_edits(text.as_ref(), change))
+    }
+
     pub fn folding_ranges(&self, uri: &Uri) -> Result<Vec<FoldingRange>> {
         let (analysis, file_id) = self.analysis_for_open_document(uri)?;
         let text = analysis
@@ -143,15 +304,26 @@ impl ServerState {
         ))
     }
 
-    pub fn semantic_tokens(&self, uri: &Uri) -> Result<SemanticTokens> {
+    pub fn semantic_tokens(&self, uri: &Uri, range: Option<Range>) -> Result<SemanticTokens> {
         let (analysis, file_id) = self.analysis_for_open_document(uri)?;
         let text = analysis
             .file_text(file_id)
             .ok_or_else(|| anyhow!("document `{}` is missing file text", uri.as_str()))?;
+        let requested_range = range
+            .map(|range| lsp_range_to_text_range(text.as_ref(), range))
+            .transpose()?;
+        let tokens = analysis.semantic_tokens(file_id);
+        let filtered_tokens = match requested_range {
+            Some(range) => tokens
+                .into_iter()
+                .filter(|token| text_ranges_intersect(token.range, range))
+                .collect::<Vec<_>>(),
+            None => tokens,
+        };
 
         Ok(SemanticTokens {
             result_id: None,
-            data: encode_semantic_tokens(text.as_ref(), &analysis.semantic_tokens(file_id)),
+            data: encode_semantic_tokens(text.as_ref(), &filtered_tokens),
         })
     }
 
@@ -190,7 +362,10 @@ impl ServerState {
         }
     }
 
-    fn analysis_for_open_document(&self, uri: &Uri) -> Result<(rhai_ide::Analysis, FileId)> {
+    pub(crate) fn analysis_for_open_document(
+        &self,
+        uri: &Uri,
+    ) -> Result<(rhai_ide::Analysis, FileId)> {
         let uri_text = uri.as_str();
         let document = self
             .open_documents
@@ -203,6 +378,164 @@ impl ServerState {
 
         Ok((analysis, file_id))
     }
+}
+
+pub(crate) fn lsp_range_to_text_range(text: &str, range: Range) -> Result<TextRange> {
+    let line_starts = line_start_offsets(text);
+    let start = position_to_offset(text, &line_starts, range.start)
+        .ok_or_else(|| anyhow!("range start is outside the current document"))?;
+    let end = position_to_offset(text, &line_starts, range.end)
+        .ok_or_else(|| anyhow!("range end is outside the current document"))?;
+    Ok(TextRange::new(
+        TextSize::from(start as u32),
+        TextSize::from(end as u32),
+    ))
+}
+
+fn text_ranges_intersect(left: TextRange, right: TextRange) -> bool {
+    left.start() < right.end() && right.start() < left.end()
+}
+
+fn selection_range_chain_to_lsp(
+    text: &str,
+    root: &SyntaxNode,
+    offset: TextSize,
+) -> Option<SelectionRange> {
+    let leaf_token = smallest_token_covering_offset(root, offset);
+    let mut ranges = Vec::<TextRange>::new();
+
+    if let Some(token) = leaf_token.as_ref().filter(|token| {
+        token
+            .kind()
+            .token_kind()
+            .is_some_and(|kind| !kind.is_trivia())
+    }) {
+        push_unique_range(&mut ranges, token.text_range());
+    }
+
+    let starting_node = leaf_token
+        .as_ref()
+        .and_then(|token| token.parent())
+        .unwrap_or_else(|| root.clone());
+
+    for node in starting_node.ancestors() {
+        let range = selection_range_for_node(&node, offset);
+        push_unique_range(&mut ranges, range);
+    }
+
+    let mut selection = None;
+    for range in ranges.into_iter().rev() {
+        selection = Some(SelectionRange {
+            range: text_range_to_lsp_range(text, range)?,
+            parent: selection.map(Box::new),
+        });
+    }
+
+    selection
+}
+
+fn smallest_token_covering_offset(
+    root: &SyntaxNode,
+    offset: TextSize,
+) -> Option<rhai_syntax::SyntaxToken> {
+    root.descendants_with_tokens()
+        .filter_map(|element| element.into_token())
+        .filter(|token| range_contains_offset(token.text_range(), offset))
+        .min_by_key(|token| {
+            let range = token.text_range();
+            let width = u32::from(range.end()) - u32::from(range.start());
+            let trivia_bias = token.kind().token_kind().is_some_and(TokenKind::is_trivia) as u32;
+            (trivia_bias, width)
+        })
+}
+
+fn selection_range_for_node(node: &SyntaxNode, offset: TextSize) -> TextRange {
+    let structural = node.structural_range();
+    if range_contains_offset(structural, offset) {
+        structural
+    } else {
+        node.text_range()
+    }
+}
+
+fn push_unique_range(ranges: &mut Vec<TextRange>, range: TextRange) {
+    if ranges.last().copied() != Some(range) {
+        ranges.push(range);
+    }
+}
+
+fn range_contains_offset(range: TextRange, offset: TextSize) -> bool {
+    range.start() <= offset && offset <= range.end()
+}
+
+fn rename_focus_range(prepared: &PreparedRename, offset: TextSize) -> Option<TextRange> {
+    prepared
+        .plan
+        .targets
+        .iter()
+        .map(|target| target.focus_range)
+        .chain(
+            prepared
+                .plan
+                .occurrences
+                .iter()
+                .map(|occurrence| occurrence.range),
+        )
+        .find(|range| range_contains_offset(*range, offset))
+        .or_else(|| {
+            prepared
+                .plan
+                .targets
+                .first()
+                .map(|target| target.focus_range)
+        })
+        .or_else(|| {
+            prepared
+                .plan
+                .occurrences
+                .first()
+                .map(|occurrence| occurrence.range)
+        })
+}
+
+fn text_slice(text: &str, range: TextRange) -> Option<&str> {
+    let start = u32::from(range.start()) as usize;
+    let end = u32::from(range.end()) as usize;
+    text.get(start..end)
+}
+
+fn is_identifier_like(text: &str) -> bool {
+    let mut chars = text.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    if !(first == '_' || first.is_ascii_alphabetic()) {
+        return false;
+    }
+    chars.all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
+}
+
+fn position_to_offset_in_text(text: &str, position: Position) -> Option<usize> {
+    let line_starts = line_start_offsets(text);
+    let line_start = *line_starts.get(position.line as usize)?;
+    let line_end = line_starts
+        .get(position.line as usize + 1)
+        .copied()
+        .unwrap_or(text.len());
+    let line_text = text.get(line_start..line_end)?;
+
+    let mut utf16_units = 0_u32;
+    for (byte_offset, ch) in line_text.char_indices() {
+        if utf16_units == position.character {
+            return Some(line_start + byte_offset);
+        }
+        utf16_units += ch.len_utf16() as u32;
+        if utf16_units > position.character {
+            return None;
+        }
+    }
+
+    (utf16_units == position.character).then_some(line_start + line_text.len())
 }
 
 impl ServerState {
@@ -321,10 +654,16 @@ fn split_token_segments(
         let segment_end = end.min(line_end);
 
         if segment_end > segment_start {
+            let Some(prefix_text) = text.get(line_start..segment_start) else {
+                break;
+            };
+            let Some(segment_text) = text.get(segment_start..segment_end) else {
+                break;
+            };
             segments.push((
                 line_index as u32,
-                utf16_len(&text[line_start..segment_start]) as u32,
-                utf16_len(&text[segment_start..segment_end]) as u32,
+                utf16_len(prefix_text) as u32,
+                utf16_len(segment_text) as u32,
             ));
         }
 
@@ -398,7 +737,7 @@ fn offset_to_position(text: &str, line_starts: &[usize], offset: usize) -> Optio
 
     Some(Position {
         line: line_index as u32,
-        character: utf16_len(&text[line_start..offset]) as u32,
+        character: utf16_len(text.get(line_start..offset)?) as u32,
     })
 }
 
@@ -408,7 +747,7 @@ fn position_to_offset(text: &str, line_starts: &[usize], position: Position) -> 
         .get(position.line as usize + 1)
         .copied()
         .unwrap_or(text.len());
-    let line_text = &text[line_start..line_end];
+    let line_text = text.get(line_start..line_end)?;
 
     let mut utf16_units = 0_u32;
     for (byte_offset, ch) in line_text.char_indices() {
@@ -452,7 +791,7 @@ fn encode_folding_range(
     }
 
     let end_line_start = *line_starts.get(end_line as usize)?;
-    let end_character = utf16_len(&text[end_line_start..end_offset + 1]) as u32;
+    let end_character = utf16_len(text.get(end_line_start..end_offset + 1)?) as u32;
 
     Some(FoldingRange {
         start_line,

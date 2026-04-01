@@ -200,11 +200,16 @@ fn default_max_line_length() -> usize {
 }
 
 fn server_settings_from_initialize(params: &InitializeParams) -> ServerSettings {
-    let options = params
+    params
         .initialization_options
-        .clone()
-        .and_then(|value| serde_json::from_value::<InitializeOptions>(value).ok())
-        .unwrap_or_default();
+        .as_ref()
+        .map(server_settings_from_value)
+        .unwrap_or_default()
+}
+
+pub(crate) fn server_settings_from_value(value: &serde_json::Value) -> ServerSettings {
+    let options = value.get("rhai").cloned().unwrap_or_else(|| value.clone());
+    let options = serde_json::from_value::<InitializeOptions>(options).unwrap_or_default();
 
     ServerSettings {
         inlay_hints: InlayHintSettings {

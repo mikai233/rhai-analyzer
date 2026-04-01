@@ -11,6 +11,7 @@ impl ServerState {
         let Some(document) = self.open_documents.remove(uri) else {
             return Vec::new();
         };
+        self.clear_semantic_token_cache(uri);
 
         let impact = self
             .analysis_host

@@ -2,32 +2,36 @@ use anyhow::{Result, anyhow};
 use lsp_server::{Connection, ErrorCode, Request};
 use lsp_types::request::{
     CallHierarchyIncomingCalls, CallHierarchyOutgoingCalls, CallHierarchyPrepare,
-    CodeActionRequest, Completion, DocumentHighlightRequest, DocumentSymbolRequest,
-    FoldingRangeRequest, Formatting, GotoDefinition, HoverRequest, InlayHintRequest,
-    RangeFormatting, References, Rename, Request as LspRequest, ResolveCompletionItem,
-    SemanticTokensFullRequest, SignatureHelpRequest, WorkspaceSymbolRequest,
+    CodeActionRequest, CodeActionResolveRequest, Completion, DocumentHighlightRequest,
+    DocumentSymbolRequest, FoldingRangeRequest, Formatting, GotoDeclaration, GotoDefinition,
+    GotoTypeDefinition, HoverRequest, InlayHintRequest, LinkedEditingRange, OnTypeFormatting,
+    PrepareRenameRequest, RangeFormatting, References, Rename, Request as LspRequest,
+    ResolveCompletionItem, SelectionRangeRequest, SemanticTokensFullDeltaRequest,
+    SemanticTokensFullRequest, SemanticTokensRangeRequest, SignatureHelpRequest,
+    WorkspaceSymbolRequest,
 };
 use lsp_types::{
     CallHierarchyIncomingCallsParams, CallHierarchyOutgoingCallsParams, CallHierarchyPrepareParams,
     CodeActionParams, CodeActionResponse, CompletionParams, CompletionResponse,
-    DocumentHighlightParams, DocumentSymbolParams, DocumentSymbolResponse, FoldingRangeParams,
-    GotoDefinitionParams, HoverParams, InlayHintParams, ReferenceParams, RenameParams,
-    SemanticTokensParams, SignatureHelpParams, WorkspaceEdit, WorkspaceSymbolParams,
+    DocumentHighlightParams, DocumentOnTypeFormattingParams, DocumentSymbolParams,
+    DocumentSymbolResponse, FoldingRangeParams, GotoDefinitionParams, HoverParams, InlayHintParams,
+    LinkedEditingRangeParams, ReferenceParams, RenameParams, SelectionRangeParams,
+    SemanticTokensDeltaParams, SemanticTokensParams, SemanticTokensRangeParams,
+    SignatureHelpParams, WorkspaceEdit, WorkspaceSymbolParams,
 };
 
 use crate::protocol::{
-    call_hierarchy_item_from_lsp, call_hierarchy_item_to_lsp, code_action_to_lsp,
-    completion_item_from_lsp, completion_item_to_lsp, document_highlight_to_lsp,
-    document_symbols_to_lsp, goto_definition_response, hover_to_lsp, incoming_call_to_lsp,
-    inlay_hint_to_lsp, open_document_text_by_uri, outgoing_call_to_lsp, references_to_lsp,
-    rename_to_workspace_edit, semantic_tokens_result, signature_help_to_lsp,
-    workspace_symbols_to_lsp,
+    call_hierarchy_item_from_lsp, call_hierarchy_item_to_lsp, completion_item_from_lsp,
+    completion_item_to_lsp, document_highlight_to_lsp, document_symbols_to_lsp,
+    goto_definition_response, hover_to_lsp, incoming_call_to_lsp, inlay_hint_to_lsp,
+    open_document_text_by_uri, outgoing_call_to_lsp, prepared_rename_to_lsp, references_to_lsp,
+    rename_to_workspace_edit, resolve_code_action_payload, resolved_code_action_to_lsp,
+    semantic_tokens_delta_result, semantic_tokens_result, signature_help_to_lsp,
+    unresolved_code_action_to_lsp, workspace_symbols_to_lsp,
 };
 use crate::state::ServerState;
 
-use super::util::{
-    file_id_for_uri, position_to_offset_for_uri, send_error, send_ok, with_text_document_position,
-};
+use super::util::{file_id_for_uri, send_error, send_ok, with_text_document_position};
 
 pub(crate) fn handle_request(
     connection: &Connection,
@@ -51,6 +55,32 @@ pub(crate) fn handle_request(
                 server,
                 params.text_document_position_params,
                 |uri, offset| server.goto_definition(&uri, offset),
+            )?;
+            send_ok(
+                connection,
+                request.id,
+                goto_definition_response(server, result),
+            )?;
+        }
+        GotoTypeDefinition::METHOD => {
+            let params: GotoDefinitionParams = serde_json::from_value(request.params)?;
+            let result = with_text_document_position(
+                server,
+                params.text_document_position_params,
+                |uri, offset| server.goto_type_definition(&uri, offset),
+            )?;
+            send_ok(
+                connection,
+                request.id,
+                goto_definition_response(server, result),
+            )?;
+        }
+        GotoDeclaration::METHOD => {
+            let params: GotoDefinitionParams = serde_json::from_value(request.params)?;
+            let result = with_text_document_position(
+                server,
+                params.text_document_position_params,
+                |uri, offset| server.goto_declaration(&uri, offset),
             )?;
             send_ok(
                 connection,
@@ -132,7 +162,7 @@ pub(crate) fn handle_request(
         }
         InlayHintRequest::METHOD => {
             let params: InlayHintParams = serde_json::from_value(request.params)?;
-            let hints = server.inlay_hints(&params.text_document.uri)?;
+            let hints = server.inlay_hints(&params.text_document.uri, Some(params.range))?;
             let text =
                 open_document_text_by_uri(server, &params.text_document.uri).ok_or_else(|| {
                     anyhow!(
@@ -208,7 +238,27 @@ pub(crate) fn handle_request(
         }
         SemanticTokensFullRequest::METHOD => {
             let params: SemanticTokensParams = serde_json::from_value(request.params)?;
-            let result = server.semantic_tokens(&params.text_document.uri)?;
+            let result = server.semantic_tokens(&params.text_document.uri, None)?;
+            let result = server.semantic_tokens_full(&params.text_document.uri, result);
+            send_ok(connection, request.id, Some(semantic_tokens_result(result)))?;
+        }
+        SemanticTokensFullDeltaRequest::METHOD => {
+            let params: SemanticTokensDeltaParams = serde_json::from_value(request.params)?;
+            let result = server.semantic_tokens(&params.text_document.uri, None)?;
+            let result = server.semantic_tokens_delta(
+                &params.text_document.uri,
+                &params.previous_result_id,
+                result,
+            );
+            send_ok(
+                connection,
+                request.id,
+                Some(semantic_tokens_delta_result(result)),
+            )?;
+        }
+        SemanticTokensRangeRequest::METHOD => {
+            let params: SemanticTokensRangeParams = serde_json::from_value(request.params)?;
+            let result = server.semantic_tokens(&params.text_document.uri, Some(params.range))?;
             send_ok(connection, request.id, Some(semantic_tokens_result(result)))?;
         }
         Formatting::METHOD => {
@@ -224,16 +274,81 @@ pub(crate) fn handle_request(
                 server.format_range(&params.text_document.uri, params.range, params.options)?;
             send_ok(connection, request.id, result)?;
         }
+        OnTypeFormatting::METHOD => {
+            let params: DocumentOnTypeFormattingParams = serde_json::from_value(request.params)?;
+            let result = server.format_on_type(
+                &params.text_document_position.text_document.uri,
+                params.text_document_position.position,
+                &params.ch,
+                params.options,
+            )?;
+            send_ok(connection, request.id, result)?;
+        }
         CodeActionRequest::METHOD => {
             let params: CodeActionParams = serde_json::from_value(request.params)?;
-            let offset =
-                position_to_offset_for_uri(server, &params.text_document.uri, params.range.start)?;
+            let requested_kinds = params.context.only.as_deref();
             let result = server
-                .auto_import_actions(&params.text_document.uri, offset)?
-                .iter()
-                .filter_map(|action| code_action_to_lsp(server, action))
+                .code_actions(
+                    &params.text_document.uri,
+                    params.range,
+                    &params.context.diagnostics,
+                    requested_kinds,
+                )?
+                .into_iter()
+                .filter_map(|action| {
+                    unresolved_code_action_to_lsp(
+                        action.title.clone(),
+                        action.kind.clone(),
+                        action.diagnostics,
+                        action.is_preferred,
+                        crate::protocol::CodeActionResolvePayload {
+                            uri: params.text_document.uri.to_string(),
+                            request_range: params.range,
+                            id: action.id,
+                            kind: action.kind.as_str().to_owned(),
+                            title: action.title,
+                            target_start: u32::from(action.target.start()),
+                            target_end: u32::from(action.target.end()),
+                        },
+                    )
+                })
                 .collect::<CodeActionResponse>();
             send_ok(connection, request.id, Some(result))?;
+        }
+        CodeActionResolveRequest::METHOD => {
+            let action: lsp_types::CodeAction = serde_json::from_value(request.params)?;
+            let payload = resolve_code_action_payload(&action)
+                .ok_or_else(|| anyhow!("missing code action resolve payload"))?;
+            let resolved = server.resolve_code_action(&payload)?.and_then(|resolved| {
+                resolved_code_action_to_lsp(server, action, &resolved.source_change)
+            });
+            send_ok(connection, request.id, resolved)?;
+        }
+        SelectionRangeRequest::METHOD => {
+            let params: SelectionRangeParams = serde_json::from_value(request.params)?;
+            let result = server.selection_ranges(&params.text_document.uri, &params.positions)?;
+            send_ok(connection, request.id, Some(result))?;
+        }
+        LinkedEditingRange::METHOD => {
+            let params: LinkedEditingRangeParams = serde_json::from_value(request.params)?;
+            let result = with_text_document_position(
+                server,
+                params.text_document_position_params,
+                |uri, offset| server.linked_editing_ranges(&uri, offset),
+            )?;
+            send_ok(connection, request.id, result)?;
+        }
+        PrepareRenameRequest::METHOD => {
+            let params: lsp_types::TextDocumentPositionParams =
+                serde_json::from_value(request.params)?;
+            let result = with_text_document_position(server, params, |query_uri, offset| {
+                let prepared = server.prepare_rename(&query_uri, offset)?;
+                let text = open_document_text_by_uri(server, &query_uri)
+                    .ok_or_else(|| anyhow!("document `{}` is not open", query_uri.as_str()))?;
+                Ok(prepared
+                    .and_then(|prepared| prepared_rename_to_lsp(text.as_ref(), &prepared, offset)))
+            })?;
+            send_ok(connection, request.id, result)?;
         }
         Rename::METHOD => {
             let params: RenameParams = serde_json::from_value(request.params)?;

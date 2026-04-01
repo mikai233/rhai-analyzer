@@ -154,6 +154,14 @@ impl Analysis {
             .collect()
     }
 
+    pub fn goto_type_definition(&self, position: FilePosition) -> Vec<NavigationTarget> {
+        self.db
+            .goto_type_definition(position.file_id, text_size(position.offset))
+            .into_iter()
+            .map(navigation_target_from_db)
+            .collect()
+    }
+
     pub fn find_references(&self, position: FilePosition) -> Option<ReferencesResult> {
         let result = self
             .db

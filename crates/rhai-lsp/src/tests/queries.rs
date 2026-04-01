@@ -3,15 +3,17 @@ use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use lsp_types::{
-    CallHierarchyServerCapability, DocumentChangeOperation, DocumentChanges, FoldingRangeKind,
-    FormattingOptions, OneOf, Position, Range, ResourceOp, SemanticTokenModifier,
-    SemanticTokenType, SemanticTokensServerCapabilities,
+    CallHierarchyServerCapability, CodeActionKind, CodeActionProviderCapability,
+    DocumentChangeOperation, DocumentChanges, FoldingRangeKind, FormattingOptions, OneOf, Position,
+    Range, ResourceOp, SelectionRangeProviderCapability, SemanticTokenModifier, SemanticTokenType,
+    SemanticTokensFullDeltaResult, SemanticTokensFullOptions, SemanticTokensServerCapabilities,
+    TextDocumentSyncCapability, TextDocumentSyncKind,
 };
 use rhai_fmt::{ContainerLayoutStyle, ImportSortOrder};
 use rhai_syntax::TextSize;
 
 use crate::handlers::queries::semantic_token_legend;
-use crate::protocol::rename_to_workspace_edit;
+use crate::protocol::{diagnostic_to_lsp, rename_to_workspace_edit};
 use crate::state::uri_from_path;
 use crate::tests::{assert_valid_rhai_syntax, file_url, offset_in};
 use crate::{InlayHintSettings, Server, ServerSettings};
@@ -21,6 +23,12 @@ fn capabilities_expose_signature_help_inlay_hints_workspace_symbols_and_semantic
     let server = Server::new();
     let capabilities = server.capabilities();
 
+    assert!(matches!(
+        capabilities.text_document_sync,
+        Some(TextDocumentSyncCapability::Options(ref options))
+            if options.open_close == Some(true)
+                && options.change == Some(TextDocumentSyncKind::INCREMENTAL)
+    ));
     assert!(matches!(
         capabilities.document_highlight_provider,
         Some(OneOf::Left(true))
@@ -32,6 +40,14 @@ fn capabilities_expose_signature_help_inlay_hints_workspace_symbols_and_semantic
     assert!(matches!(
         capabilities.folding_range_provider,
         Some(lsp_types::FoldingRangeProviderCapability::Simple(true))
+    ));
+    assert!(matches!(
+        capabilities.declaration_provider,
+        Some(lsp_types::DeclarationCapability::Simple(true))
+    ));
+    assert!(matches!(
+        capabilities.type_definition_provider,
+        Some(lsp_types::TypeDefinitionProviderCapability::Simple(true))
     ));
     assert!(capabilities.signature_help_provider.is_some());
     assert_eq!(
@@ -48,6 +64,18 @@ fn capabilities_expose_signature_help_inlay_hints_workspace_symbols_and_semantic
             .and_then(|options| options.trigger_characters.as_ref())
             .is_some_and(|triggers| triggers.iter().any(|trigger| trigger == ":"))
     );
+    assert!(
+        capabilities
+            .completion_provider
+            .as_ref()
+            .and_then(|options| options.trigger_characters.as_ref())
+            .is_some_and(|triggers| {
+                !triggers
+                    .iter()
+                    .any(|trigger| trigger == " " || trigger == "a" || trigger == "A")
+            }),
+        "expected narrowed completion triggers"
+    );
     assert!(matches!(
         capabilities.inlay_hint_provider,
         Some(OneOf::Right(_))
@@ -60,6 +88,17 @@ fn capabilities_expose_signature_help_inlay_hints_workspace_symbols_and_semantic
         capabilities
             .workspace
             .as_ref()
+            .and_then(|workspace| workspace.workspace_folders.as_ref())
+            .is_some_and(|folders| {
+                folders.supported == Some(true)
+                    && folders.change_notifications == Some(OneOf::Left(true))
+            }),
+        "expected workspace folder support in workspace capabilities"
+    );
+    assert!(
+        capabilities
+            .workspace
+            .as_ref()
             .and_then(|workspace| workspace.file_operations.as_ref())
             .and_then(|operations| operations.did_rename.as_ref())
             .is_some(),
@@ -67,10 +106,51 @@ fn capabilities_expose_signature_help_inlay_hints_workspace_symbols_and_semantic
     );
     assert!(matches!(
         capabilities.semantic_tokens_provider,
-        Some(SemanticTokensServerCapabilities::SemanticTokensOptions(_))
+        Some(SemanticTokensServerCapabilities::SemanticTokensOptions(ref options))
+            if options.range == Some(true)
+                && matches!(
+                    options.full,
+                    Some(SemanticTokensFullOptions::Delta { delta: Some(true) })
+                )
     ));
     assert!(capabilities.document_formatting_provider.is_some());
     assert!(capabilities.document_range_formatting_provider.is_some());
+    assert!(
+        capabilities
+            .document_on_type_formatting_provider
+            .as_ref()
+            .is_some_and(|options| {
+                options.first_trigger_character == ";"
+                    && options
+                        .more_trigger_character
+                        .as_ref()
+                        .is_some_and(|chars| chars.iter().any(|ch| ch == "}"))
+            }),
+        "expected on-type formatting triggers for ';' and '}}'"
+    );
+    assert!(matches!(
+        capabilities.selection_range_provider,
+        Some(SelectionRangeProviderCapability::Simple(true))
+    ));
+    assert!(matches!(
+        capabilities.linked_editing_range_provider,
+        Some(lsp_types::LinkedEditingRangeServerCapabilities::Simple(
+            true
+        ))
+    ));
+    assert!(matches!(
+        capabilities.code_action_provider,
+        Some(CodeActionProviderCapability::Options(ref options))
+            if options.resolve_provider == Some(true)
+                && options
+                    .code_action_kinds
+                    .as_ref()
+                    .is_some_and(|kinds| kinds.contains(&CodeActionKind::SOURCE_ORGANIZE_IMPORTS))
+    ));
+    assert!(matches!(
+        capabilities.rename_provider,
+        Some(OneOf::Right(ref options)) if options.prepare_provider == Some(true)
+    ));
 }
 
 #[test]
@@ -180,6 +260,365 @@ fn document_highlight_queries_flow_through_server() {
 }
 
 #[test]
+fn prepare_rename_queries_flow_through_server() {
+    let mut server = Server::new();
+    let uri = file_url("main.rhai");
+    let text = r#"
+        fn helper(value) {
+            value
+        }
+
+        fn run() {
+            helper(1);
+        }
+    "#;
+
+    assert_valid_rhai_syntax(text);
+    server
+        .open_document(uri.clone(), 1, text)
+        .expect("expected open_document to succeed");
+
+    let prepared = server
+        .prepare_rename(&uri, offset_in(text, "helper(1)") + 1)
+        .expect("expected prepare rename query to succeed")
+        .expect("expected prepared rename");
+    let query_offset = TextSize::from(offset_in(text, "helper(1)") + 1);
+
+    assert!(
+        prepared
+            .plan
+            .targets
+            .iter()
+            .map(|target| target.focus_range)
+            .chain(
+                prepared
+                    .plan
+                    .occurrences
+                    .iter()
+                    .map(|occurrence| occurrence.range)
+            )
+            .any(|range| range.contains(query_offset))
+    );
+}
+
+#[test]
+fn declaration_queries_flow_through_server() {
+    let mut server = Server::new();
+    let uri = file_url("main.rhai");
+    let text = r#"
+        fn helper(value) {
+            value
+        }
+
+        fn run() {
+            helper(1);
+        }
+    "#;
+
+    assert_valid_rhai_syntax(text);
+    server
+        .open_document(uri.clone(), 1, text)
+        .expect("expected open_document to succeed");
+
+    let declarations = server
+        .goto_declaration(&uri, offset_in(text, "helper(1)") + 1)
+        .expect("expected goto declaration query to succeed");
+    let definitions = server
+        .goto_definition(&uri, offset_in(text, "helper(1)") + 1)
+        .expect("expected goto definition query to succeed");
+
+    assert_eq!(declarations, definitions);
+    assert_eq!(declarations.len(), 1);
+}
+
+#[test]
+fn type_definition_queries_follow_structural_object_sources() {
+    let mut server = Server::new();
+    let uri = file_url("main.rhai");
+    let text = r#"
+        let original = #{
+            name: "demo",
+            watch: true,
+        };
+        let alias = original;
+        let current = alias;
+        current.name
+    "#;
+
+    assert_valid_rhai_syntax(text);
+    server
+        .open_document(uri.clone(), 1, text)
+        .expect("expected open_document to succeed");
+
+    let definitions = server
+        .goto_type_definition(&uri, offset_in(text, "current.name") + 1)
+        .expect("expected goto type definition query to succeed");
+
+    assert_eq!(definitions.len(), 1);
+    assert!(
+        definitions[0]
+            .full_range
+            .contains(TextSize::from(offset_in(text, "#{") + 1)),
+        "expected structural object source target, got {definitions:?}"
+    );
+}
+
+#[test]
+fn type_definition_queries_can_target_documented_symbol_annotations() {
+    let mut server = Server::new();
+    let uri = file_url("main.rhai");
+    let text = r#"
+        /// @type int
+        let answer = 1;
+        answer
+    "#;
+
+    assert_valid_rhai_syntax(text);
+    server
+        .open_document(uri.clone(), 1, text)
+        .expect("expected open_document to succeed");
+
+    let definitions = server
+        .goto_type_definition(&uri, offset_in(text, "answer\n") + 1)
+        .expect("expected goto type definition query to succeed");
+
+    assert_eq!(definitions.len(), 1);
+    assert!(
+        definitions[0]
+            .full_range
+            .contains(TextSize::from(offset_in(text, "@type int") + 1)),
+        "expected doc annotation target, got {definitions:?}"
+    );
+}
+
+#[test]
+fn selection_range_queries_expand_from_identifier_to_enclosing_items() {
+    let mut server = Server::new();
+    let uri = file_url("main.rhai");
+    let text = r#"
+        fn run() {
+            let value = helper(1 + 2);
+            value
+        }
+    "#;
+
+    assert_valid_rhai_syntax(text);
+    server
+        .open_document(uri.clone(), 1, text)
+        .expect("expected open_document to succeed");
+
+    let position = Position {
+        line: 2,
+        character: 24,
+    };
+    let ranges = server
+        .selection_ranges(&uri, &[position])
+        .expect("expected selection range query to succeed");
+    let selection = ranges.into_iter().next().expect("expected selection range");
+
+    assert_eq!(selection.range.start.line, 2);
+    assert!(
+        selection.parent.is_some(),
+        "expected nested selection range"
+    );
+    assert!(
+        selection
+            .parent
+            .as_ref()
+            .and_then(|parent| parent.parent.as_ref())
+            .is_some(),
+        "expected multiple selection range parents"
+    );
+}
+
+#[test]
+fn linked_editing_ranges_follow_same_file_identifier_occurrences() {
+    let mut server = Server::new();
+    let uri = file_url("main.rhai");
+    let text = r#"
+        fn make_config() {
+            let value = 1;
+            value + value
+        }
+    "#;
+
+    assert_valid_rhai_syntax(text);
+    server
+        .open_document(uri.clone(), 1, text)
+        .expect("expected open_document to succeed");
+
+    let linked = server
+        .linked_editing_ranges(&uri, offset_in(text, "value +") + 1)
+        .expect("expected linked editing query to succeed")
+        .expect("expected linked editing ranges");
+
+    assert_eq!(
+        linked.word_pattern.as_deref(),
+        Some(r"[A-Za-z_][A-Za-z0-9_]*")
+    );
+    assert!(
+        linked.ranges.len() >= 2,
+        "expected at least declaration and usage ranges, got {:?}",
+        linked.ranges
+    );
+}
+
+#[test]
+fn on_type_formatting_queries_reformat_current_structure_for_statement_terminators() {
+    let mut server = Server::new();
+    let uri = file_url("main.rhai");
+    let text = "fn run(){\nlet value=1;\n}\n";
+
+    assert_valid_rhai_syntax(text);
+    server
+        .open_document(uri.clone(), 1, text)
+        .expect("expected open_document to succeed");
+
+    let edits = server
+        .format_on_type(
+            &uri,
+            Position {
+                line: 2,
+                character: 1,
+            },
+            "}",
+            default_formatting_options(),
+        )
+        .expect("expected on-type formatting query to succeed")
+        .expect("expected on-type formatting edits");
+
+    assert!(
+        !edits.is_empty(),
+        "expected non-empty on-type formatting edits"
+    );
+}
+
+#[test]
+fn code_actions_include_source_actions_and_resolve_to_workspace_edits() {
+    let mut server = Server::new();
+    let uri = file_url("main.rhai");
+    let text = r#"
+        import "z" as z;
+        import "a" as a;
+
+        fn run() {
+            a::work();
+        }
+    "#;
+
+    assert_valid_rhai_syntax(text);
+    server
+        .open_document(uri.clone(), 1, text)
+        .expect("expected open_document to succeed");
+
+    let actions = server
+        .code_actions(
+            &uri,
+            Range {
+                start: Position {
+                    line: 0,
+                    character: 0,
+                },
+                end: Position {
+                    line: 5,
+                    character: 0,
+                },
+            },
+            &[],
+            Some(&[CodeActionKind::SOURCE_ORGANIZE_IMPORTS]),
+        )
+        .expect("expected code actions query to succeed");
+
+    let organize = actions
+        .into_iter()
+        .find(|action| action.kind == CodeActionKind::SOURCE_ORGANIZE_IMPORTS)
+        .expect("expected organize imports action");
+    assert!(
+        !organize.is_preferred,
+        "expected source organize imports action to avoid preferred quick-fix semantics"
+    );
+
+    let payload = crate::protocol::CodeActionResolvePayload {
+        uri: uri.to_string(),
+        request_range: Range {
+            start: Position {
+                line: 0,
+                character: 0,
+            },
+            end: Position {
+                line: 5,
+                character: 0,
+            },
+        },
+        id: organize.id,
+        kind: organize.kind.as_str().to_owned(),
+        title: organize.title,
+        target_start: u32::from(organize.target.start()),
+        target_end: u32::from(organize.target.end()),
+    };
+
+    let resolved = server
+        .resolve_code_action(&payload)
+        .expect("expected code action resolve to succeed")
+        .expect("expected resolved action");
+    assert!(
+        !resolved.source_change.file_edits.is_empty(),
+        "expected resolved code action to contain file edits"
+    );
+}
+
+#[test]
+fn code_actions_prefer_diagnostic_quickfixes_and_attach_matching_diagnostics() {
+    let mut server = Server::new();
+    let uri = file_url("main.rhai");
+    let text = "import \"shared_tools\" as tools;\nfn run() {}\n";
+
+    assert_valid_rhai_syntax(text);
+    server
+        .open_document(uri.clone(), 1, text)
+        .expect("expected open_document to succeed");
+
+    let snapshot = server.analysis_host().snapshot();
+    let file_id = snapshot
+        .file_id_for_path(&std::env::current_dir().expect("cwd").join("main.rhai"))
+        .expect("expected main.rhai file id");
+    let diagnostics = snapshot
+        .diagnostics(file_id)
+        .iter()
+        .filter_map(|diagnostic| diagnostic_to_lsp(text, diagnostic))
+        .collect::<Vec<_>>();
+
+    let actions = server
+        .code_actions(
+            &uri,
+            Range {
+                start: Position {
+                    line: 0,
+                    character: 0,
+                },
+                end: Position {
+                    line: 1,
+                    character: 0,
+                },
+            },
+            &diagnostics,
+            Some(&[CodeActionKind::QUICKFIX]),
+        )
+        .expect("expected code actions query to succeed");
+
+    let remove_unused = actions
+        .into_iter()
+        .find(|action| action.id == "import.remove_unused")
+        .expect("expected remove unused import quickfix");
+    assert!(remove_unused.is_preferred);
+    assert_eq!(remove_unused.diagnostics.len(), 1);
+    assert_eq!(
+        remove_unused.diagnostics[0].message,
+        "unused symbol `tools`"
+    );
+}
+
+#[test]
 fn completion_queries_and_resolve_flow_through_server() {
     let mut server = Server::new();
     let provider_uri = file_url("provider.rhai");
@@ -270,7 +709,7 @@ fn inlay_hints_queries_flow_through_server() {
         .expect("expected open_document to succeed");
 
     let hints = server
-        .inlay_hints(&uri)
+        .inlay_hints(&uri, None)
         .expect("expected inlay hints query to succeed");
 
     assert!(
@@ -312,7 +751,7 @@ fn inlay_hints_queries_respect_server_settings() {
         .expect("expected open_document to succeed");
 
     let hints = server
-        .inlay_hints(&uri)
+        .inlay_hints(&uri, None)
         .expect("expected inlay hints query to succeed");
 
     assert!(
@@ -348,7 +787,7 @@ fn semantic_tokens_queries_flow_through_server() {
         .expect("expected open_document to succeed");
 
     let tokens = server
-        .semantic_tokens(&uri)
+        .semantic_tokens(&uri, None)
         .expect("expected semantic tokens query to succeed");
     let legend = semantic_token_legend();
 
@@ -460,6 +899,159 @@ fn semantic_tokens_queries_flow_through_server() {
         "expected a defaultLibrary semantic token modifier, got {:?}",
         tokens.data
     );
+}
+
+#[test]
+fn inlay_hints_queries_can_be_scoped_to_a_requested_range() {
+    let mut server = Server::new();
+    let uri = file_url("main.rhai");
+    let text = r#"
+        fn helper() {
+            1
+        }
+
+        fn run() {
+            let result = helper();
+        }
+    "#;
+
+    assert_valid_rhai_syntax(text);
+    server
+        .open_document(uri.clone(), 1, text)
+        .expect("expected open_document to succeed");
+
+    let hints = server
+        .inlay_hints(
+            &uri,
+            Some(Range {
+                start: Position {
+                    line: 5,
+                    character: 0,
+                },
+                end: Position {
+                    line: 7,
+                    character: 0,
+                },
+            }),
+        )
+        .expect("expected inlay hints query to succeed");
+
+    assert!(
+        hints.iter().any(|hint| hint.label == ": int"),
+        "expected variable hint, got {hints:?}"
+    );
+    assert!(
+        !hints.iter().any(|hint| hint.label == " -> int"),
+        "did not expect helper return hint outside range, got {hints:?}"
+    );
+}
+
+#[test]
+fn semantic_tokens_queries_can_be_scoped_to_a_requested_range() {
+    let mut server = Server::new();
+    let uri = file_url("main.rhai");
+    let text = r#"
+        /// docs
+        const LIMIT = 1;
+
+        fn run() {
+            let value = LIMIT;
+        }
+    "#;
+
+    assert_valid_rhai_syntax(text);
+    server
+        .open_document(uri.clone(), 1, text)
+        .expect("expected open_document to succeed");
+
+    let tokens = server
+        .semantic_tokens(
+            &uri,
+            Some(Range {
+                start: Position {
+                    line: 3,
+                    character: 0,
+                },
+                end: Position {
+                    line: 5,
+                    character: 0,
+                },
+            }),
+        )
+        .expect("expected ranged semantic tokens query to succeed");
+    let legend = semantic_token_legend();
+    let comment_index = legend
+        .token_types
+        .iter()
+        .position(|token_type| token_type == &SemanticTokenType::COMMENT)
+        .expect("expected comment legend entry") as u32;
+    let keyword_index = legend
+        .token_types
+        .iter()
+        .position(|token_type| token_type == &SemanticTokenType::KEYWORD)
+        .expect("expected keyword legend entry") as u32;
+
+    assert!(
+        tokens
+            .data
+            .iter()
+            .all(|token| token.token_type != comment_index),
+        "did not expect doc-comment tokens in ranged response, got {:?}",
+        tokens.data
+    );
+    assert!(
+        tokens
+            .data
+            .iter()
+            .any(|token| token.token_type == keyword_index),
+        "expected in-range tokens, got {:?}",
+        tokens.data
+    );
+}
+
+#[test]
+fn semantic_tokens_delta_queries_return_incremental_edits_after_changes() {
+    let mut server = Server::new();
+    let uri = file_url("main.rhai");
+    let text = "fn run() {\n    let value = 1;\n    value\n}\n";
+
+    assert_valid_rhai_syntax(text);
+    server
+        .open_document(uri.clone(), 1, text)
+        .expect("expected open_document to succeed");
+
+    let first = server
+        .semantic_tokens(&uri, None)
+        .expect("expected semantic tokens query to succeed");
+    let first = server.semantic_tokens_full(&uri, first);
+    let previous_result_id = first
+        .result_id
+        .clone()
+        .expect("expected semantic token result id");
+
+    server
+        .change_document(
+            uri.clone(),
+            2,
+            "fn run() {\n    let total = 1;\n    total\n}\n",
+        )
+        .expect("expected document change to succeed");
+
+    let next = server
+        .semantic_tokens(&uri, None)
+        .expect("expected semantic tokens query to succeed");
+    let delta = server.semantic_tokens_delta(&uri, &previous_result_id, next);
+
+    match delta {
+        SemanticTokensFullDeltaResult::TokensDelta(delta) => {
+            assert!(
+                !delta.edits.is_empty(),
+                "expected semantic token delta edits"
+            );
+            assert!(delta.result_id.is_some(), "expected delta result id");
+        }
+        other => panic!("expected semantic token delta edits, got {other:?}"),
+    }
 }
 
 #[test]

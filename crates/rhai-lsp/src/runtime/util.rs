@@ -40,19 +40,22 @@ pub(crate) fn position_to_offset_for_uri(
 ) -> Result<u32> {
     let text = open_document_text_by_uri(server, uri)
         .ok_or_else(|| anyhow!("document `{}` is not open", uri.as_str()))?;
-    let offset = position_to_offset(text.as_ref(), position)
+    let offset = position_to_offset_in_text(text.as_ref(), position)
         .ok_or_else(|| anyhow!("position is outside document `{}`", uri.as_str()))?;
     u32::try_from(offset).map_err(|_| anyhow!("document offset does not fit in u32"))
 }
 
-fn position_to_offset(text: &str, position: lsp_types::Position) -> Option<usize> {
+pub(crate) fn position_to_offset_in_text(
+    text: &str,
+    position: lsp_types::Position,
+) -> Option<usize> {
     let line_starts = line_start_offsets(text);
     let line_start = *line_starts.get(position.line as usize)?;
     let line_end = line_starts
         .get(position.line as usize + 1)
         .copied()
         .unwrap_or(text.len());
-    let line_text = &text[line_start..line_end];
+    let line_text = text.get(line_start..line_end)?;
 
     let mut utf16_units = 0_u32;
     for (byte_offset, ch) in line_text.char_indices() {

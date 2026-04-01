@@ -3,7 +3,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Result, anyhow};
-use lsp_types::Uri;
+use lsp_types::{
+    SemanticToken, SemanticTokens, SemanticTokensDelta, SemanticTokensEdit,
+    SemanticTokensFullDeltaResult, Uri,
+};
 use rhai_db::{ChangeImpact, ChangeSet, FileChange};
 use rhai_fmt::{ContainerLayoutStyle, ImportSortOrder};
 use rhai_ide::AnalysisHost;
@@ -18,6 +21,7 @@ pub struct ManagedDocument {
     pub uri: Uri,
     pub normalized_path: PathBuf,
     pub version: i32,
+    pub text: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -34,18 +38,15 @@ pub struct WorkspaceLoadResult {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CodeActionEdit {
-    pub title: String,
-    pub uri: Uri,
-    pub version: Option<i32>,
-    pub insert_offset: u32,
-    pub insert_text: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkspaceSymbolMatch {
     pub uri: Uri,
     pub symbol: rhai_ide::WorkspaceSymbol,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SemanticTokenCacheEntry {
+    result_id: String,
+    data: Vec<SemanticToken>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -96,8 +97,10 @@ pub struct ServerSettings {
 pub struct ServerState {
     pub(crate) analysis_host: AnalysisHost,
     pub(crate) open_documents: HashMap<Uri, ManagedDocument>,
+    semantic_token_cache: HashMap<Uri, SemanticTokenCacheEntry>,
     pub(crate) supports_work_done_progress: bool,
     pub(crate) next_server_request_id: u32,
+    next_semantic_token_result_id: u64,
     pub(crate) workspace_roots: Vec<PathBuf>,
     pub(crate) preloaded_files: BTreeSet<PathBuf>,
     pub(crate) settings: ServerSettings,
@@ -119,8 +122,10 @@ impl ServerState {
         Self {
             analysis_host,
             open_documents: HashMap::new(),
+            semantic_token_cache: HashMap::new(),
             supports_work_done_progress: false,
             next_server_request_id: 1,
+            next_semantic_token_result_id: 1,
             workspace_roots: Vec::new(),
             preloaded_files: BTreeSet::new(),
             settings: ServerSettings::default(),
@@ -190,8 +195,83 @@ impl ServerState {
         i32::try_from(id).unwrap_or(i32::MAX)
     }
 
+    pub(crate) fn semantic_tokens_full(
+        &mut self,
+        uri: &Uri,
+        mut tokens: SemanticTokens,
+    ) -> SemanticTokens {
+        let result_id = self.next_semantic_token_result_id.to_string();
+        self.next_semantic_token_result_id += 1;
+
+        self.semantic_token_cache.insert(
+            uri.clone(),
+            SemanticTokenCacheEntry {
+                result_id: result_id.clone(),
+                data: tokens.data.clone(),
+            },
+        );
+        tokens.result_id = Some(result_id);
+        tokens
+    }
+
+    pub(crate) fn semantic_tokens_delta(
+        &mut self,
+        uri: &Uri,
+        previous_result_id: &str,
+        tokens: SemanticTokens,
+    ) -> SemanticTokensFullDeltaResult {
+        let Some(previous) = self.semantic_token_cache.get(uri).cloned() else {
+            return SemanticTokensFullDeltaResult::Tokens(self.semantic_tokens_full(uri, tokens));
+        };
+
+        if previous.result_id != previous_result_id {
+            return SemanticTokensFullDeltaResult::Tokens(self.semantic_tokens_full(uri, tokens));
+        }
+
+        let result_id = self.next_semantic_token_result_id.to_string();
+        self.next_semantic_token_result_id += 1;
+        let edits = semantic_token_edits(&previous.data, &tokens.data);
+
+        self.semantic_token_cache.insert(
+            uri.clone(),
+            SemanticTokenCacheEntry {
+                result_id: result_id.clone(),
+                data: tokens.data,
+            },
+        );
+
+        SemanticTokensFullDeltaResult::TokensDelta(SemanticTokensDelta {
+            result_id: Some(result_id),
+            edits,
+        })
+    }
+
+    pub(crate) fn clear_semantic_token_cache(&mut self, uri: &Uri) {
+        self.semantic_token_cache.remove(uri);
+    }
+
     pub fn load_workspace_roots(&mut self, roots: &[PathBuf]) -> Result<WorkspaceLoadResult> {
-        self.workspace_roots = roots.iter().map(|root| normalize_path(root)).collect();
+        self.workspace_roots = normalized_workspace_roots(roots);
+        self.refresh_preloaded_files()
+    }
+
+    pub fn update_workspace_folders(
+        &mut self,
+        added: &[PathBuf],
+        removed: &[PathBuf],
+    ) -> Result<WorkspaceLoadResult> {
+        let removed = removed
+            .iter()
+            .map(|root| normalize_path(root))
+            .collect::<BTreeSet<_>>();
+        let mut next_roots = self
+            .workspace_roots
+            .iter()
+            .filter(|root| !removed.contains(*root))
+            .cloned()
+            .collect::<Vec<_>>();
+        next_roots.extend(added.iter().cloned());
+        self.workspace_roots = normalized_workspace_roots(&next_roots);
         self.refresh_preloaded_files()
     }
 
@@ -234,6 +314,8 @@ impl ServerState {
             document.normalized_path = new_path.clone();
             self.open_documents.insert(new_uri.clone(), document);
         }
+        self.clear_semantic_token_cache(old_uri);
+        self.clear_semantic_token_cache(new_uri);
 
         let version = self
             .open_documents
@@ -263,18 +345,23 @@ impl ServerState {
         version: i32,
         text: impl Into<String>,
     ) -> Result<Vec<DiagnosticUpdate>> {
+        let had_document = self.open_documents.contains_key(&uri);
         let normalized_path = path_from_uri(&uri)?;
         let managed_document = ManagedDocument {
             uri: uri.clone(),
             normalized_path: normalized_path.clone(),
             version,
+            text: text.into(),
         };
+        if !had_document {
+            self.clear_semantic_token_cache(&uri);
+        }
 
         let impact = self
             .analysis_host
             .apply_change_report(ChangeSet::single_file(
                 normalized_path,
-                text,
+                managed_document.text.clone(),
                 DocumentVersion(version),
             ));
         self.open_documents.insert(uri, managed_document);
@@ -386,6 +473,15 @@ fn workspace_file_paths(roots: &[PathBuf]) -> Result<BTreeSet<PathBuf>> {
     }
 
     Ok(paths)
+}
+
+fn normalized_workspace_roots(roots: &[PathBuf]) -> Vec<PathBuf> {
+    roots
+        .iter()
+        .map(|root| normalize_path(root))
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
 }
 
 fn collect_rhai_files(root: &Path, paths: &mut BTreeSet<PathBuf>) -> Result<()> {
@@ -539,10 +635,14 @@ fn static_import_module_name(expr: Expr, _source: &str) -> Option<String> {
     let text = token.text();
 
     match token.kind().token_kind() {
-        Some(TokenKind::String) if text.len() >= 2 => Some(text[1..text.len() - 1].to_owned()),
-        Some(TokenKind::BacktickString) if text.len() >= 2 => {
-            Some(text[1..text.len() - 1].to_owned())
-        }
+        Some(TokenKind::String) => text
+            .strip_prefix('"')
+            .and_then(|text| text.strip_suffix('"'))
+            .map(str::to_owned),
+        Some(TokenKind::BacktickString) => text
+            .strip_prefix('`')
+            .and_then(|text| text.strip_suffix('`'))
+            .map(str::to_owned),
         _ => None,
     }
 }
@@ -573,4 +673,31 @@ fn dedupe_diagnostic_updates(updates: Vec<DiagnosticUpdate>) -> Vec<DiagnosticUp
         by_uri.insert(update.uri.to_string(), update);
     }
     by_uri.into_values().collect()
+}
+
+fn semantic_token_edits(
+    previous: &[SemanticToken],
+    next: &[SemanticToken],
+) -> Vec<SemanticTokensEdit> {
+    let mut prefix = 0usize;
+    while prefix < previous.len() && prefix < next.len() && previous[prefix] == next[prefix] {
+        prefix += 1;
+    }
+
+    let mut previous_suffix = previous.len();
+    let mut next_suffix = next.len();
+    while previous_suffix > prefix
+        && next_suffix > prefix
+        && previous[previous_suffix - 1] == next[next_suffix - 1]
+    {
+        previous_suffix -= 1;
+        next_suffix -= 1;
+    }
+
+    let replacement = next[prefix..next_suffix].to_vec();
+    vec![SemanticTokensEdit {
+        start: (prefix as u32) * 5,
+        delete_count: ((previous_suffix - prefix) as u32) * 5,
+        data: (!replacement.is_empty()).then_some(replacement),
+    }]
 }

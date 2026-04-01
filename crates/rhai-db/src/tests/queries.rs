@@ -1287,6 +1287,75 @@ fn goto_definition_resolves_object_field_member_access_to_field_declaration() {
 }
 
 #[test]
+fn goto_type_definition_traces_structural_object_sources_through_symbol_flows() {
+    let mut db = AnalyzerDatabase::default();
+    db.apply_change(ChangeSet::single_file(
+        "main.rhai",
+        r#"
+            let original = #{
+                name: "demo",
+                watch: true,
+            };
+            let alias = original;
+            let current = alias;
+            current.name
+        "#,
+        DocumentVersion(1),
+    ));
+
+    let snapshot = db.snapshot();
+    assert_workspace_files_have_no_syntax_diagnostics(&snapshot);
+    let file_id = snapshot
+        .vfs()
+        .file_id(Path::new("main.rhai"))
+        .expect("expected file id");
+    let text = snapshot.file_text(file_id).expect("expected file text");
+
+    let usage_offset = offset_in(&text, "current.name") + TextSize::from(1);
+    let literal_offset = offset_in(&text, "#{") + TextSize::from(1);
+    let definitions = snapshot.goto_type_definition(file_id, usage_offset);
+
+    assert_eq!(definitions.len(), 1);
+    assert_eq!(definitions[0].file_id, file_id);
+    assert!(
+        definitions[0].target.full_range.contains(literal_offset),
+        "expected type definition to target structural object source, got {definitions:?}"
+    );
+}
+
+#[test]
+fn goto_type_definition_can_target_documented_symbol_annotations() {
+    let mut db = AnalyzerDatabase::default();
+    db.apply_change(ChangeSet::single_file(
+        "main.rhai",
+        r#"
+            /// @type int
+            let answer = 1;
+            answer
+        "#,
+        DocumentVersion(1),
+    ));
+
+    let snapshot = db.snapshot();
+    assert_workspace_files_have_no_syntax_diagnostics(&snapshot);
+    let file_id = snapshot
+        .vfs()
+        .file_id(Path::new("main.rhai"))
+        .expect("expected file id");
+    let text = snapshot.file_text(file_id).expect("expected file text");
+
+    let usage_offset = offset_in(&text, "answer\n") + TextSize::from(1);
+    let docs_offset = offset_in(&text, "@type int") + TextSize::from(1);
+    let definitions = snapshot.goto_type_definition(file_id, usage_offset);
+
+    assert_eq!(definitions.len(), 1);
+    assert!(
+        definitions[0].target.full_range.contains(docs_offset),
+        "expected type definition to target doc annotation block, got {definitions:?}"
+    );
+}
+
+#[test]
 fn find_references_for_object_field_declaration_include_cross_file_member_accesses() {
     let mut db = AnalyzerDatabase::default();
     db.apply_change(ChangeSet {

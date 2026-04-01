@@ -1,8 +1,10 @@
+use lsp_types::{CodeActionKind, Position, Range};
+
 use crate::Server;
 use crate::tests::{assert_valid_rhai_syntax, file_url, offset_in};
 
 #[test]
-fn auto_import_actions_are_not_exposed_for_workspace_exports() {
+fn quickfix_code_actions_are_not_exposed_for_workspace_exports() {
     let mut server = Server::new();
     let provider_uri = file_url("provider.rhai");
     let consumer_uri = file_url("consumer.rhai");
@@ -19,12 +21,27 @@ fn auto_import_actions_are_not_exposed_for_workspace_exports() {
         .open_document(consumer_uri.clone(), 1, consumer_text)
         .expect("expected consumer open to succeed");
 
+    let offset = offset_in(consumer_text, "shared_tools");
     let actions = server
-        .auto_import_actions(
+        .code_actions(
             &consumer_uri,
-            offset_in("fn run() { shared_tools(); }", "shared_tools"),
+            Range {
+                start: Position {
+                    line: 0,
+                    character: 11,
+                },
+                end: Position {
+                    line: 0,
+                    character: 23,
+                },
+            },
+            &[],
+            Some(&[CodeActionKind::QUICKFIX]),
         )
-        .expect("expected auto import actions");
+        .expect("expected code actions");
 
-    assert!(actions.is_empty());
+    assert!(
+        actions.is_empty(),
+        "expected no quickfix code actions for workspace export lookup at offset {offset}, got {actions:?}"
+    );
 }

@@ -1,10 +1,11 @@
 use lsp_types::{
     self, CallHierarchyIncomingCall, CallHierarchyItem, CallHierarchyOutgoingCall, CodeAction,
-    CodeActionKind, CodeActionOrCommand, CompletionItem, CompletionItemKind, Diagnostic,
-    DocumentChangeOperation, DocumentChanges, DocumentHighlight, DocumentHighlightKind,
-    DocumentSymbol, Documentation, GotoDefinitionResponse, Hover, HoverContents, InlayHint,
-    InlayHintKind, Location, MarkupContent, MarkupKind, OneOf,
-    OptionalVersionedTextDocumentIdentifier, Position, Range, RenameFile, ResourceOp,
+    CodeActionKind, CodeActionOrCommand, CompletionItem, CompletionItemKind,
+    CompletionItemLabelDetails, Diagnostic, DocumentChangeOperation, DocumentChanges,
+    DocumentHighlight, DocumentHighlightKind, DocumentSymbol, Documentation,
+    GotoDefinitionResponse, Hover, HoverContents, InlayHint, InlayHintKind, Location,
+    MarkupContent, MarkupKind, OneOf, OptionalVersionedTextDocumentIdentifier, Position,
+    PrepareRenameResponse, Range, RenameFile, ResourceOp, SemanticTokensFullDeltaResult,
     SemanticTokensResult, SignatureHelp, SignatureInformation, SymbolKind, TextDocumentEdit,
     TextEdit, WorkspaceEdit, WorkspaceSymbol, WorkspaceSymbolResponse,
 };
@@ -19,13 +20,14 @@ use rhai_ide::{
     HoverResult, HoverSignatureSource, IncomingCall as IdeIncomingCall, InlayHint as IdeInlayHint,
     InlayHintKind as IdeInlayHintKind, NavigationTarget as IdeNavigationTarget,
     OutgoingCall as IdeOutgoingCall, PreparedRename, ReferenceLocation, ReferencesResult,
-    SignatureHelp as IdeSignatureHelp, SignatureParameter as IdeSignatureParameter, SourceChange,
+    SignatureHelp as IdeSignatureHelp, SignatureInformation as IdeSignatureInformation,
+    SignatureParameter as IdeSignatureParameter, SourceChange,
 };
 use rhai_syntax::{TextRange, TextSize};
 use rhai_vfs::FileId;
 use serde::{Deserialize, Serialize};
 
-use crate::state::{CodeActionEdit, ServerState, WorkspaceSymbolMatch};
+use crate::state::{ServerState, WorkspaceSymbolMatch};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct CompletionResolvePayload {
@@ -49,6 +51,17 @@ pub(crate) struct CallHierarchyPayload {
     pub focus_start: u32,
     pub focus_end: u32,
     pub container_name: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct CodeActionResolvePayload {
+    pub uri: String,
+    pub request_range: Range,
+    pub id: String,
+    pub kind: String,
+    pub title: String,
+    pub target_start: u32,
+    pub target_end: u32,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -111,6 +124,7 @@ pub(crate) fn completion_item_to_lsp(
     text: Option<&str>,
     item: IdeCompletionItem,
 ) -> CompletionItem {
+    let label_details = completion_label_details(&item);
     let documentation = item.docs.map(markdown_documentation);
     let text_edit = text.zip(item.text_edit.as_ref()).and_then(|(text, edit)| {
         Some(TextEdit {
@@ -152,7 +166,7 @@ pub(crate) fn completion_item_to_lsp(
         deprecated: None,
         preselect: None,
         filter_text: item.filter_text,
-        label_details: None,
+        label_details,
         tags: None,
     }
 }
@@ -198,14 +212,29 @@ pub(crate) fn hover_to_lsp(hover: HoverResult) -> Hover {
         }
     ));
 
-    if let Some(declared) = hover.declared_signature {
+    if let Some(declared) = hover
+        .declared_signature
+        .as_ref()
+        .filter(|declared| declared.as_str() != hover.signature)
+    {
         lines.push(format!("Declared: `{declared}`"));
     }
-    if let Some(inferred) = hover.inferred_signature {
+    if let Some(inferred) = hover
+        .inferred_signature
+        .as_ref()
+        .filter(|inferred| inferred.as_str() != hover.signature)
+    {
         lines.push(format!("Inferred: `{inferred}`"));
     }
-    for note in hover.notes {
-        lines.push(format!("- {note}"));
+    if !hover.notes.is_empty() {
+        lines.push(
+            hover
+                .notes
+                .into_iter()
+                .map(|note| format!("- {note}"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
     }
 
     Hover {
@@ -264,6 +293,20 @@ pub(crate) fn rename_to_workspace_edit(
     source_change_to_workspace_edit(server, &source_change)
 }
 
+pub(crate) fn prepared_rename_to_lsp(
+    text: &str,
+    prepared: &PreparedRename,
+    offset: u32,
+) -> Option<PrepareRenameResponse> {
+    let range = prepare_rename_range(prepared, offset)?;
+    let range = text_range_to_lsp_range(text, range)?;
+    let placeholder = text_slice(text, prepare_rename_range(prepared, offset)?)?;
+    Some(PrepareRenameResponse::RangeWithPlaceholder {
+        range,
+        placeholder: rename_placeholder(placeholder),
+    })
+}
+
 pub(crate) fn document_symbols_to_lsp(
     server: &ServerState,
     file_id: FileId,
@@ -290,25 +333,33 @@ pub(crate) fn workspace_symbols_to_lsp(
 }
 
 pub(crate) fn signature_help_to_lsp(help: IdeSignatureHelp) -> SignatureHelp {
+    let active_parameter = help.active_parameter as u32;
     SignatureHelp {
         signatures: help
             .signatures
             .into_iter()
-            .map(|signature| SignatureInformation {
-                label: signature.label,
-                documentation: signature.docs.map(markdown_documentation),
-                parameters: Some(
-                    signature
-                        .parameters
-                        .into_iter()
-                        .map(signature_parameter_to_lsp)
-                        .collect(),
-                ),
-                active_parameter: None,
+            .map(|signature| {
+                let signature_active_parameter =
+                    signature_active_parameter(&signature, active_parameter);
+                SignatureInformation {
+                    label: signature.label,
+                    documentation: signature
+                        .docs
+                        .and_then(non_empty_docs)
+                        .map(markdown_documentation),
+                    parameters: Some(
+                        signature
+                            .parameters
+                            .into_iter()
+                            .map(signature_parameter_to_lsp)
+                            .collect(),
+                    ),
+                    active_parameter: signature_active_parameter,
+                }
             })
             .collect(),
         active_signature: Some(help.active_signature as u32),
-        active_parameter: Some(help.active_parameter as u32),
+        active_parameter: Some(active_parameter),
     }
 }
 
@@ -436,37 +487,27 @@ pub(crate) fn semantic_tokens_result(tokens: lsp_types::SemanticTokens) -> Seman
     SemanticTokensResult::Tokens(tokens)
 }
 
-pub(crate) fn code_action_to_lsp(
+pub(crate) fn semantic_tokens_delta_result(
+    tokens: SemanticTokensFullDeltaResult,
+) -> SemanticTokensFullDeltaResult {
+    tokens
+}
+
+#[cfg(test)]
+pub(crate) fn source_change_code_action_to_lsp(
     server: &ServerState,
-    action: &CodeActionEdit,
+    title: impl Into<String>,
+    kind: CodeActionKind,
+    source_change: &SourceChange,
 ) -> Option<CodeActionOrCommand> {
-    let text = open_document_text_by_uri(server, &action.uri)?;
-    let position = offset_to_position(text.as_ref(), action.insert_offset as usize)?;
-    let range = Range {
-        start: position,
-        end: position,
-    };
-    let edit = TextEdit {
-        range,
-        new_text: action.insert_text.clone(),
-    };
+    let edit = source_change_to_workspace_edit(server, source_change)?;
 
     Some(
         CodeAction {
-            title: action.title.clone(),
-            kind: Some(CodeActionKind::QUICKFIX),
+            title: title.into(),
+            kind: Some(kind),
             diagnostics: None,
-            edit: Some(WorkspaceEdit {
-                changes: None,
-                document_changes: Some(DocumentChanges::Edits(vec![TextDocumentEdit {
-                    text_document: OptionalVersionedTextDocumentIdentifier {
-                        uri: action.uri.clone(),
-                        version: action.version,
-                    },
-                    edits: vec![OneOf::Left(edit)],
-                }])),
-                change_annotations: None,
-            }),
+            edit: Some(edit),
             command: None,
             is_preferred: Some(true),
             disabled: None,
@@ -474,6 +515,41 @@ pub(crate) fn code_action_to_lsp(
         }
         .into(),
     )
+}
+
+pub(crate) fn unresolved_code_action_to_lsp(
+    title: impl Into<String>,
+    kind: CodeActionKind,
+    diagnostics: Vec<Diagnostic>,
+    is_preferred: bool,
+    payload: CodeActionResolvePayload,
+) -> Option<CodeActionOrCommand> {
+    Some(
+        CodeAction {
+            title: title.into(),
+            kind: Some(kind),
+            diagnostics: (!diagnostics.is_empty()).then_some(diagnostics),
+            edit: None,
+            command: None,
+            is_preferred: is_preferred.then_some(true),
+            disabled: None,
+            data: Some(serde_json::to_value(payload).ok()?),
+        }
+        .into(),
+    )
+}
+
+pub(crate) fn resolve_code_action_payload(action: &CodeAction) -> Option<CodeActionResolvePayload> {
+    serde_json::from_value(action.data.clone()?).ok()
+}
+
+pub(crate) fn resolved_code_action_to_lsp(
+    server: &ServerState,
+    mut action: CodeAction,
+    source_change: &SourceChange,
+) -> Option<CodeAction> {
+    action.edit = Some(source_change_to_workspace_edit(server, source_change)?);
+    Some(action)
 }
 
 fn signature_parameter_to_lsp(parameter: IdeSignatureParameter) -> lsp_types::ParameterInformation {
@@ -616,6 +692,38 @@ fn markdown_documentation(value: String) -> Documentation {
     Documentation::MarkupContent(markup(value))
 }
 
+fn non_empty_docs(docs: String) -> Option<String> {
+    let trimmed = docs.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_owned())
+}
+
+fn signature_active_parameter(
+    signature: &IdeSignatureInformation,
+    active_parameter: u32,
+) -> Option<u32> {
+    let parameter_count = u32::try_from(signature.parameters.len()).ok()?;
+    (parameter_count > 0).then_some(active_parameter.min(parameter_count.saturating_sub(1)))
+}
+
+fn completion_label_details(item: &IdeCompletionItem) -> Option<CompletionItemLabelDetails> {
+    let description = completion_source_description(item);
+    description.map(|description| CompletionItemLabelDetails {
+        detail: None,
+        description: Some(description),
+    })
+}
+
+fn completion_source_description(item: &IdeCompletionItem) -> Option<String> {
+    Some(match (item.source, item.exported) {
+        (IdeCompletionItemSource::Visible, _) => "local".to_owned(),
+        (IdeCompletionItemSource::Project, true) => "project export".to_owned(),
+        (IdeCompletionItemSource::Project, false) => "project".to_owned(),
+        (IdeCompletionItemSource::Member, _) => "member".to_owned(),
+        (IdeCompletionItemSource::Builtin, _) => "builtin".to_owned(),
+        (IdeCompletionItemSource::Postfix, _) => "postfix template".to_owned(),
+    })
+}
+
 fn markup(value: String) -> MarkupContent {
     MarkupContent {
         kind: MarkupKind::Markdown,
@@ -740,12 +848,10 @@ pub(crate) fn open_document_text_by_uri(
     server: &ServerState,
     uri: &lsp_types::Uri,
 ) -> Option<std::sync::Arc<str>> {
-    let document = server.open_documents.get(uri)?;
-    let file_id = server
-        .analysis_host()
-        .snapshot()
-        .file_id_for_path(&document.normalized_path)?;
-    server.analysis_host().snapshot().file_text(file_id)
+    server
+        .open_documents
+        .get(uri)
+        .map(|document| std::sync::Arc::<str>::from(document.text.as_str()))
 }
 
 pub(crate) fn file_text_by_uri(
@@ -758,7 +864,7 @@ pub(crate) fn file_text_by_uri(
     snapshot.file_text(file_id)
 }
 
-fn text_range_to_lsp_range(text: &str, range: TextRange) -> Option<Range> {
+pub(crate) fn text_range_to_lsp_range(text: &str, range: TextRange) -> Option<Range> {
     Some(Range {
         start: offset_to_position(text, u32::from(range.start()) as usize)?,
         end: offset_to_position(text, u32::from(range.end()) as usize)?,
@@ -776,7 +882,7 @@ fn offset_to_position(text: &str, offset: usize) -> Option<Position> {
 
     Some(Position {
         line: line_index as u32,
-        character: utf16_len(&text[line_start..offset]) as u32,
+        character: utf16_len(text.get(line_start..offset)?) as u32,
     })
 }
 
@@ -801,4 +907,263 @@ fn line_index(line_starts: &[usize], offset: usize) -> usize {
 
 fn utf16_len(text: &str) -> usize {
     text.chars().map(char::len_utf16).sum()
+}
+
+fn prepare_rename_range(prepared: &PreparedRename, offset: u32) -> Option<TextRange> {
+    let offset = TextSize::from(offset);
+
+    prepared
+        .plan
+        .targets
+        .iter()
+        .map(|target| target.focus_range)
+        .chain(
+            prepared
+                .plan
+                .occurrences
+                .iter()
+                .map(|occurrence| occurrence.range),
+        )
+        .find(|range| range.contains(offset))
+        .or_else(|| {
+            prepared
+                .plan
+                .targets
+                .first()
+                .map(|target| target.focus_range)
+        })
+        .or_else(|| {
+            prepared
+                .plan
+                .occurrences
+                .first()
+                .map(|occurrence| occurrence.range)
+        })
+}
+
+fn text_slice(text: &str, range: TextRange) -> Option<&str> {
+    let start = u32::from(range.start()) as usize;
+    let end = u32::from(range.end()) as usize;
+    text.get(start..end)
+}
+
+fn rename_placeholder(text: &str) -> String {
+    let mut chars = text.chars();
+    let Some(first) = chars.next() else {
+        return String::new();
+    };
+    let Some(last) = text.chars().last() else {
+        return String::new();
+    };
+
+    if matches!(first, '"' | '\'' | '`') && first == last && text.len() >= first.len_utf8() * 2 {
+        text.strip_prefix(first)
+            .and_then(|text| text.strip_suffix(last))
+            .unwrap_or(text)
+            .to_owned()
+    } else {
+        text.to_owned()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use lsp_types::{CodeActionKind, DocumentChangeOperation, DocumentChanges, ResourceOp};
+    use rhai_hir::SymbolKind;
+    use rhai_ide::{
+        CompletionInsertFormat, CompletionItem, CompletionItemKind, CompletionItemSource,
+        FileRename, FileTextEdit, HoverResult, HoverSignatureSource,
+        SignatureHelp as IdeSignatureHelp, SignatureInformation as IdeSignatureInformation,
+        SignatureParameter as IdeSignatureParameter, SourceChange, TextEdit,
+    };
+    use rhai_syntax::{TextRange, TextSize};
+
+    use crate::Server;
+    use crate::protocol::{
+        completion_item_to_lsp, hover_to_lsp, prepared_rename_to_lsp, signature_help_to_lsp,
+        source_change_code_action_to_lsp,
+    };
+    use crate::tests::file_url;
+
+    #[test]
+    fn code_action_conversion_supports_multi_file_edits_and_file_renames() {
+        let mut server = Server::new();
+        let provider_uri = file_url("provider.rhai");
+        let consumer_uri = file_url("consumer.rhai");
+        let provider_text = "fn helper() {}\n";
+        let consumer_text = "import \"provider\" as p;\np::helper();\n";
+
+        server
+            .open_document(provider_uri.clone(), 1, provider_text)
+            .expect("expected provider open to succeed");
+        server
+            .open_document(consumer_uri.clone(), 1, consumer_text)
+            .expect("expected consumer open to succeed");
+
+        let snapshot = server.analysis_host().snapshot();
+        let provider_file_id = snapshot
+            .file_id_for_path(&std::env::current_dir().expect("cwd").join("provider.rhai"))
+            .expect("expected provider file id");
+        let consumer_file_id = snapshot
+            .file_id_for_path(&std::env::current_dir().expect("cwd").join("consumer.rhai"))
+            .expect("expected consumer file id");
+        let change = SourceChange::new(vec![
+            FileTextEdit::new(
+                provider_file_id,
+                vec![TextEdit::replace(
+                    TextRange::new(TextSize::from(3), TextSize::from(9)),
+                    "renamed".to_owned(),
+                )],
+            ),
+            FileTextEdit::new(
+                consumer_file_id,
+                vec![TextEdit::replace(
+                    TextRange::new(TextSize::from(24), TextSize::from(30)),
+                    "renamed".to_owned(),
+                )],
+            ),
+        ])
+        .with_file_renames(vec![FileRename::new(
+            provider_file_id,
+            std::env::current_dir()
+                .expect("cwd")
+                .join("renamed_provider.rhai"),
+        )]);
+
+        let action = source_change_code_action_to_lsp(
+            &server,
+            "Apply import fix",
+            CodeActionKind::QUICKFIX,
+            &change,
+        )
+        .expect("expected code action conversion");
+
+        let lsp_types::CodeActionOrCommand::CodeAction(action) = action else {
+            panic!("expected code action");
+        };
+        let document_changes = action
+            .edit
+            .expect("expected workspace edit")
+            .document_changes
+            .expect("expected document changes");
+        let DocumentChanges::Operations(operations) = document_changes else {
+            panic!("expected operation-based workspace edit");
+        };
+
+        assert!(
+            operations
+                .iter()
+                .filter(|operation| matches!(operation, DocumentChangeOperation::Edit(_)))
+                .count()
+                >= 2
+        );
+        assert!(operations.iter().any(|operation| matches!(
+            operation,
+            DocumentChangeOperation::Op(ResourceOp::Rename(rename))
+                if rename.new_uri.as_str().ends_with("/renamed_provider.rhai")
+                    || rename.new_uri.as_str().ends_with("\\renamed_provider.rhai")
+        )));
+    }
+
+    #[test]
+    fn prepare_rename_placeholder_strips_surrounding_quotes() {
+        let prepared = rhai_ide::PreparedRename {
+            plan: rhai_ide::RenamePlan {
+                new_name: String::new(),
+                targets: Vec::new(),
+                occurrences: vec![rhai_ide::ReferenceLocation {
+                    file_id: rhai_vfs::FileId(0),
+                    range: TextRange::new(TextSize::from(7), TextSize::from(13)),
+                    kind: rhai_ide::ReferenceKind::Reference,
+                }],
+                issues: Vec::new(),
+            },
+            source_change: None,
+        };
+
+        let response = prepared_rename_to_lsp("import \"demo\";\n", &prepared, 8)
+            .expect("expected prepare rename response");
+
+        match response {
+            lsp_types::PrepareRenameResponse::RangeWithPlaceholder { placeholder, .. } => {
+                assert_eq!(placeholder, "demo");
+            }
+            other => panic!("expected placeholder response, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn hover_conversion_omits_duplicate_signature_lines() {
+        let hover = hover_to_lsp(HoverResult {
+            signature: "let result: any".to_owned(),
+            docs: Some("hover docs".to_owned()),
+            source: HoverSignatureSource::Declared,
+            declared_signature: Some("let result: any".to_owned()),
+            inferred_signature: Some("let result: any | blob".to_owned()),
+            notes: vec!["A note".to_owned()],
+        });
+
+        let lsp_types::HoverContents::Markup(markup) = hover.contents else {
+            panic!("expected markdown hover");
+        };
+        assert!(markup.value.contains("hover docs"));
+        assert!(!markup.value.contains("Declared: `let result: any`"));
+        assert!(markup.value.contains("Inferred: `let result: any | blob`"));
+        assert!(markup.value.contains("- A note"));
+    }
+
+    #[test]
+    fn completion_conversion_surfaces_source_descriptions() {
+        let item = completion_item_to_lsp(
+            None,
+            CompletionItem {
+                label: "shared_helper".to_owned(),
+                kind: CompletionItemKind::Symbol(SymbolKind::Function),
+                source: CompletionItemSource::Project,
+                sort_text: "0".to_owned(),
+                detail: Some("fun() -> ()".to_owned()),
+                docs: None,
+                filter_text: None,
+                text_edit: None,
+                insert_format: CompletionInsertFormat::PlainText,
+                file_id: None,
+                exported: true,
+                resolve_data: None,
+            },
+        );
+
+        assert_eq!(item.detail.as_deref(), Some("fun() -> ()"));
+        assert_eq!(
+            item.label_details
+                .as_ref()
+                .and_then(|details| details.description.as_deref()),
+            Some("project export")
+        );
+    }
+
+    #[test]
+    fn signature_help_conversion_sets_active_parameter_per_signature() {
+        let help = signature_help_to_lsp(IdeSignatureHelp {
+            signatures: vec![IdeSignatureInformation {
+                label: "fn check(left: int, right: string) -> bool".to_owned(),
+                docs: Some("check docs".to_owned()),
+                parameters: vec![
+                    IdeSignatureParameter {
+                        label: "left".to_owned(),
+                        annotation: Some("int".to_owned()),
+                    },
+                    IdeSignatureParameter {
+                        label: "right".to_owned(),
+                        annotation: Some("string".to_owned()),
+                    },
+                ],
+                file_id: None,
+            }],
+            active_signature: 0,
+            active_parameter: 1,
+        });
+
+        assert_eq!(help.active_parameter, Some(1));
+        assert_eq!(help.signatures[0].active_parameter, Some(1));
+    }
 }
