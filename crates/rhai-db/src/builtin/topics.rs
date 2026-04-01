@@ -1,5 +1,5 @@
 use crate::builtin::signatures::builtin_topic_docs;
-use rhai_hir::{AssignmentOperator, BinaryOperator, TypeRef};
+use rhai_hir::{AssignmentOperator, BinaryOperator, TypeRef, UnaryOperator};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BuiltinTopicKey {
@@ -31,6 +31,9 @@ pub enum BuiltinTopicKey {
     BlobAppendAssignmentOperator,
     BitwiseAssignmentOperator,
     NullCoalesceAssignmentOperator,
+    UnaryPlusOperator,
+    UnaryMinusOperator,
+    LogicalNotOperator,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -136,6 +139,17 @@ pub fn builtin_assignment_operator_topic(
         | AssignmentOperator::Or
         | AssignmentOperator::Xor
         | AssignmentOperator::And => Some(bitwise_assignment_topic(operator)),
+    }
+}
+
+pub fn builtin_unary_operator_topic(
+    operator: UnaryOperator,
+    operand_ty: Option<&TypeRef>,
+) -> Option<BuiltinTopicDoc> {
+    match operator {
+        UnaryOperator::Plus => unary_plus_operator_topic(operand_ty),
+        UnaryOperator::Minus => unary_minus_operator_topic(operand_ty),
+        UnaryOperator::Not => logical_not_operator_topic(operand_ty),
     }
 }
 
@@ -264,10 +278,11 @@ fn map_index_topic() -> BuiltinTopicDoc {
         key: BuiltinTopicKey::MapIndex,
         signature: "map[\"field\"] -> any | ()".to_owned(),
         docs: builtin_topic_docs(
-            "Index an object map by property name to read or write a field. Missing fields read as `()` until written.",
+            "Index an object map by property name to read or write a field. Missing fields read as `()` until written. This is the bracket form of object-map property access and is interchangeable with dot syntax when the field name is a valid identifier.",
             &[
                 "let value = record[\"name\"];",
                 "record[\"active\"] = true;",
+                "let same = record.name;",
             ],
             &[
                 "let user = #{ name: \"Ada\" };",
@@ -275,10 +290,16 @@ fn map_index_topic() -> BuiltinTopicDoc {
                 "// name == \"Ada\"",
                 "user[\"active\"] = true;",
                 "// user == #{ name: \"Ada\", active: true }",
+                "let same = user.name;",
+                "// same == \"Ada\"",
             ],
             "https://rhai.rs/book/ref/object-maps.html",
         ),
-        notes: vec!["Builtin object map indexing syntax.".to_owned()],
+        notes: vec![
+            "Builtin object map indexing syntax.".to_owned(),
+            "Equivalent property syntax: map.field when the field name is a valid identifier."
+                .to_owned(),
+        ],
     }
 }
 
@@ -287,18 +308,28 @@ fn map_property_access_topic() -> BuiltinTopicDoc {
         key: BuiltinTopicKey::MapPropertyAccess,
         signature: "map.field -> any | ()".to_owned(),
         docs: builtin_topic_docs(
-            "Access an object map property by name using dot syntax. Missing fields read as `()` until written.",
-            &["let value = record.name;", "record.active = true;"],
+            "Access an object map property by name using dot syntax. Missing fields read as `()` until written. This is interchangeable with bracket indexing when the field name is a valid identifier.",
+            &[
+                "let value = record.name;",
+                "record.active = true;",
+                "let same = record[\"name\"];",
+            ],
             &[
                 "let user = #{ name: \"Ada\" };",
                 "let name = user.name;",
                 "// name == \"Ada\"",
                 "user.active = true;",
                 "// user == #{ name: \"Ada\", active: true }",
+                "let same = user[\"name\"];",
+                "// same == \"Ada\"",
             ],
             "https://rhai.rs/book/ref/object-maps.html",
         ),
-        notes: vec!["Builtin object map property access syntax.".to_owned()],
+        notes: vec![
+            "Builtin object map property access syntax.".to_owned(),
+            "Equivalent indexing syntax: map[\"field\"] for dynamic or quoted property access."
+                .to_owned(),
+        ],
     }
 }
 
@@ -894,6 +925,67 @@ fn null_coalesce_assignment_topic() -> BuiltinTopicDoc {
     }
 }
 
+fn unary_plus_operator_topic(operand_ty: Option<&TypeRef>) -> Option<BuiltinTopicDoc> {
+    let ty = operand_ty?;
+    if !type_may_be_numeric(ty) {
+        return None;
+    }
+
+    Some(BuiltinTopicDoc {
+        key: BuiltinTopicKey::UnaryPlusOperator,
+        signature: "+number -> number".to_owned(),
+        docs: builtin_topic_docs(
+            "Apply unary plus to a numeric value. This keeps the value unchanged but can make numeric intent explicit.",
+            &["let copy = +value;"],
+            &["let value = 42;", "let copy = +value;", "// copy == 42"],
+            "https://rhai.rs/book/ref/numbers.html",
+        ),
+        notes: vec!["Builtin unary numeric operator.".to_owned()],
+    })
+}
+
+fn unary_minus_operator_topic(operand_ty: Option<&TypeRef>) -> Option<BuiltinTopicDoc> {
+    let ty = operand_ty?;
+    if !type_may_be_numeric(ty) {
+        return None;
+    }
+
+    Some(BuiltinTopicDoc {
+        key: BuiltinTopicKey::UnaryMinusOperator,
+        signature: "-number -> number".to_owned(),
+        docs: builtin_topic_docs(
+            "Negate a numeric value.",
+            &["let delta = -value;"],
+            &["let value = 42;", "let delta = -value;", "// delta == -42"],
+            "https://rhai.rs/book/ref/numbers.html",
+        ),
+        notes: vec!["Builtin unary numeric negation operator.".to_owned()],
+    })
+}
+
+fn logical_not_operator_topic(operand_ty: Option<&TypeRef>) -> Option<BuiltinTopicDoc> {
+    let ty = operand_ty?;
+    if !type_may_be_bool(ty) {
+        return None;
+    }
+
+    Some(BuiltinTopicDoc {
+        key: BuiltinTopicKey::LogicalNotOperator,
+        signature: "!bool -> bool".to_owned(),
+        docs: builtin_topic_docs(
+            "Invert a boolean value.",
+            &["let ready = !pending;"],
+            &[
+                "let pending = false;",
+                "let ready = !pending;",
+                "// ready == true",
+            ],
+            "https://rhai.rs/book/language/expressions.html",
+        ),
+        notes: vec!["Builtin logical negation operator.".to_owned()],
+    })
+}
+
 fn range_operator_topic() -> BuiltinTopicDoc {
     BuiltinTopicDoc {
         key: BuiltinTopicKey::RangeOperator,
@@ -955,6 +1047,28 @@ fn is_operator_topic_type(ty: &TypeRef) -> bool {
         TypeRef::Nullable(inner) => is_operator_topic_type(inner),
         TypeRef::Union(members) | TypeRef::Ambiguous(members) => {
             members.iter().any(is_operator_topic_type)
+        }
+        _ => false,
+    }
+}
+
+fn type_may_be_numeric(ty: &TypeRef) -> bool {
+    match ty {
+        TypeRef::Int | TypeRef::Float | TypeRef::Decimal => true,
+        TypeRef::Nullable(inner) => type_may_be_numeric(inner),
+        TypeRef::Union(members) | TypeRef::Ambiguous(members) => {
+            members.iter().any(type_may_be_numeric)
+        }
+        _ => false,
+    }
+}
+
+fn type_may_be_bool(ty: &TypeRef) -> bool {
+    match ty {
+        TypeRef::Bool => true,
+        TypeRef::Nullable(inner) => type_may_be_bool(inner),
+        TypeRef::Union(members) | TypeRef::Ambiguous(members) => {
+            members.iter().any(type_may_be_bool)
         }
         _ => false,
     }

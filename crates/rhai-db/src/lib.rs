@@ -11,6 +11,7 @@ pub use builtin::signatures::{builtin_universal_method_docs, builtin_universal_m
 pub use builtin::topics::{
     BuiltinTopicDoc, BuiltinTopicKey, builtin_assignment_operator_topic,
     builtin_binary_operator_topic, builtin_indexer_topic, builtin_property_access_topic,
+    builtin_unary_operator_topic,
 };
 pub use change::{ChangeSet, FileChange};
 pub use db::{AnalyzerDatabase, DatabaseSnapshot};

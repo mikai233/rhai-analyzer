@@ -3,7 +3,7 @@ use rhai_vfs::FileId;
 use crate::hints::signature_help::{host_method_candidates_for_type, signature_help};
 use rhai_db::{
     builtin_assignment_operator_topic, builtin_binary_operator_topic, builtin_indexer_topic,
-    builtin_property_access_topic, builtin_universal_method_docs,
+    builtin_property_access_topic, builtin_unary_operator_topic, builtin_universal_method_docs,
     builtin_universal_method_signature,
 };
 use rhai_hir::{SymbolKind, TypeRef};
@@ -32,6 +32,9 @@ pub(crate) fn hover(
     }
     if let Some(assignment_hover) = hover_for_builtin_assignment_operator(snapshot, position) {
         return Some(assignment_hover);
+    }
+    if let Some(unary_hover) = hover_for_builtin_unary_operator(snapshot, position) {
+        return Some(unary_hover);
     }
 
     let symbol_hover = if let Some(target) = snapshot
@@ -193,6 +196,39 @@ fn hover_for_builtin_assignment_operator(
         .rhs
         .and_then(|rhs| hir.expr_type(rhs, &inference.expr_types));
     let topic = builtin_assignment_operator_topic(assign.operator, lhs_ty, rhs_ty)?;
+
+    Some(HoverResult {
+        signature: topic.signature.clone(),
+        docs: Some(topic.docs),
+        source: HoverSignatureSource::Structural,
+        declared_signature: Some(topic.signature),
+        inferred_signature: None,
+        overload_signatures: Vec::new(),
+        notes: topic.notes,
+    })
+}
+
+fn hover_for_builtin_unary_operator(
+    snapshot: &rhai_db::DatabaseSnapshot,
+    position: FilePosition,
+) -> Option<HoverResult> {
+    let hir = snapshot.hir(position.file_id)?;
+    let offset = text_size(position.offset);
+    let unary = hir
+        .unary_exprs
+        .iter()
+        .filter(|candidate| {
+            candidate
+                .operator_range
+                .is_some_and(|operator_range| operator_range.contains(offset))
+        })
+        .min_by_key(|candidate| hir.expr(candidate.owner).range.len())?;
+
+    let inference = snapshot.type_inference(position.file_id)?;
+    let operand_ty = unary
+        .operand
+        .and_then(|operand| hir.expr_type(operand, &inference.expr_types));
+    let topic = builtin_unary_operator_topic(unary.operator, operand_ty)?;
 
     Some(HoverResult {
         signature: topic.signature.clone(),
