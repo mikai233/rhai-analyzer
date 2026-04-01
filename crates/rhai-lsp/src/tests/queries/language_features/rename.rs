@@ -1,0 +1,46 @@
+use rhai_syntax::TextSize;
+
+use crate::Server;
+use crate::tests::{assert_valid_rhai_syntax, file_url, offset_in};
+
+#[test]
+fn prepare_rename_queries_flow_through_server() {
+    let mut server = Server::new();
+    let uri = file_url("main.rhai");
+    let text = r#"
+        fn helper(value) {
+            value
+        }
+
+        fn run() {
+            helper(1);
+        }
+    "#;
+
+    assert_valid_rhai_syntax(text);
+    server
+        .open_document(uri.clone(), 1, text)
+        .expect("expected open_document to succeed");
+
+    let prepared = server
+        .prepare_rename(&uri, offset_in(text, "helper(1)") + 1)
+        .expect("expected prepare rename query to succeed")
+        .expect("expected prepared rename");
+    let query_offset = TextSize::from(offset_in(text, "helper(1)") + 1);
+
+    assert!(
+        prepared
+            .plan
+            .targets
+            .iter()
+            .map(|target| target.focus_range)
+            .chain(
+                prepared
+                    .plan
+                    .occurrences
+                    .iter()
+                    .map(|occurrence| occurrence.range)
+            )
+            .any(|range| range.contains(query_offset))
+    );
+}

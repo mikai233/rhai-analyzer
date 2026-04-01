@@ -1,6 +1,4 @@
-use crate::tests::{
-    assert_workspace_files_have_no_syntax_diagnostics, symbol_id_by_name,
-};
+use crate::tests::{assert_workspace_files_have_no_syntax_diagnostics, symbol_id_by_name};
 use crate::{AnalyzerDatabase, ChangeSet, FileChange};
 use rhai_hir::{FunctionTypeRef, SymbolKind, TypeRef};
 use rhai_project::ProjectConfig;
