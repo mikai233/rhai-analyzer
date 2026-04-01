@@ -88,6 +88,37 @@ impl GapTrivia {
     }
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct OwnedTrivia {
+    pub leading: GapTrivia,
+    pub between: Vec<GapTrivia>,
+    pub trailing: GapTrivia,
+}
+
+impl OwnedTrivia {
+    pub fn slot(&self, slot: TriviaSlot) -> Option<&GapTrivia> {
+        match slot {
+            TriviaSlot::Leading => Some(&self.leading),
+            TriviaSlot::Between(index) => self.between.get(index),
+            TriviaSlot::Trailing => Some(&self.trailing),
+        }
+    }
+
+    pub fn has_unowned_comments_outside_slots(&self, allowed_slots: &[TriviaSlot]) -> bool {
+        if !allowed_slots.contains(&TriviaSlot::Leading) && self.leading.has_comments() {
+            return true;
+        }
+
+        if !allowed_slots.contains(&TriviaSlot::Trailing) && self.trailing.has_comments() {
+            return true;
+        }
+
+        self.between.iter().enumerate().any(|(index, gap)| {
+            gap.has_comments() && !allowed_slots.contains(&TriviaSlot::Between(index))
+        })
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct TriviaStore {
     trivia_tokens: Vec<TriviaToken>,
@@ -123,33 +154,8 @@ impl TriviaStore {
     }
 
     pub fn node_has_unowned_comments(&self, node: &SyntaxNode) -> bool {
-        self.node_has_unowned_comments_outside(node, &[])
-    }
-
-    pub fn node_has_unowned_comments_outside(
-        &self,
-        node: &SyntaxNode,
-        allowed_ranges: &[(usize, usize)],
-    ) -> bool {
-        let child_ranges = node
-            .children()
-            .map(|child| child.text_range())
-            .collect::<Vec<_>>();
-        let start = u32::from(node.text_range().start()) as usize;
-        let end = u32::from(node.text_range().end()) as usize;
-
-        self.comment_tokens
-            .iter()
-            .copied()
-            .filter(|token| token_in_range(*token, start, end))
-            .any(|token| {
-                !child_ranges
-                    .iter()
-                    .any(|range| range_contains(*range, token.range()))
-                    && !allowed_ranges.iter().any(|(allowed_start, allowed_end)| {
-                        token_in_usize_range(token, *allowed_start, *allowed_end)
-                    })
-            })
+        self.owned_trivia(node)
+            .has_unowned_comments_outside_slots(&[])
     }
 
     pub fn node_has_unowned_comments_outside_slots(
@@ -157,11 +163,8 @@ impl TriviaStore {
         node: &SyntaxNode,
         allowed_slots: &[TriviaSlot],
     ) -> bool {
-        let allowed_ranges = allowed_slots
-            .iter()
-            .filter_map(|slot| self.slot_range(node, *slot))
-            .collect::<Vec<_>>();
-        self.node_has_unowned_comments_outside(node, &allowed_ranges)
+        self.owned_trivia(node)
+            .has_unowned_comments_outside_slots(allowed_slots)
     }
 
     pub fn node_has_unowned_comments_outside_boundaries(
@@ -221,6 +224,100 @@ impl TriviaStore {
         boundary: &TriviaBoundary,
     ) -> Option<TriviaSlot> {
         self.slot_for_boundary(owner, boundary)
+    }
+
+    pub fn trivia_for_slot(&self, owner: &SyntaxNode, slot: TriviaSlot) -> Option<GapTrivia> {
+        let (start, end) = self.slot_range(owner, slot)?;
+        Some(self.comment_gap(
+            start,
+            end,
+            !matches!(slot, TriviaSlot::Leading),
+            !matches!(slot, TriviaSlot::Trailing),
+        ))
+    }
+
+    pub fn trivia_for_boundary(
+        &self,
+        owner: &SyntaxNode,
+        boundary: &TriviaBoundary,
+    ) -> Option<GapTrivia> {
+        let slot = self.boundary_slot(owner, boundary)?;
+        self.trivia_for_slot(owner, slot)
+    }
+
+    pub fn owned_trivia(&self, owner: &SyntaxNode) -> OwnedTrivia {
+        let slot_count = significant_elements(owner).len().saturating_sub(1);
+        OwnedTrivia {
+            leading: self
+                .trivia_for_slot(owner, TriviaSlot::Leading)
+                .unwrap_or_default(),
+            between: (0..slot_count)
+                .map(|index| {
+                    self.trivia_for_slot(owner, TriviaSlot::Between(index))
+                        .unwrap_or_default()
+                })
+                .collect(),
+            trailing: self
+                .trivia_for_slot(owner, TriviaSlot::Trailing)
+                .unwrap_or_default(),
+        }
+    }
+
+    pub fn owned_trivia_for_sequence(
+        &self,
+        start: usize,
+        end: usize,
+        elements: &[SyntaxElement],
+    ) -> OwnedTrivia {
+        let ranges = elements
+            .iter()
+            .map(|element| {
+                let range = element_range(element);
+                (
+                    u32::from(range.start()) as usize,
+                    u32::from(range.end()) as usize,
+                )
+            })
+            .collect::<Vec<_>>();
+        self.owned_trivia_for_ranges(start, end, &ranges)
+    }
+
+    pub fn owned_trivia_for_ranges(
+        &self,
+        start: usize,
+        end: usize,
+        ranges: &[(usize, usize)],
+    ) -> OwnedTrivia {
+        if ranges.is_empty() {
+            return OwnedTrivia {
+                leading: self.comment_gap(start, end, false, false),
+                between: Vec::new(),
+                trailing: GapTrivia::default(),
+            };
+        }
+
+        let leading = self.comment_gap(start, ranges[0].0, false, true);
+        let between = ranges
+            .windows(2)
+            .map(|pair| {
+                let [left, right] = pair else {
+                    unreachable!("windows(2) always yields pairs");
+                };
+                self.comment_gap(left.1, right.0, true, true)
+            })
+            .collect();
+        let trailing = self.comment_gap(
+            ranges.last().expect("non-empty checked above").1,
+            end,
+            true,
+            false,
+        );
+
+        OwnedTrivia {
+            leading,
+            between,
+            trailing,
+        }
     }
 
     pub fn range_has_comments(&self, start: usize, end: usize) -> bool {
@@ -426,12 +523,6 @@ fn token_in_range(token: TriviaToken, start: usize, end: usize) -> bool {
     token_start >= start && token_end <= end
 }
 
-fn token_in_usize_range(token: TriviaToken, start: usize, end: usize) -> bool {
-    let token_start = u32::from(token.range().start()) as usize;
-    let token_end = u32::from(token.range().end()) as usize;
-    start <= token_start && token_end <= end
-}
-
 fn offset_before(range: TextRange) -> usize {
     u32::from(range.start()) as usize
 }
@@ -451,25 +542,35 @@ fn boundary_matches(
     boundary: &TriviaBoundary,
 ) -> bool {
     match boundary {
-        TriviaBoundary::NodeNode(previous, next) => matches!(
-            (left, right),
-            (rowan::NodeOrToken::Node(left_node), rowan::NodeOrToken::Node(right_node))
-                if left_node == previous && right_node == next
-        ),
-        TriviaBoundary::NodeToken(previous, next) => matches!(
-            (left, right),
-            (rowan::NodeOrToken::Node(left_node), rowan::NodeOrToken::Token(right_token))
-                if left_node == previous && right_token == next
-        ),
-        TriviaBoundary::TokenNode(previous, next) => matches!(
-            (left, right),
-            (rowan::NodeOrToken::Token(left_token), rowan::NodeOrToken::Node(right_node))
-                if left_token == previous && right_node == next
-        ),
-        TriviaBoundary::TokenToken(previous, next) => matches!(
-            (left, right),
-            (rowan::NodeOrToken::Token(left_token), rowan::NodeOrToken::Token(right_token))
-                if left_token == previous && right_token == next
-        ),
+        TriviaBoundary::NodeNode(previous, next) => {
+            owner_element_matches_node(left, previous) && owner_element_matches_node(right, next)
+        }
+        TriviaBoundary::NodeToken(previous, next) => {
+            owner_element_matches_node(left, previous) && owner_element_matches_token(right, next)
+        }
+        TriviaBoundary::TokenNode(previous, next) => {
+            owner_element_matches_token(left, previous) && owner_element_matches_node(right, next)
+        }
+        TriviaBoundary::TokenToken(previous, next) => {
+            owner_element_matches_token(left, previous) && owner_element_matches_token(right, next)
+        }
+    }
+}
+
+fn owner_element_matches_node(element: &SyntaxElement, node: &SyntaxNode) -> bool {
+    match element {
+        rowan::NodeOrToken::Node(owner_node) => {
+            owner_node == node || range_contains(owner_node.text_range(), node.text_range())
+        }
+        rowan::NodeOrToken::Token(_) => false,
+    }
+}
+
+fn owner_element_matches_token(element: &SyntaxElement, token: &SyntaxToken) -> bool {
+    match element {
+        rowan::NodeOrToken::Node(owner_node) => {
+            range_contains(owner_node.text_range(), token.text_range())
+        }
+        rowan::NodeOrToken::Token(owner_token) => owner_token == token,
     }
 }

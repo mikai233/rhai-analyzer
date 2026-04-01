@@ -23,7 +23,7 @@ pub use syntax::{
     TextSize, TokenKind,
 };
 pub use trivia::{
-    AttachedComment, CommentKind, GapTrivia, TriviaBoundary, TriviaSlot, TriviaStore,
+    AttachedComment, CommentKind, GapTrivia, OwnedTrivia, TriviaBoundary, TriviaSlot, TriviaStore,
 };
 
 #[cfg(test)]

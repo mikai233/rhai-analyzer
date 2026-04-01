@@ -1,6 +1,6 @@
 use rhai_syntax::{
-    AstNode, BlockExpr, BlockItemList, ConstStmt, Expr, ExprStmt, FnItem, ImportStmt, Item,
-    LetStmt, Root, RootItemList, Stmt, SyntaxNode, SyntaxNodeExt, SyntaxToken, TokenKind,
+    AstNode, BlockExpr, BlockItemList, ConstStmt, Expr, ExprStmt, FnItem, GapTrivia, ImportStmt,
+    Item, LetStmt, Root, RootItemList, Stmt, SyntaxNode, SyntaxNodeExt, SyntaxToken, TokenKind,
     TriviaBoundary,
 };
 
@@ -17,32 +17,28 @@ impl Formatter<'_> {
             .map(|items| items.items().collect::<Vec<_>>())
             .unwrap_or_default();
         let entries = self.root_entries(&items);
-        let mut parts = Vec::new();
-        let mut cursor = u32::from(root.syntax().text_range().start()) as usize;
-
-        for (index, entry) in entries.iter().enumerate() {
-            let gap = self.comment_gap(cursor, entry.start, index > 0, true);
-            parts.push(self.gap_separator_doc(
-                &gap,
+        let entry_ranges = entries
+            .iter()
+            .map(|entry| (entry.start, entry.end))
+            .collect::<Vec<_>>();
+        let owned = self.owned_range_sequence_trivia(
+            u32::from(root.syntax().text_range().start()) as usize,
+            u32::from(root.syntax().text_range().end()) as usize,
+            &entry_ranges,
+        );
+        let mut parts = self.format_sequence_body_doc(
+            entries.iter().map(|entry| entry.doc.clone()).collect(),
+            &owned,
+            |index| {
                 if index > 0 {
-                    root_item_separator_min_newlines(entries[index - 1].kind, entry.kind)
+                    root_item_separator_min_newlines(entries[index - 1].kind, entries[index].kind)
                 } else {
                     1
-                },
-                index > 0,
-                true,
-            ));
-            parts.push(entry.doc.clone());
-            cursor = entry.end;
-        }
+                }
+            },
+        );
 
-        let root_end = u32::from(root.syntax().text_range().end()) as usize;
-        let trailing_gap = self.comment_gap(cursor, root_end, !items.is_empty(), false);
-        if !items.is_empty() && trailing_gap.has_comments() {
-            parts.push(self.gap_separator_doc(&trailing_gap, 1, true, false));
-        } else if trailing_gap.has_vertical_comments() {
-            parts.push(self.render_line_comments_doc(trailing_gap.vertical_comments()));
-        }
+        self.append_sequence_trailing_doc(&mut parts, &owned.trailing, !items.is_empty(), 1);
 
         if parts.is_empty() {
             Doc::nil()
@@ -55,24 +51,26 @@ impl Formatter<'_> {
     pub(crate) fn format_root_item_list_body_doc(&self, item_list: RootItemList) -> Doc {
         let items = item_list.items().collect::<Vec<_>>();
         let entries = self.root_entries(&items);
-        let mut parts = Vec::new();
-        let mut cursor = u32::from(item_list.syntax().text_range().start()) as usize;
-
-        for (index, entry) in entries.iter().enumerate() {
-            let gap = self.comment_gap(cursor, entry.start, index > 0, true);
-            parts.push(self.gap_separator_doc(
-                &gap,
+        let entry_ranges = entries
+            .iter()
+            .map(|entry| (entry.start, entry.end))
+            .collect::<Vec<_>>();
+        let owned = self.owned_range_sequence_trivia(
+            u32::from(item_list.syntax().text_range().start()) as usize,
+            u32::from(item_list.syntax().text_range().end()) as usize,
+            &entry_ranges,
+        );
+        let parts = self.format_sequence_body_doc(
+            entries.iter().map(|entry| entry.doc.clone()).collect(),
+            &owned,
+            |index| {
                 if index > 0 {
-                    root_item_separator_min_newlines(entries[index - 1].kind, entry.kind)
+                    root_item_separator_min_newlines(entries[index - 1].kind, entries[index].kind)
                 } else {
                     1
-                },
-                index > 0,
-                true,
-            ));
-            parts.push(entry.doc.clone());
-            cursor = entry.end;
-        }
+                }
+            },
+        );
 
         Doc::concat(parts)
     }
@@ -197,25 +195,33 @@ impl Formatter<'_> {
     fn format_function(&self, function: FnItem, indent: usize) -> Doc {
         let params = function.params();
         let params_doc = self.format_params_doc(params.clone(), indent);
+        let body_expr = function.body();
         let signature = self.format_function_signature_doc(&function);
-        let body = function
-            .body()
+        let body = body_expr
+            .clone()
             .map(|body| self.format_block_doc(body, indent))
             .unwrap_or_else(|| Doc::text("{}"));
-
-        let params_end = params
-            .map(|params| u32::from(params.syntax().text_range().end()) as usize)
-            .unwrap_or_else(|| u32::from(function.syntax().text_range().start()) as usize);
-        let body_start = function
-            .body()
-            .map(|body| u32::from(body.syntax().text_range().start()) as usize)
-            .unwrap_or_else(|| u32::from(function.syntax().text_range().end()) as usize);
+        let body_separator = match (params.clone(), body_expr.clone()) {
+            (Some(params), Some(body)) => self.head_body_separator_for_boundary(
+                function.syntax(),
+                TriviaBoundary::NodeNode(params.syntax(), body.syntax()),
+            ),
+            _ => {
+                let params_end = params
+                    .map(|params| u32::from(params.syntax().text_range().end()) as usize)
+                    .unwrap_or_else(|| u32::from(function.syntax().text_range().start()) as usize);
+                let body_start = body_expr
+                    .map(|body| u32::from(body.syntax().text_range().start()) as usize)
+                    .unwrap_or_else(|| u32::from(function.syntax().text_range().end()) as usize);
+                self.head_body_separator_doc(params_end, body_start)
+            }
+        };
 
         Doc::concat(vec![
             signature,
             self.function_params_separator_doc(&function),
             params_doc,
-            self.head_body_separator_doc(params_end, body_start),
+            body_separator,
             body,
         ])
     }
@@ -240,81 +246,100 @@ impl Formatter<'_> {
                 let head = Doc::text("break");
                 let mut parts = vec![head.clone()];
                 let value = break_stmt.value();
-                let value_range = value.as_ref().map(|expr| expr.syntax().text_range());
-                if let Some(value) = value {
-                    let value_start = u32::from(value.syntax().text_range().start()) as usize;
+                if let Some(value) = value.clone() {
+                    let Some(keyword_token) = self.token(break_stmt.syntax(), TokenKind::BreakKw)
+                    else {
+                        parts[0] = self.format_statement_tail_doc(
+                            head,
+                            "",
+                            self.format_expr_doc(value.clone(), indent),
+                            indent,
+                        );
+                        parts.push(self.statement_semicolon_doc(Some(value), &break_stmt.syntax()));
+                        return Doc::concat(parts);
+                    };
                     parts[0] = self.format_value_statement_doc(
+                        &break_stmt.syntax(),
                         head,
-                        self.format_expr_doc(value, indent),
-                        self.token_range(break_stmt.syntax(), TokenKind::BreakKw)
-                            .map(range_end)
-                            .unwrap_or_else(|| {
-                                u32::from(break_stmt.syntax().text_range().start()) as usize
-                            }),
-                        value_start,
+                        self.format_expr_doc(value.clone(), indent),
+                        keyword_token,
+                        value.clone(),
                         indent,
                     );
                 }
-                parts.push(self.statement_semicolon_doc(value_range, &break_stmt.syntax()));
+                parts.push(self.statement_semicolon_doc(value, &break_stmt.syntax()));
                 Doc::concat(parts)
             }
             Stmt::Continue(continue_stmt) => {
-                let keyword_end = self
-                    .token_range(continue_stmt.syntax(), TokenKind::ContinueKw)
-                    .map(range_end)
-                    .unwrap_or_else(|| {
-                        u32::from(continue_stmt.syntax().text_range().start()) as usize
-                    });
+                let keyword_token = self.token(continue_stmt.syntax(), TokenKind::ContinueKw);
                 Doc::concat(vec![
                     Doc::text("continue"),
-                    self.keyword_semicolon_doc(keyword_end, &continue_stmt.syntax()),
+                    keyword_token
+                        .map(|keyword_token| {
+                            self.keyword_semicolon_doc(keyword_token, &continue_stmt.syntax())
+                        })
+                        .unwrap_or_else(Doc::nil),
                 ])
             }
             Stmt::Return(return_stmt) => {
                 let head = Doc::text("return");
                 let mut parts = vec![head.clone()];
                 let value = return_stmt.value();
-                let value_range = value.as_ref().map(|expr| expr.syntax().text_range());
-                if let Some(value) = value {
-                    let value_start = u32::from(value.syntax().text_range().start()) as usize;
+                if let Some(value) = value.clone() {
+                    let Some(keyword_token) = self.token(return_stmt.syntax(), TokenKind::ReturnKw)
+                    else {
+                        parts[0] = self.format_statement_tail_doc(
+                            head,
+                            "",
+                            self.format_expr_doc(value.clone(), indent),
+                            indent,
+                        );
+                        parts
+                            .push(self.statement_semicolon_doc(Some(value), &return_stmt.syntax()));
+                        return Doc::concat(parts);
+                    };
                     parts[0] = self.format_value_statement_doc(
+                        &return_stmt.syntax(),
                         head,
-                        self.format_expr_doc(value, indent),
-                        self.token_range(return_stmt.syntax(), TokenKind::ReturnKw)
-                            .map(range_end)
-                            .unwrap_or_else(|| {
-                                u32::from(return_stmt.syntax().text_range().start()) as usize
-                            }),
-                        value_start,
+                        self.format_expr_doc(value.clone(), indent),
+                        keyword_token,
+                        value.clone(),
                         indent,
                     );
                 }
-                parts.push(self.statement_semicolon_doc(value_range, &return_stmt.syntax()));
+                parts.push(self.statement_semicolon_doc(value, &return_stmt.syntax()));
                 Doc::concat(parts)
             }
             Stmt::Throw(throw_stmt) => {
                 let head = Doc::text("throw");
                 let mut parts = vec![head.clone()];
                 let value = throw_stmt.value();
-                let value_range = value.as_ref().map(|expr| expr.syntax().text_range());
-                if let Some(value) = value {
-                    let value_start = u32::from(value.syntax().text_range().start()) as usize;
+                if let Some(value) = value.clone() {
+                    let Some(keyword_token) = self.token(throw_stmt.syntax(), TokenKind::ThrowKw)
+                    else {
+                        parts[0] = self.format_statement_tail_doc(
+                            head,
+                            "",
+                            self.format_expr_doc(value.clone(), indent),
+                            indent,
+                        );
+                        parts.push(self.statement_semicolon_doc(Some(value), &throw_stmt.syntax()));
+                        return Doc::concat(parts);
+                    };
                     parts[0] = self.format_value_statement_doc(
+                        &throw_stmt.syntax(),
                         head,
-                        self.format_expr_doc(value, indent),
-                        self.token_range(throw_stmt.syntax(), TokenKind::ThrowKw)
-                            .map(range_end)
-                            .unwrap_or_else(|| {
-                                u32::from(throw_stmt.syntax().text_range().start()) as usize
-                            }),
-                        value_start,
+                        self.format_expr_doc(value.clone(), indent),
+                        keyword_token,
+                        value.clone(),
                         indent,
                     );
                 }
-                parts.push(self.statement_semicolon_doc(value_range, &throw_stmt.syntax()));
+                parts.push(self.statement_semicolon_doc(value, &throw_stmt.syntax()));
                 Doc::concat(parts)
             }
             Stmt::Try(try_stmt) => {
+                let try_kw = self.token(try_stmt.syntax(), TokenKind::TryKw);
                 let body_expr = try_stmt.body();
                 let body = body_expr
                     .clone()
@@ -332,11 +357,14 @@ impl Formatter<'_> {
                     .as_ref()
                     .map(|body| u32::from(body.syntax().text_range().end()) as usize)
                     .unwrap_or(body_start);
-                let mut parts = vec![
-                    Doc::text("try"),
-                    self.head_body_separator_doc(try_kw_end, body_start),
-                    body,
-                ];
+                let body_separator = match (try_kw.clone(), body_expr.clone()) {
+                    (Some(try_kw), Some(body_expr)) => self.head_body_separator_for_boundary(
+                        try_stmt.syntax(),
+                        TriviaBoundary::TokenNode(try_kw, body_expr.syntax()),
+                    ),
+                    _ => self.head_body_separator_doc(try_kw_end, body_start),
+                };
+                let mut parts = vec![Doc::text("try"), body_separator, body];
                 if let Some(catch_clause) = try_stmt.catch_clause() {
                     let catch_start = self
                         .token_range(catch_clause.syntax(), TokenKind::CatchKw)
@@ -344,17 +372,30 @@ impl Formatter<'_> {
                         .unwrap_or_else(|| {
                             u32::from(catch_clause.syntax().text_range().start()) as usize
                         });
-                    parts.push(self.inline_or_gap_separator_doc(
-                        body_end,
-                        catch_start,
-                        GapSeparatorOptions {
-                            inline_text: " ",
-                            minimum_newlines: 1,
-                            has_previous: true,
-                            has_next: true,
-                            include_terminal_newline: true,
-                        },
-                    ));
+                    parts.push(match body_expr.clone() {
+                        Some(body_expr) => self.inline_or_boundary_separator_doc(
+                            try_stmt.syntax(),
+                            TriviaBoundary::NodeNode(body_expr.syntax(), catch_clause.syntax()),
+                            GapSeparatorOptions {
+                                inline_text: " ",
+                                minimum_newlines: 1,
+                                has_previous: true,
+                                has_next: true,
+                                include_terminal_newline: true,
+                            },
+                        ),
+                        None => self.inline_or_gap_separator_doc(
+                            body_end,
+                            catch_start,
+                            GapSeparatorOptions {
+                                inline_text: " ",
+                                minimum_newlines: 1,
+                                has_previous: true,
+                                has_next: true,
+                                include_terminal_newline: true,
+                            },
+                        ),
+                    });
                     parts.push(self.format_catch_clause_doc(catch_clause, indent));
                 }
                 Doc::concat(parts)
@@ -371,19 +412,17 @@ impl Formatter<'_> {
         let head = Doc::concat(head_parts);
         let mut parts = vec![head.clone()];
         let initializer = let_stmt.initializer();
-        let initializer_range = initializer.as_ref().map(|expr| expr.syntax().text_range());
         if let Some(initializer) = initializer {
-            let initializer_start = u32::from(initializer.syntax().text_range().start()) as usize;
             parts[0] = self.format_assignment_statement_doc(
                 &let_stmt.syntax(),
                 head,
                 self.format_expr_doc(initializer, indent),
-                range_end(name_or_stmt_end(let_stmt.name_token(), &let_stmt.syntax())),
-                initializer_start,
+                let_stmt.name_token(),
+                let_stmt.initializer(),
                 indent,
             );
         }
-        parts.push(self.statement_semicolon_doc(initializer_range, &let_stmt.syntax()));
+        parts.push(self.statement_semicolon_doc(let_stmt.initializer(), &let_stmt.syntax()));
         Doc::concat(parts)
     }
 
@@ -395,22 +434,17 @@ impl Formatter<'_> {
         let head = Doc::concat(head_parts);
         let mut parts = vec![head.clone()];
         let value = const_stmt.value();
-        let value_range = value.as_ref().map(|expr| expr.syntax().text_range());
         if let Some(value) = value {
-            let value_start = u32::from(value.syntax().text_range().start()) as usize;
             parts[0] = self.format_assignment_statement_doc(
                 &const_stmt.syntax(),
                 head,
                 self.format_expr_doc(value, indent),
-                range_end(name_or_stmt_end(
-                    const_stmt.name_token(),
-                    &const_stmt.syntax(),
-                )),
-                value_start,
+                const_stmt.name_token(),
+                const_stmt.value(),
                 indent,
             );
         }
-        parts.push(self.statement_semicolon_doc(value_range, &const_stmt.syntax()));
+        parts.push(self.statement_semicolon_doc(const_stmt.value(), &const_stmt.syntax()));
         Doc::concat(parts)
     }
 
@@ -426,12 +460,16 @@ impl Formatter<'_> {
 
         let mut tail_parts = vec![self.format_expr_doc(module.clone(), indent)];
         if let Some(alias) = import_stmt.alias() {
-            let (start, end) = self.range_after_node_before_node(module.syntax(), alias.syntax());
-            tail_parts.push(self.space_or_tight_statement_gap_doc(start, end));
+            let gap = self
+                .boundary_trivia(
+                    import_stmt.syntax(),
+                    TriviaBoundary::NodeNode(module.syntax(), alias.syntax()),
+                )
+                .unwrap_or_default();
+            tail_parts.push(self.space_or_tight_gap_from_gap(&gap));
             tail_parts.push(self.format_alias_clause_doc(alias));
         }
         let tail = Doc::concat(tail_parts);
-        let module_start = range_start(module.syntax().text_range());
         let Some(import_kw) = import_stmt
             .syntax()
             .direct_significant_tokens()
@@ -445,9 +483,14 @@ impl Formatter<'_> {
             ]);
         };
 
-        if !self.has_comments_after_token_before_node(&import_kw, module.syntax())
-            && self.statement_tail_renders_single_line(&tail, indent)
-        {
+        let head_gap = self
+            .boundary_trivia(
+                import_stmt.syntax(),
+                TriviaBoundary::TokenNode(import_kw.clone(), module.syntax()),
+            )
+            .unwrap_or_default();
+
+        if !head_gap.has_comments() && self.statement_tail_renders_single_line(&tail, indent) {
             return Doc::group(Doc::concat(vec![
                 Doc::text("import"),
                 Doc::indent(1, Doc::concat(vec![Doc::soft_line(), tail])),
@@ -457,7 +500,7 @@ impl Formatter<'_> {
 
         Doc::concat(vec![
             Doc::text("import"),
-            self.space_or_tight_statement_gap_doc(range_end(import_kw.text_range()), module_start),
+            self.space_or_tight_gap_from_gap(&head_gap),
             tail,
             Doc::text(";"),
         ])
@@ -470,7 +513,6 @@ impl Formatter<'_> {
 
         if let Some(declaration) = export_stmt.declaration() {
             let declaration_doc = self.format_stmt(declaration.clone(), indent);
-            let declaration_start = range_start(declaration.syntax().text_range());
             let Some(export_kw) = export_stmt
                 .syntax()
                 .direct_significant_tokens()
@@ -479,7 +521,14 @@ impl Formatter<'_> {
                 return Doc::concat(vec![Doc::text("export "), declaration_doc]);
             };
 
-            if !self.has_comments_after_token_before_node(&export_kw, declaration.syntax())
+            let head_gap = self
+                .boundary_trivia(
+                    export_stmt.syntax(),
+                    TriviaBoundary::TokenNode(export_kw.clone(), declaration.syntax()),
+                )
+                .unwrap_or_default();
+
+            if !head_gap.has_comments()
                 && self.statement_tail_renders_single_line(&declaration_doc, indent)
             {
                 return Doc::group(Doc::concat(vec![
@@ -490,22 +539,22 @@ impl Formatter<'_> {
 
             return Doc::concat(vec![
                 Doc::text("export"),
-                self.space_or_tight_statement_gap_doc(
-                    range_end(export_kw.text_range()),
-                    declaration_start,
-                ),
+                self.space_or_tight_gap_from_gap(&head_gap),
                 declaration_doc,
             ]);
         } else if let Some(target) = export_stmt.target() {
             let mut tail_parts = vec![self.format_expr_doc(target.clone(), indent)];
             if let Some(alias) = export_stmt.alias() {
-                let (start, end) =
-                    self.range_after_node_before_node(target.syntax(), alias.syntax());
-                tail_parts.push(self.space_or_tight_statement_gap_doc(start, end));
+                let gap = self
+                    .boundary_trivia(
+                        export_stmt.syntax(),
+                        TriviaBoundary::NodeNode(target.syntax(), alias.syntax()),
+                    )
+                    .unwrap_or_default();
+                tail_parts.push(self.space_or_tight_gap_from_gap(&gap));
                 tail_parts.push(self.format_alias_clause_doc(alias));
             }
             let tail = Doc::concat(tail_parts);
-            let target_start = range_start(target.syntax().text_range());
             let Some(export_kw) = export_stmt
                 .syntax()
                 .direct_significant_tokens()
@@ -514,9 +563,14 @@ impl Formatter<'_> {
                 return Doc::concat(vec![Doc::text("export "), tail, Doc::text(";")]);
             };
 
-            if !self.has_comments_after_token_before_node(&export_kw, target.syntax())
-                && self.statement_tail_renders_single_line(&tail, indent)
-            {
+            let head_gap = self
+                .boundary_trivia(
+                    export_stmt.syntax(),
+                    TriviaBoundary::TokenNode(export_kw.clone(), target.syntax()),
+                )
+                .unwrap_or_default();
+
+            if !head_gap.has_comments() && self.statement_tail_renders_single_line(&tail, indent) {
                 return Doc::group(Doc::concat(vec![
                     Doc::text("export"),
                     Doc::indent(1, Doc::concat(vec![Doc::soft_line(), tail])),
@@ -526,10 +580,7 @@ impl Formatter<'_> {
 
             return Doc::concat(vec![
                 Doc::text("export"),
-                self.space_or_tight_statement_gap_doc(
-                    range_end(export_kw.text_range()),
-                    target_start,
-                ),
+                self.space_or_tight_gap_from_gap(&head_gap),
                 tail,
                 Doc::text(";"),
             ]);
@@ -544,10 +595,7 @@ impl Formatter<'_> {
             parts.push(self.format_expr_doc(expr, indent));
         }
         if expr_stmt.has_semicolon() {
-            parts.push(self.statement_semicolon_doc(
-                expr_stmt.expr().map(|expr| expr.syntax().text_range()),
-                &expr_stmt.syntax(),
-            ));
+            parts.push(self.statement_semicolon_doc(expr_stmt.expr(), &expr_stmt.syntax()));
         }
         Doc::concat(parts)
     }
@@ -557,68 +605,50 @@ impl Formatter<'_> {
             .item_list()
             .map(|items| items.items().collect::<Vec<_>>())
             .unwrap_or_default();
-        let open_brace_end = self
-            .token_range(block.syntax(), TokenKind::OpenBrace)
-            .map(|range| u32::from(range.end()) as usize)
+        let open_brace = self.token(block.syntax(), TokenKind::OpenBrace);
+        let close_brace = self.token(block.syntax(), TokenKind::CloseBrace);
+        let open_brace_end = open_brace
+            .as_ref()
+            .map(|range| u32::from(range.text_range().end()) as usize)
             .unwrap_or_else(|| u32::from(block.syntax().text_range().start()) as usize);
-        let close_brace_start = self
-            .token_range(block.syntax(), TokenKind::CloseBrace)
-            .map(|range| u32::from(range.start()) as usize)
+        let close_brace_start = close_brace
+            .as_ref()
+            .map(|range| u32::from(range.text_range().start()) as usize)
             .unwrap_or_else(|| u32::from(block.syntax().text_range().end()) as usize);
-
-        let first_item_start = items
-            .first()
-            .map(|item| u32::from(item.syntax().text_range().start()) as usize)
-            .unwrap_or(close_brace_start);
-        let leading_gap =
-            self.comment_gap(open_brace_end, first_item_start, false, !items.is_empty());
-        if items.is_empty() && !leading_gap.has_vertical_comments() {
-            return Doc::text("{}");
-        }
-
-        let mut body_parts = Vec::new();
-        if leading_gap.has_vertical_comments() {
-            body_parts.push(self.render_line_comments_doc(leading_gap.vertical_comments()));
-
-            let suffix_newlines = if items.is_empty() {
-                leading_gap.trailing_blank_lines_before_next
-            } else {
-                leading_gap.trailing_blank_lines_before_next + 1
-            };
-            if suffix_newlines > 0 {
-                body_parts.push(Doc::concat(vec![Doc::hard_line(); suffix_newlines]));
+        let item_elements = items
+            .iter()
+            .map(|item| item.syntax().into())
+            .collect::<Vec<_>>();
+        let owned = self.owned_sequence_trivia(open_brace_end, close_brace_start, &item_elements);
+        let leading_gap = owned.leading.clone();
+        if items.is_empty() {
+            if !leading_gap.has_comments() {
+                return Doc::text("{}");
             }
-        }
 
-        let mut cursor = first_item_start;
-        for (index, item) in items.iter().enumerate() {
-            let item_start = u32::from(item.syntax().text_range().start()) as usize;
-            let has_leading_content = !body_parts.is_empty();
-            let skip_separator = index == 0 && has_leading_content && item_start == cursor;
-
-            if !skip_separator {
-                let gap = self.comment_gap(
-                    cursor,
-                    item_start,
-                    index > 0 || !body_parts.is_empty(),
-                    true,
-                );
-                body_parts.push(self.gap_separator_doc(
-                    &gap,
+            return Doc::concat(vec![
+                Doc::text("{"),
+                Doc::indent(
                     1,
-                    index > 0 || !body_parts.is_empty(),
-                    true,
-                ));
-            }
-            body_parts.push(self.format_item(item.clone(), indent + 1));
-            cursor = u32::from(item.syntax().text_range().end()) as usize;
+                    Doc::concat(vec![
+                        Doc::hard_line(),
+                        self.format_empty_sequence_body_doc(&leading_gap),
+                    ]),
+                ),
+                Doc::hard_line(),
+                Doc::text("}"),
+            ]);
         }
-        let trailing_gap = self.comment_gap(cursor, close_brace_start, !items.is_empty(), false);
-        if !items.is_empty() && trailing_gap.has_comments() {
-            body_parts.push(self.gap_separator_doc(&trailing_gap, 1, true, false));
-        } else if trailing_gap.has_vertical_comments() {
-            body_parts.push(self.render_line_comments_doc(trailing_gap.vertical_comments()));
-        }
+
+        let mut body_parts = self.format_sequence_body_doc(
+            items
+                .iter()
+                .map(|item| self.format_item(item.clone(), indent + 1))
+                .collect(),
+            &owned,
+            |_| 1,
+        );
+        self.append_sequence_trailing_doc(&mut body_parts, &owned.trailing, !items.is_empty(), 1);
 
         Doc::concat(vec![
             Doc::text("{"),
@@ -637,16 +667,23 @@ impl Formatter<'_> {
         indent: usize,
     ) -> Doc {
         let items = item_list.items().collect::<Vec<_>>();
-        let mut body_parts = Vec::new();
-        let mut cursor = u32::from(item_list.syntax().text_range().start()) as usize;
-
-        for (index, item) in items.iter().enumerate() {
-            let item_start = u32::from(item.syntax().text_range().start()) as usize;
-            let gap = self.comment_gap(cursor, item_start, index > 0, true);
-            body_parts.push(self.gap_separator_doc(&gap, 1, index > 0, true));
-            body_parts.push(self.format_item(item.clone(), indent));
-            cursor = u32::from(item.syntax().text_range().end()) as usize;
-        }
+        let item_elements = items
+            .iter()
+            .map(|item| item.syntax().into())
+            .collect::<Vec<_>>();
+        let owned = self.owned_sequence_trivia(
+            u32::from(item_list.syntax().text_range().start()) as usize,
+            u32::from(item_list.syntax().text_range().end()) as usize,
+            &item_elements,
+        );
+        let body_parts = self.format_sequence_body_doc(
+            items
+                .iter()
+                .map(|item| self.format_item(item.clone(), indent))
+                .collect(),
+            &owned,
+            |_| 1,
+        );
 
         Doc::concat(body_parts)
     }
@@ -820,7 +857,7 @@ impl Formatter<'_> {
     fn let_stmt_requires_raw_fallback(&self, let_stmt: LetStmt) -> bool {
         self.assignment_stmt_requires_raw_fallback(
             &let_stmt.syntax(),
-            name_or_stmt_end(let_stmt.name_token(), &let_stmt.syntax()),
+            let_stmt.name_token(),
             let_stmt.initializer(),
             let_stmt.initializer().is_some(),
         )
@@ -829,7 +866,7 @@ impl Formatter<'_> {
     fn const_stmt_requires_raw_fallback(&self, const_stmt: ConstStmt) -> bool {
         self.assignment_stmt_requires_raw_fallback(
             &const_stmt.syntax(),
-            name_or_stmt_end(const_stmt.name_token(), &const_stmt.syntax()),
+            const_stmt.name_token(),
             const_stmt.value(),
             const_stmt.value().is_some(),
         )
@@ -838,7 +875,7 @@ impl Formatter<'_> {
     fn assignment_stmt_requires_raw_fallback(
         &self,
         stmt: &SyntaxNode,
-        head_end_range: rhai_syntax::TextRange,
+        head_token: Option<SyntaxToken>,
         value_expr: Option<Expr>,
         has_value: bool,
     ) -> bool {
@@ -846,22 +883,27 @@ impl Formatter<'_> {
             return self.node_has_unowned_comments(stmt.clone());
         };
 
-        let mut allowed_ranges = vec![(
-            range_end(head_end_range),
-            range_start(eq_token.text_range()),
-        )];
+        let Some(head_token) = head_token else {
+            return self.node_has_unowned_comments(stmt.clone());
+        };
+
+        let mut allowed_boundaries = vec![TriviaBoundary::TokenToken(head_token, eq_token.clone())];
         if let Some(value_expr) = value_expr {
-            allowed_ranges.push(self.range_after_token_before_node(&eq_token, value_expr.syntax()));
+            allowed_boundaries.push(TriviaBoundary::TokenNode(
+                eq_token.clone(),
+                value_expr.syntax(),
+            ));
             if let Some(semicolon_token) = self.token(stmt.clone(), TokenKind::Semicolon) {
-                allowed_ranges.push(
-                    self.range_after_node_before_token(value_expr.syntax(), &semicolon_token),
-                );
+                allowed_boundaries.push(TriviaBoundary::NodeToken(
+                    value_expr.syntax(),
+                    semicolon_token,
+                ));
             }
         } else if has_value {
             return self.node_has_unowned_comments(stmt.clone());
         }
 
-        self.node_has_unowned_comments_outside(stmt.clone(), &allowed_ranges)
+        self.node_has_unowned_comments_outside_boundaries(stmt.clone(), &allowed_boundaries)
     }
 
     fn value_stmt_requires_raw_fallback(
@@ -922,22 +964,38 @@ impl Formatter<'_> {
         stmt: &SyntaxNode,
         head: Doc,
         value: Doc,
-        head_end: usize,
-        value_start: usize,
+        head_token: Option<SyntaxToken>,
+        value_expr: Option<Expr>,
         indent: usize,
     ) -> Doc {
-        let Some(eq_range) = self.token_range(stmt.clone(), TokenKind::Eq) else {
+        let Some(head_token) = head_token else {
             return self.format_statement_tail_doc(head, "= ", value, indent);
         };
+        let Some(value_expr) = value_expr else {
+            return self.format_statement_tail_doc(head, "= ", value, indent);
+        };
+        let Some(eq_token) = self.token(stmt.clone(), TokenKind::Eq) else {
+            return self.format_statement_tail_doc(head, "= ", value, indent);
+        };
+        let before_eq_gap = self
+            .boundary_trivia(
+                stmt.clone(),
+                TriviaBoundary::TokenToken(head_token, eq_token.clone()),
+            )
+            .unwrap_or_default();
+        let after_eq_gap = self
+            .boundary_trivia(
+                stmt.clone(),
+                TriviaBoundary::TokenNode(eq_token.clone(), value_expr.syntax()),
+            )
+            .unwrap_or_default();
 
-        if self.range_has_comments(head_end, range_start(eq_range))
-            || self.range_has_comments(range_end(eq_range), value_start)
-        {
+        if before_eq_gap.has_comments() || after_eq_gap.has_comments() {
             return Doc::concat(vec![
                 head,
-                self.space_or_tight_statement_gap_doc(head_end, range_start(eq_range)),
+                self.space_or_tight_gap_from_gap(&before_eq_gap),
                 Doc::text("="),
-                self.space_or_tight_statement_gap_doc(range_end(eq_range), value_start),
+                self.space_or_tight_gap_from_gap(&after_eq_gap),
                 value,
             ]);
         }
@@ -947,53 +1005,54 @@ impl Formatter<'_> {
 
     fn format_value_statement_doc(
         &self,
+        stmt: &SyntaxNode,
         head: Doc,
         value: Doc,
-        keyword_end: usize,
-        value_start: usize,
+        keyword_token: SyntaxToken,
+        value_expr: Expr,
         indent: usize,
     ) -> Doc {
-        if self.range_has_comments(keyword_end, value_start) {
-            return Doc::concat(vec![
-                head,
-                self.space_or_tight_statement_gap_doc(keyword_end, value_start),
-                value,
-            ]);
+        let gap = self
+            .boundary_trivia(
+                stmt.clone(),
+                TriviaBoundary::TokenNode(keyword_token, value_expr.syntax()),
+            )
+            .unwrap_or_default();
+        if gap.has_comments() {
+            return Doc::concat(vec![head, self.space_or_tight_gap_from_gap(&gap), value]);
         }
 
         self.format_statement_tail_doc(head, "", value, indent)
     }
 
-    fn statement_semicolon_doc(
-        &self,
-        value_range: Option<rhai_syntax::TextRange>,
-        stmt: &SyntaxNode,
-    ) -> Doc {
-        let Some(semicolon_range) = self.token_range(stmt.clone(), TokenKind::Semicolon) else {
+    fn statement_semicolon_doc(&self, value_expr: Option<Expr>, stmt: &SyntaxNode) -> Doc {
+        let Some(semicolon_token) = self.token(stmt.clone(), TokenKind::Semicolon) else {
             return Doc::nil();
         };
-        let Some(value_range) = value_range else {
+        let Some(value_expr) = value_expr else {
             return Doc::text(";");
         };
 
         Doc::concat(vec![
-            self.tight_comment_gap_doc_without_trailing_space(
-                range_end(value_range),
-                range_start(semicolon_range),
+            self.tight_comment_gap_for_boundary(
+                stmt.clone(),
+                TriviaBoundary::NodeToken(value_expr.syntax(), semicolon_token),
+                false,
             ),
             Doc::text(";"),
         ])
     }
 
-    fn keyword_semicolon_doc(&self, keyword_end: usize, stmt: &SyntaxNode) -> Doc {
-        let Some(semicolon_range) = self.token_range(stmt.clone(), TokenKind::Semicolon) else {
+    fn keyword_semicolon_doc(&self, keyword_token: SyntaxToken, stmt: &SyntaxNode) -> Doc {
+        let Some(semicolon_token) = self.token(stmt.clone(), TokenKind::Semicolon) else {
             return Doc::nil();
         };
 
         Doc::concat(vec![
-            self.tight_comment_gap_doc_without_trailing_space(
-                keyword_end,
-                range_start(semicolon_range),
+            self.tight_comment_gap_for_boundary(
+                stmt.clone(),
+                TriviaBoundary::TokenToken(keyword_token, semicolon_token),
+                false,
             ),
             Doc::text(";"),
         ])
@@ -1006,9 +1065,12 @@ impl Formatter<'_> {
 
         for token in tokens {
             if let Some(previous) = previous.as_ref() {
+                let gap = self.boundary_trivia(
+                    function.syntax(),
+                    TriviaBoundary::TokenToken(previous.clone(), token.clone()),
+                );
                 parts.push(self.function_signature_separator_doc(
-                    range_end(previous.text_range()),
-                    range_start(token.text_range()),
+                    gap,
                     function_signature_inline_separator(previous, &token),
                 ));
             }
@@ -1027,24 +1089,24 @@ impl Formatter<'_> {
         let Some(last_token) = function.signature_tokens().last() else {
             return Doc::nil();
         };
+        let Some(gap) = self.boundary_trivia(
+            function.syntax(),
+            TriviaBoundary::TokenNode(last_token, params.syntax()),
+        ) else {
+            return Doc::nil();
+        };
 
-        if self.has_comments_after_token_before_node(&last_token, params.syntax()) {
-            self.tight_comment_gap_after_token_before_node(&last_token, params.syntax())
-        } else {
-            Doc::nil()
-        }
+        self.tight_comment_gap_from_gap(&gap, true)
     }
 
-    fn space_or_tight_statement_gap_doc(&self, start: usize, end: usize) -> Doc {
-        if self.range_has_comments(start, end) {
-            self.tight_comment_gap_doc(start, end)
-        } else {
-            Doc::text(" ")
-        }
+    fn space_or_tight_statement_gap_doc(&self, gap: Option<GapTrivia>) -> Doc {
+        gap.as_ref()
+            .map(|gap| self.space_or_tight_gap_from_gap(gap))
+            .unwrap_or_else(|| Doc::text(" "))
     }
 
-    fn function_signature_separator_doc(&self, start: usize, end: usize, inline_text: &str) -> Doc {
-        if !self.range_has_comments(start, end) {
+    fn function_signature_separator_doc(&self, gap: Option<GapTrivia>, inline_text: &str) -> Doc {
+        if gap.as_ref().is_none_or(|gap| !gap.has_comments()) {
             return if inline_text.is_empty() {
                 Doc::text("")
             } else {
@@ -1052,7 +1114,7 @@ impl Formatter<'_> {
             };
         }
 
-        self.tight_comment_gap_doc(start, end)
+        self.tight_comment_gap_from_gap(&gap.unwrap_or_default(), true)
     }
 
     pub(crate) fn format_alias_clause_doc(&self, alias: rhai_syntax::AliasClause) -> Doc {
@@ -1069,10 +1131,10 @@ impl Formatter<'_> {
 
         Doc::concat(vec![
             Doc::text("as"),
-            self.space_or_tight_statement_gap_doc(
-                range_end(as_token.text_range()),
-                range_start(alias_name.text_range()),
-            ),
+            self.space_or_tight_statement_gap_doc(self.boundary_trivia(
+                alias.syntax(),
+                TriviaBoundary::TokenToken(as_token, alias_name.clone()),
+            )),
             Doc::text(alias_name.text()),
         ])
     }
@@ -1092,6 +1154,8 @@ impl Formatter<'_> {
             .body()
             .map(|body| self.format_block_doc(body, indent))
             .unwrap_or_else(|| Doc::text("{}"));
+        let catch_kw = self.token(catch_clause.syntax(), TokenKind::CatchKw);
+        let close_paren = self.token(catch_clause.syntax(), TokenKind::CloseParen);
         let catch_body_start = catch_clause
             .body()
             .map(|body| u32::from(body.syntax().text_range().start()) as usize)
@@ -1104,12 +1168,26 @@ impl Formatter<'_> {
                     .map(range_end)
             })
             .unwrap_or(catch_body_start);
+        let body_separator = match catch_clause.body() {
+            Some(body) => {
+                let boundary = close_paren
+                    .map(|close_paren| TriviaBoundary::TokenNode(close_paren, body.syntax()))
+                    .or_else(|| {
+                        catch_kw
+                            .clone()
+                            .map(|catch_kw| TriviaBoundary::TokenNode(catch_kw, body.syntax()))
+                    });
+                boundary.map_or_else(
+                    || self.head_body_separator_doc(catch_head_end, catch_body_start),
+                    |boundary| {
+                        self.head_body_separator_for_boundary(catch_clause.syntax(), boundary)
+                    },
+                )
+            }
+            None => self.head_body_separator_doc(catch_head_end, catch_body_start),
+        };
 
-        Doc::concat(vec![
-            Doc::text(catch_head),
-            self.head_body_separator_doc(catch_head_end, catch_body_start),
-            catch_body,
-        ])
+        Doc::concat(vec![Doc::text(catch_head), body_separator, catch_body])
     }
 }
 
@@ -1173,11 +1251,6 @@ fn range_start(range: rhai_syntax::TextRange) -> usize {
 
 fn range_end(range: rhai_syntax::TextRange) -> usize {
     u32::from(range.end()) as usize
-}
-
-fn name_or_stmt_end(name: Option<SyntaxToken>, stmt: &SyntaxNode) -> rhai_syntax::TextRange {
-    name.map(|token| token.text_range())
-        .unwrap_or_else(|| stmt.text_range())
 }
 
 fn function_signature_inline_separator(

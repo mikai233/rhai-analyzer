@@ -1,7 +1,8 @@
 use rhai_syntax::{AstNode, Expr, Item, Root, Stmt, parse_text};
 
 use crate::formatter::support::coverage::{
-    FormatSupportLevel, expr_support, item_support, stmt_support,
+    FormatSupportLevel, LayoutPolicyFamily, TriviaPolicyFamily, expr_support, item_support,
+    layout_policy_support, stmt_support, trivia_policy_support,
 };
 use crate::tests::assert_formats_to;
 
@@ -124,18 +125,22 @@ let root_value = compute();
         .map(|items| items.items().collect::<Vec<_>>())
         .unwrap_or_default();
 
-    assert!(matches!(items[0], Item::Fn(_)));
-    assert_eq!(
-        item_support(&items[0]).level,
-        FormatSupportLevel::Structural
-    );
-    assert!(matches!(items[1], Item::Stmt(Stmt::Let(_))));
-    assert_eq!(
-        item_support(&items[1]).level,
-        FormatSupportLevel::Structural
-    );
+    let function_item = items
+        .iter()
+        .find(|item| matches!(item, Item::Fn(_)))
+        .expect("expected function item");
+    let let_item = items
+        .iter()
+        .find(|item| matches!(item, Item::Stmt(Stmt::Let(_))))
+        .expect("expected top-level let item");
 
-    let function = match &items[0] {
+    assert_eq!(
+        item_support(function_item).level,
+        FormatSupportLevel::Structural
+    );
+    assert_eq!(item_support(let_item).level, FormatSupportLevel::Structural);
+
+    let function = match function_item {
         Item::Fn(function) => function.clone(),
         Item::Stmt(_) => panic!("expected function"),
     };
@@ -168,6 +173,34 @@ let root_value = compute();
         stmt_support(&body_statements[2]).level,
         FormatSupportLevel::Structural
     );
+}
+
+#[test]
+fn formatter_support_matrix_marks_trivia_policy_surfaces_structural() {
+    let boundary = trivia_policy_support(TriviaPolicyFamily::BoundaryOwnership);
+    let sequence = trivia_policy_support(TriviaPolicyFamily::SequenceOwnership);
+    let unowned = trivia_policy_support(TriviaPolicyFamily::UnownedCommentChecks);
+    let fallback = trivia_policy_support(TriviaPolicyFamily::RawGapFallback);
+
+    assert_eq!(boundary.level, FormatSupportLevel::Structural);
+    assert_eq!(sequence.level, FormatSupportLevel::Structural);
+    assert_eq!(unowned.level, FormatSupportLevel::Structural);
+    assert_eq!(fallback.level, FormatSupportLevel::Structural);
+}
+
+#[test]
+fn formatter_support_matrix_marks_layout_policy_surfaces_structural() {
+    let width_heads = layout_policy_support(LayoutPolicyFamily::WidthAwareHeads);
+    let sequence_bodies = layout_policy_support(LayoutPolicyFamily::SequenceBodies);
+    let containers = layout_policy_support(LayoutPolicyFamily::DelimitedContainers);
+    let imports = layout_policy_support(LayoutPolicyFamily::ImportGrouping);
+    let ranges = layout_policy_support(LayoutPolicyFamily::StructuralRange);
+
+    assert_eq!(width_heads.level, FormatSupportLevel::Structural);
+    assert_eq!(sequence_bodies.level, FormatSupportLevel::Structural);
+    assert_eq!(containers.level, FormatSupportLevel::Structural);
+    assert_eq!(imports.level, FormatSupportLevel::Structural);
+    assert_eq!(ranges.level, FormatSupportLevel::Structural);
 }
 
 #[test]

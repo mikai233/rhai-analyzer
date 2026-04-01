@@ -474,6 +474,52 @@ fn parse_trivia_store_supports_token_to_token_queries() {
 }
 
 #[test]
+fn parse_trivia_store_exposes_owned_slot_trivia() {
+    let parse = parse_text("fn Foo /* owner */(value) /* params */ { value }");
+    assert!(parse.errors().is_empty(), "{}", parse.debug_tree());
+
+    let root = Root::cast(parse.root()).expect("expected root");
+    let item_list = root.item_list().expect("expected root item list");
+    let function = item_list
+        .items()
+        .find_map(|item| match item {
+            crate::Item::Fn(function) => Some(function),
+            _ => None,
+        })
+        .expect("expected function item");
+    let params = function.params().expect("expected params");
+    let last_signature_token = function
+        .signature_tokens()
+        .last()
+        .expect("expected signature token");
+    let owner = function.syntax();
+
+    let owned = parse.trivia().owned_trivia(&owner);
+    let boundary = TriviaBoundary::TokenNode(last_signature_token, params.syntax());
+    let slot = parse
+        .trivia()
+        .boundary_slot(&owner, &boundary)
+        .expect("expected boundary slot");
+    let slot_trivia = parse
+        .trivia()
+        .trivia_for_boundary(&owner, &boundary)
+        .expect("expected boundary trivia");
+
+    assert_eq!(
+        slot_trivia,
+        owned
+            .slot(slot)
+            .cloned()
+            .expect("expected owned slot trivia")
+    );
+    assert_eq!(slot_trivia.trailing_comments.len(), 1);
+    assert_eq!(
+        slot_trivia.trailing_comments[0].text(parse.text()),
+        "/* owner */"
+    );
+}
+
+#[test]
 fn parses_let_statement_with_call_and_binary_expr() {
     let parse = parse_text("let answer = add(1, 2) + 3;");
 

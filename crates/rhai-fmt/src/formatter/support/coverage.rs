@@ -53,6 +53,25 @@ pub(crate) enum ItemFamily {
     Statement,
 }
 
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TriviaPolicyFamily {
+    BoundaryOwnership,
+    SequenceOwnership,
+    UnownedCommentChecks,
+    RawGapFallback,
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LayoutPolicyFamily {
+    WidthAwareHeads,
+    SequenceBodies,
+    DelimitedContainers,
+    ImportGrouping,
+    StructuralRange,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct FormatSupport<Family> {
     pub(crate) family: Family,
@@ -108,6 +127,31 @@ pub(crate) fn item_support(item: &Item) -> FormatSupport<ItemFamily> {
     match item {
         Item::Fn(_) => support(ItemFamily::Function, FormatSupportLevel::Structural),
         Item::Stmt(_) => support(ItemFamily::Statement, FormatSupportLevel::Structural),
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn trivia_policy_support(
+    family: TriviaPolicyFamily,
+) -> FormatSupport<TriviaPolicyFamily> {
+    match family {
+        TriviaPolicyFamily::BoundaryOwnership => support(family, FormatSupportLevel::Structural),
+        TriviaPolicyFamily::SequenceOwnership => support(family, FormatSupportLevel::Structural),
+        TriviaPolicyFamily::UnownedCommentChecks => support(family, FormatSupportLevel::Structural),
+        TriviaPolicyFamily::RawGapFallback => support(family, FormatSupportLevel::Structural),
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn layout_policy_support(
+    family: LayoutPolicyFamily,
+) -> FormatSupport<LayoutPolicyFamily> {
+    match family {
+        LayoutPolicyFamily::WidthAwareHeads => support(family, FormatSupportLevel::Structural),
+        LayoutPolicyFamily::SequenceBodies => support(family, FormatSupportLevel::Structural),
+        LayoutPolicyFamily::DelimitedContainers => support(family, FormatSupportLevel::Structural),
+        LayoutPolicyFamily::ImportGrouping => support(family, FormatSupportLevel::Structural),
+        LayoutPolicyFamily::StructuralRange => support(family, FormatSupportLevel::Structural),
     }
 }
 

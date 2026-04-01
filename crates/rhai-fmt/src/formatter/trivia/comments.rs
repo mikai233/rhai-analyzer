@@ -1,6 +1,6 @@
 use rhai_syntax::{
-    AttachedComment, CommentKind, GapTrivia, SyntaxNode, SyntaxNodeExt, SyntaxToken, TextRange,
-    TokenKind, TriviaBoundary,
+    AttachedComment, CommentKind, GapTrivia, OwnedTrivia, SyntaxElement, SyntaxNode, SyntaxNodeExt,
+    SyntaxToken, TextRange, TokenKind, TriviaBoundary,
 };
 
 use crate::formatter::Formatter;
@@ -20,15 +20,6 @@ impl Formatter<'_> {
         self.trivia.node_has_unowned_comments(&node)
     }
 
-    pub(crate) fn node_has_unowned_comments_outside(
-        &self,
-        node: SyntaxNode,
-        allowed_ranges: &[(usize, usize)],
-    ) -> bool {
-        self.trivia
-            .node_has_unowned_comments_outside(&node, allowed_ranges)
-    }
-
     pub(crate) fn node_has_unowned_comments_outside_boundaries(
         &self,
         node: SyntaxNode,
@@ -38,8 +29,59 @@ impl Formatter<'_> {
             .node_has_unowned_comments_outside_boundaries(&node, boundaries)
     }
 
-    pub(crate) fn range_has_comments(&self, start: usize, end: usize) -> bool {
-        self.trivia.range_has_comments(start, end)
+    pub(crate) fn boundary_trivia(
+        &self,
+        owner: SyntaxNode,
+        boundary: TriviaBoundary,
+    ) -> Option<GapTrivia> {
+        self.trivia.trivia_for_boundary(&owner, &boundary)
+    }
+
+    pub(crate) fn owned_sequence_trivia(
+        &self,
+        start: usize,
+        end: usize,
+        elements: &[SyntaxElement],
+    ) -> OwnedTrivia {
+        self.trivia.owned_trivia_for_sequence(start, end, elements)
+    }
+
+    pub(crate) fn owned_range_sequence_trivia(
+        &self,
+        start: usize,
+        end: usize,
+        ranges: &[(usize, usize)],
+    ) -> OwnedTrivia {
+        self.trivia.owned_trivia_for_ranges(start, end, ranges)
+    }
+
+    pub(crate) fn boundary_gap(
+        &self,
+        boundary: TriviaBoundary,
+        has_previous: bool,
+        has_next: bool,
+    ) -> GapTrivia {
+        self.trivia
+            .comment_gap_for_boundary(&boundary, has_previous, has_next)
+    }
+
+    pub(crate) fn tight_comment_gap_for_boundary(
+        &self,
+        owner: SyntaxNode,
+        boundary: TriviaBoundary,
+        allow_trailing_space: bool,
+    ) -> Doc {
+        self.boundary_trivia(owner, boundary)
+            .map(|gap| self.tight_comment_gap_from_gap(&gap, allow_trailing_space))
+            .unwrap_or_else(Doc::nil)
+    }
+
+    pub(crate) fn space_or_tight_gap_from_gap(&self, gap: &GapTrivia) -> Doc {
+        if gap.has_comments() {
+            self.tight_comment_gap_from_gap(gap, true)
+        } else {
+            Doc::text(" ")
+        }
     }
 
     pub(crate) fn has_blank_line_between_nodes(
@@ -58,69 +100,6 @@ impl Formatter<'_> {
     ) -> bool {
         self.trivia
             .boundary_is_whitespace_only(&TriviaBoundary::NodeNode(previous, next))
-    }
-
-    pub(crate) fn range_after_node_before_node(
-        &self,
-        previous: SyntaxNode,
-        next: SyntaxNode,
-    ) -> (usize, usize) {
-        self.trivia
-            .boundary_range(&TriviaBoundary::NodeNode(previous, next))
-    }
-
-    pub(crate) fn range_after_node_before_token(
-        &self,
-        previous: SyntaxNode,
-        next: &SyntaxToken,
-    ) -> (usize, usize) {
-        self.trivia
-            .boundary_range(&TriviaBoundary::NodeToken(previous, next.clone()))
-    }
-
-    pub(crate) fn range_after_token_before_node(
-        &self,
-        previous: &SyntaxToken,
-        next: SyntaxNode,
-    ) -> (usize, usize) {
-        self.trivia
-            .boundary_range(&TriviaBoundary::TokenNode(previous.clone(), next))
-    }
-
-    pub(crate) fn range_after_token_before_token(
-        &self,
-        previous: &SyntaxToken,
-        next: &SyntaxToken,
-    ) -> (usize, usize) {
-        self.trivia
-            .boundary_range(&TriviaBoundary::TokenToken(previous.clone(), next.clone()))
-    }
-
-    pub(crate) fn has_comments_after_node_before_token(
-        &self,
-        previous: SyntaxNode,
-        next: &SyntaxToken,
-    ) -> bool {
-        self.trivia
-            .boundary_has_comments(&TriviaBoundary::NodeToken(previous, next.clone()))
-    }
-
-    pub(crate) fn has_comments_after_token_before_node(
-        &self,
-        previous: &SyntaxToken,
-        next: SyntaxNode,
-    ) -> bool {
-        self.trivia
-            .boundary_has_comments(&TriviaBoundary::TokenNode(previous.clone(), next))
-    }
-
-    pub(crate) fn has_comments_after_token_before_token(
-        &self,
-        previous: &SyntaxToken,
-        next: &SyntaxToken,
-    ) -> bool {
-        self.trivia
-            .boundary_has_comments(&TriviaBoundary::TokenToken(previous.clone(), next.clone()))
     }
 
     pub(crate) fn comment_gap(
@@ -198,8 +177,93 @@ impl Formatter<'_> {
         Doc::concat(parts)
     }
 
+    pub(crate) fn format_sequence_body_doc<F>(
+        &self,
+        docs: Vec<Doc>,
+        owned: &OwnedTrivia,
+        min_newlines: F,
+    ) -> Vec<Doc>
+    where
+        F: Fn(usize) -> usize,
+    {
+        let mut parts = Vec::new();
+        for (index, doc) in docs.into_iter().enumerate() {
+            let gap = if index == 0 {
+                owned.leading.clone()
+            } else {
+                owned.between.get(index - 1).cloned().unwrap_or_default()
+            };
+            parts.push(self.gap_separator_doc(&gap, min_newlines(index), index > 0, true));
+            parts.push(doc);
+        }
+        parts
+    }
+
+    pub(crate) fn format_comma_sequence_body_doc(
+        &self,
+        docs: Vec<Doc>,
+        owned: &OwnedTrivia,
+    ) -> Vec<Doc> {
+        let mut parts = Vec::new();
+        let len = docs.len();
+        for (index, doc) in docs.into_iter().enumerate() {
+            let gap = if index == 0 {
+                owned.leading.clone()
+            } else {
+                owned.between.get(index - 1).cloned().unwrap_or_default()
+            };
+            parts.push(self.gap_separator_doc(&gap, 1, index > 0, true));
+            parts.push(doc);
+            if index + 1 < len {
+                parts.push(Doc::text(","));
+            }
+        }
+        parts
+    }
+
+    pub(crate) fn append_sequence_trailing_doc(
+        &self,
+        parts: &mut Vec<Doc>,
+        trailing_gap: &GapTrivia,
+        has_items: bool,
+        min_newlines: usize,
+    ) {
+        if has_items && trailing_gap.has_comments() {
+            parts.push(self.gap_separator_doc(trailing_gap, min_newlines, true, false));
+        } else if trailing_gap.has_vertical_comments() {
+            parts.push(self.render_line_comments_doc(trailing_gap.vertical_comments()));
+        }
+    }
+
+    pub(crate) fn format_empty_sequence_body_doc(&self, leading_gap: &GapTrivia) -> Doc {
+        if leading_gap.has_vertical_comments() {
+            let mut parts = vec![self.render_line_comments_doc(leading_gap.vertical_comments())];
+            if leading_gap.trailing_blank_lines_before_next > 0 {
+                parts.push(hard_lines(leading_gap.trailing_blank_lines_before_next));
+            }
+            Doc::concat(parts)
+        } else {
+            self.gap_separator_doc(leading_gap, 1, false, false)
+        }
+    }
+
     pub(crate) fn head_body_separator_doc(&self, start: usize, end: usize) -> Doc {
         let gap = self.comment_gap(start, end, true, true);
+        self.head_body_separator_from_gap(&gap)
+    }
+
+    pub(crate) fn head_body_separator_for_boundary(
+        &self,
+        owner: SyntaxNode,
+        boundary: TriviaBoundary,
+    ) -> Doc {
+        let gap = self
+            .boundary_trivia(owner, boundary.clone())
+            .unwrap_or_else(|| self.boundary_gap(boundary, true, true));
+        self.head_body_separator_from_gap(&gap)
+    }
+
+    fn head_body_separator_from_gap(&self, gap: &GapTrivia) -> Doc {
         if !gap.has_comments() && gap.trailing_blank_lines_before_next == 0 {
             return Doc::text(" ");
         }
@@ -221,6 +285,18 @@ impl Formatter<'_> {
         Doc::concat(parts)
     }
 
+    pub(crate) fn inline_or_boundary_separator_doc(
+        &self,
+        owner: SyntaxNode,
+        boundary: TriviaBoundary,
+        options: GapSeparatorOptions<'_>,
+    ) -> Doc {
+        let gap = self
+            .boundary_trivia(owner, boundary.clone())
+            .unwrap_or_else(|| self.boundary_gap(boundary, options.has_previous, options.has_next));
+        self.inline_or_gap_separator_from_gap(&gap, options)
+    }
+
     pub(crate) fn inline_or_gap_separator_doc(
         &self,
         start: usize,
@@ -228,20 +304,31 @@ impl Formatter<'_> {
         options: GapSeparatorOptions<'_>,
     ) -> Doc {
         let gap = self.comment_gap(start, end, options.has_previous, options.has_next);
+        self.inline_or_gap_separator_from_gap(&gap, options)
+    }
+
+    fn inline_or_gap_separator_from_gap(
+        &self,
+        gap: &GapTrivia,
+        options: GapSeparatorOptions<'_>,
+    ) -> Doc {
         if !gap.has_comments() && gap.trailing_blank_lines_before_next == 0 {
             return Doc::text(options.inline_text);
         }
 
         self.gap_separator_doc(
-            &gap,
+            gap,
             options.minimum_newlines,
             options.has_previous,
             options.include_terminal_newline,
         )
     }
 
-    pub(crate) fn tight_comment_gap_doc(&self, start: usize, end: usize) -> Doc {
-        let gap = self.comment_gap(start, end, true, true);
+    pub(crate) fn tight_comment_gap_from_gap(
+        &self,
+        gap: &GapTrivia,
+        allow_trailing_space: bool,
+    ) -> Doc {
         if !gap.has_comments() {
             return Doc::nil();
         }
@@ -262,74 +349,8 @@ impl Formatter<'_> {
             }) || gap.trailing_blank_lines_before_next > 0
             {
                 parts.push(hard_lines(gap.trailing_blank_lines_before_next + 1));
-            } else {
+            } else if allow_trailing_space {
                 parts.push(Doc::text(" "));
-            }
-        } else if !vertical_comments.is_empty() {
-            parts.push(hard_lines(vertical_comments[0].blank_lines_before + 1));
-        }
-
-        if !vertical_comments.is_empty() {
-            parts.push(self.render_line_comments_doc(vertical_comments));
-            parts.push(hard_lines(gap.trailing_blank_lines_before_next + 1));
-        }
-
-        Doc::concat(parts)
-    }
-
-    pub(crate) fn tight_comment_gap_after_node_before_token(
-        &self,
-        previous: SyntaxNode,
-        next: &SyntaxToken,
-    ) -> Doc {
-        let (start, end) = self.range_after_node_before_token(previous, next);
-        self.tight_comment_gap_doc(start, end)
-    }
-
-    pub(crate) fn tight_comment_gap_after_token_before_node(
-        &self,
-        previous: &SyntaxToken,
-        next: SyntaxNode,
-    ) -> Doc {
-        let (start, end) = self.range_after_token_before_node(previous, next);
-        self.tight_comment_gap_doc(start, end)
-    }
-
-    pub(crate) fn tight_comment_gap_after_token_before_token(
-        &self,
-        previous: &SyntaxToken,
-        next: &SyntaxToken,
-    ) -> Doc {
-        let (start, end) = self.range_after_token_before_token(previous, next);
-        self.tight_comment_gap_doc(start, end)
-    }
-
-    pub(crate) fn tight_comment_gap_doc_without_trailing_space(
-        &self,
-        start: usize,
-        end: usize,
-    ) -> Doc {
-        let gap = self.comment_gap(start, end, true, true);
-        if !gap.has_comments() {
-            return Doc::nil();
-        }
-
-        let mut parts = Vec::new();
-        let vertical_comments = gap.vertical_comments();
-
-        if !gap.trailing_comments.is_empty() {
-            parts.push(self.render_trailing_comments_doc(&gap.trailing_comments));
-
-            if !vertical_comments.is_empty() {
-                parts.push(hard_lines(vertical_comments[0].blank_lines_before + 1));
-            } else if gap.trailing_comments.iter().any(|comment| {
-                matches!(
-                    comment.kind,
-                    CommentKind::Line | CommentKind::DocLine | CommentKind::Shebang
-                )
-            }) || gap.trailing_blank_lines_before_next > 0
-            {
-                parts.push(hard_lines(gap.trailing_blank_lines_before_next + 1));
             }
         } else if !vertical_comments.is_empty() {
             parts.push(hard_lines(vertical_comments[0].blank_lines_before + 1));
