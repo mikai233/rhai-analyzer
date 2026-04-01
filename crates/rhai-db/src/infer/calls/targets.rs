@@ -1,8 +1,15 @@
 use crate::builtin::semantics::is_builtin_fn_call;
 use crate::builtin::signatures::builtin_universal_method_signature;
 use crate::infer::ImportedMethodSignature;
-use crate::infer::generics::specialize_signature_with_arg_types;
-use crate::infer::helpers::{join_types, make_ambiguous_type};
+use crate::infer::calls::CallableTarget;
+use crate::infer::calls::selection::{
+    caller_scope_dispatches_via_first_arg, dedup_callable_targets, effective_arg_types_for_call,
+    has_informative_arg_types, inferred_expr_type, select_best_callable_targets,
+};
+use crate::infer::calls::signatures::{
+    global_signature_for_pointer, global_signatures_for_call, join_callable_target_signatures,
+    signature_from_type,
+};
 use crate::infer::objects::{
     host_method_signature_for_expr, largest_inner_expr, receiver_dispatch_is_precise,
     receiver_matches_method_type, string_literal_value,
@@ -12,59 +19,6 @@ use rhai_hir::{
     ExprId, ExprKind, ExternalSignatureIndex, FileHir, FunctionTypeRef, SymbolId, SymbolKind,
     TypeRef,
 };
-
-pub(crate) fn global_signatures_for_call(
-    globals: &[HostFunction],
-    name: &str,
-    arg_types: &[Option<TypeRef>],
-    host_types: &[HostType],
-) -> Vec<FunctionTypeRef> {
-    let Some(function) = globals.iter().find(|function| function.name == name) else {
-        return Vec::new();
-    };
-    let matching = function
-        .overloads
-        .iter()
-        .filter_map(|overload| overload.signature.as_ref())
-        .map(|signature| {
-            specialize_signature_with_arg_types(signature, Some(arg_types), host_types)
-        })
-        .collect::<Vec<_>>();
-    if matching.is_empty() {
-        return Vec::new();
-    }
-
-    if has_informative_arg_types(arg_types) {
-        let indexes = best_matching_signature_indexes(matching.iter(), arg_types);
-        if !indexes.is_empty() {
-            return indexes
-                .into_iter()
-                .filter_map(|index| matching.get(index).cloned())
-                .collect();
-        }
-    }
-
-    matching
-        .into_iter()
-        .filter(|signature| signature.params.len() == arg_types.len())
-        .collect()
-}
-
-#[derive(Clone)]
-pub(crate) struct CallableTarget {
-    pub(crate) signature: FunctionTypeRef,
-    pub(crate) local_symbol: Option<SymbolId>,
-}
-
-pub(crate) fn call_builtin_fn_signature(globals: &[HostFunction]) -> Option<&FunctionTypeRef> {
-    globals
-        .iter()
-        .find(|function| function.name == "Fn")?
-        .overloads
-        .iter()
-        .filter_map(|overload| overload.signature.as_ref())
-        .find(|signature| signature.params.len() == 1)
-}
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn callable_targets_for_call(
@@ -181,7 +135,6 @@ pub(crate) fn callable_targets_for_call(
 
     dedup_callable_targets(targets)
 }
-
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn callable_targets_for_expr(
     hir: &FileHir,
@@ -300,7 +253,6 @@ pub(crate) fn callable_targets_for_expr(
             .unwrap_or_default(),
     }
 }
-
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn callable_targets_for_symbol_use(
     hir: &FileHir,
@@ -361,7 +313,6 @@ pub(crate) fn callable_targets_for_symbol_use(
     }
     dedup_callable_targets(targets)
 }
-
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn local_function_targets_for_reference(
     hir: &FileHir,
@@ -408,7 +359,6 @@ pub(crate) fn local_function_targets_for_reference(
 
     select_best_callable_targets(dedup_callable_targets(targets), arg_types)
 }
-
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn local_method_targets_for_expr(
     hir: &FileHir,
@@ -445,7 +395,6 @@ pub(crate) fn local_method_targets_for_expr(
         visited_symbols,
     )
 }
-
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn local_method_targets_for_name(
     hir: &FileHir,
@@ -527,7 +476,6 @@ pub(crate) fn local_method_targets_for_name(
         imported_method_targets_for_name(name, receiver_ty, imported_methods, arg_types, typed),
     ))
 }
-
 pub(crate) fn imported_method_signature_for_expr(
     hir: &FileHir,
     inference: &FileTypeInference,
@@ -547,7 +495,6 @@ pub(crate) fn imported_method_signature_for_expr(
     );
     join_callable_target_signatures(&targets, arg_types.map(|items| items.len()))
 }
-
 pub(crate) fn imported_method_targets_for_name(
     name: &str,
     receiver_ty: &TypeRef,
@@ -594,7 +541,6 @@ pub(crate) fn imported_method_targets_for_name(
     }));
     targets
 }
-
 pub(crate) fn builtin_universal_method_targets(
     method_name: &str,
     arg_types: Option<&[Option<TypeRef>]>,
@@ -614,7 +560,6 @@ pub(crate) fn builtin_universal_method_targets(
     });
     targets
 }
-
 pub(crate) fn callable_signature_for_symbol(
     hir: &FileHir,
     inference: &FileTypeInference,
@@ -630,7 +575,6 @@ pub(crate) fn callable_signature_for_symbol(
         .or_else(|| external.get(hir.symbol(symbol).name.as_str()))
         .and_then(|ty| signature_from_type(ty, arg_types, host_types))
 }
-
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn named_callable_targets_at_offset(
     hir: &FileHir,
@@ -694,338 +638,4 @@ pub(crate) fn named_callable_targets_at_offset(
     }
 
     dedup_callable_targets(targets)
-}
-
-fn select_best_callable_targets(
-    targets: Vec<CallableTarget>,
-    arg_types: Option<&[Option<TypeRef>]>,
-) -> Vec<CallableTarget> {
-    let Some(arg_types) = arg_types else {
-        return targets;
-    };
-
-    let arity_matched = targets
-        .iter()
-        .enumerate()
-        .filter(|(_, target)| target.signature.params.len() == arg_types.len())
-        .collect::<Vec<_>>();
-    if arity_matched.is_empty() {
-        return Vec::new();
-    }
-
-    if has_informative_arg_types(arg_types) {
-        let indexes = best_matching_signature_indexes(
-            arity_matched.iter().map(|(_, target)| &target.signature),
-            arg_types,
-        );
-        if !indexes.is_empty() {
-            return indexes
-                .into_iter()
-                .filter_map(|index| {
-                    arity_matched
-                        .get(index)
-                        .map(|(target_index, _)| *target_index)
-                })
-                .filter_map(|target_index| targets.get(target_index).cloned())
-                .collect();
-        }
-    }
-
-    arity_matched
-        .into_iter()
-        .filter_map(|(index, _)| targets.get(index).cloned())
-        .collect()
-}
-
-pub(crate) fn global_signature_for_pointer(
-    globals: &[HostFunction],
-    name: &str,
-) -> Option<FunctionTypeRef> {
-    let signatures = globals
-        .iter()
-        .find(|function| function.name == name)?
-        .overloads
-        .iter()
-        .filter_map(|overload| overload.signature.as_ref().cloned())
-        .collect::<Vec<_>>();
-
-    merge_function_candidate_signatures(signatures, None)
-}
-
-pub(crate) fn join_callable_target_signatures(
-    targets: &[CallableTarget],
-    arg_count: Option<usize>,
-) -> Option<FunctionTypeRef> {
-    merge_function_candidate_signatures(
-        targets
-            .iter()
-            .map(|target| target.signature.clone())
-            .collect(),
-        arg_count,
-    )
-}
-
-pub(crate) fn merge_function_candidate_signatures(
-    signatures: Vec<FunctionTypeRef>,
-    arg_count: Option<usize>,
-) -> Option<FunctionTypeRef> {
-    let signatures = signatures
-        .into_iter()
-        .filter(|signature| arg_count.is_none_or(|count| signature.params.len() == count))
-        .collect::<Vec<_>>();
-    let first = signatures.first()?.clone();
-    let param_len = first.params.len();
-    if signatures
-        .iter()
-        .any(|signature| signature.params.len() != param_len)
-    {
-        return None;
-    }
-
-    if signatures.len() == 1 {
-        return Some(first);
-    }
-
-    let params = (0..param_len)
-        .map(|index| {
-            make_ambiguous_type(
-                signatures
-                    .iter()
-                    .map(|signature| signature.params[index].clone())
-                    .collect(),
-            )
-        })
-        .collect();
-    let ret = make_ambiguous_type(
-        signatures
-            .iter()
-            .map(|signature| signature.ret.as_ref().clone())
-            .collect(),
-    );
-
-    Some(FunctionTypeRef {
-        params,
-        ret: Box::new(ret),
-    })
-}
-
-pub(crate) fn dedup_callable_targets(targets: Vec<CallableTarget>) -> Vec<CallableTarget> {
-    let mut deduped = Vec::new();
-    for target in targets {
-        if deduped.iter().any(|existing: &CallableTarget| {
-            existing.local_symbol == target.local_symbol && existing.signature == target.signature
-        }) {
-            continue;
-        }
-        deduped.push(target);
-    }
-    deduped
-}
-
-pub(crate) fn expected_call_signature(
-    hir: &FileHir,
-    inference: &FileTypeInference,
-    call: &rhai_hir::CallSite,
-    external: &ExternalSignatureIndex,
-    globals: &[HostFunction],
-    host_types: &[HostType],
-    imported_methods: &[ImportedMethodSignature],
-) -> Option<FunctionTypeRef> {
-    if is_builtin_fn_call(hir, call) {
-        return call_builtin_fn_signature(globals).cloned();
-    }
-
-    let arg_types = effective_call_argument_types(hir, inference, call);
-    let targets = callable_targets_for_call(
-        hir,
-        inference,
-        call,
-        external,
-        globals,
-        host_types,
-        imported_methods,
-        Some(&arg_types),
-    );
-    join_callable_target_signatures(&targets, Some(arg_types.len()))
-}
-
-pub(crate) fn signature_from_type(
-    ty: &TypeRef,
-    arg_types: Option<&[Option<TypeRef>]>,
-    host_types: &[HostType],
-) -> Option<FunctionTypeRef> {
-    match ty {
-        TypeRef::Function(signature) => {
-            if arg_types.is_some_and(|arg_types| signature.params.len() != arg_types.len()) {
-                return None;
-            }
-            Some(specialize_signature_with_arg_types(
-                signature, arg_types, host_types,
-            ))
-        }
-        TypeRef::Ambiguous(items) => merge_function_candidate_signatures(
-            items
-                .iter()
-                .filter_map(|item| signature_from_type(item, arg_types, host_types))
-                .collect(),
-            None,
-        ),
-        _ => None,
-    }
-}
-
-pub(crate) fn inferred_expr_type(
-    hir: &FileHir,
-    inference: &FileTypeInference,
-    expr: ExprId,
-) -> Option<TypeRef> {
-    inference
-        .expr_types
-        .get(hir.expr_result_slot(expr))
-        .cloned()
-}
-
-pub(crate) fn call_argument_types(
-    hir: &FileHir,
-    inference: &FileTypeInference,
-    arg_exprs: &[ExprId],
-) -> Vec<Option<TypeRef>> {
-    arg_exprs
-        .iter()
-        .map(|expr| {
-            inference
-                .expr_types
-                .get(hir.expr_result_slot(*expr))
-                .cloned()
-        })
-        .collect()
-}
-
-pub(crate) fn caller_scope_dispatches_via_first_arg(
-    hir: &FileHir,
-    call: &rhai_hir::CallSite,
-) -> bool {
-    call.caller_scope
-        && call
-            .callee_reference
-            .map(|reference| hir.reference(reference).name.as_str())
-            == Some("call")
-}
-
-pub(crate) fn effective_call_argument_types(
-    hir: &FileHir,
-    inference: &FileTypeInference,
-    call: &rhai_hir::CallSite,
-) -> Vec<Option<TypeRef>> {
-    let arg_offset =
-        usize::from(caller_scope_dispatches_via_first_arg(hir, call)).min(call.arg_exprs.len());
-    call_argument_types(hir, inference, &call.arg_exprs[arg_offset..])
-}
-
-pub(crate) fn effective_arg_types_for_call(
-    hir: &FileHir,
-    inference: &FileTypeInference,
-    call: &rhai_hir::CallSite,
-    arg_types: Option<&[Option<TypeRef>]>,
-) -> Option<Vec<Option<TypeRef>>> {
-    arg_types
-        .map(|arg_types| {
-            let arg_offset = usize::from(caller_scope_dispatches_via_first_arg(hir, call));
-            if arg_types.len() == call.arg_exprs.len() {
-                arg_types[arg_offset.min(arg_types.len())..].to_vec()
-            } else {
-                arg_types.to_vec()
-            }
-        })
-        .or_else(|| Some(effective_call_argument_types(hir, inference, call)))
-}
-
-pub(crate) fn for_binding_types_from_iterable(
-    ty: &TypeRef,
-    binding_count: usize,
-) -> Option<Vec<TypeRef>> {
-    if binding_count == 0 {
-        return Some(Vec::new());
-    }
-
-    match ty {
-        TypeRef::Array(inner) => Some(loop_binding_types(
-            inner.as_ref().clone(),
-            binding_count,
-            TypeRef::Int,
-        )),
-        TypeRef::String => Some(loop_binding_types(
-            TypeRef::Char,
-            binding_count,
-            TypeRef::Int,
-        )),
-        TypeRef::Range | TypeRef::RangeInclusive => Some(loop_binding_types(
-            TypeRef::Int,
-            binding_count,
-            TypeRef::Int,
-        )),
-        TypeRef::Union(items) => {
-            let mut merged = None;
-            for item in items {
-                let Some(next) = for_binding_types_from_iterable(item, binding_count) else {
-                    continue;
-                };
-                merged = Some(match merged {
-                    Some(current) => join_binding_type_sets(current, next),
-                    None => next,
-                });
-            }
-            merged
-        }
-        TypeRef::Ambiguous(items) => {
-            let mut merged = None;
-            for item in items {
-                let Some(next) = for_binding_types_from_iterable(item, binding_count) else {
-                    continue;
-                };
-                merged = Some(match merged {
-                    Some(current) => join_binding_type_sets(current, next),
-                    None => next,
-                });
-            }
-            merged
-        }
-        _ => None,
-    }
-}
-
-pub(crate) fn loop_binding_types(
-    item_ty: TypeRef,
-    binding_count: usize,
-    counter_ty: TypeRef,
-) -> Vec<TypeRef> {
-    let mut binding_types = vec![TypeRef::Unknown; binding_count];
-    if let Some(first) = binding_types.first_mut() {
-        *first = item_ty;
-    }
-    if binding_count > 1 {
-        binding_types[1] = counter_ty;
-    }
-    binding_types
-}
-
-pub(crate) fn join_binding_type_sets(left: Vec<TypeRef>, right: Vec<TypeRef>) -> Vec<TypeRef> {
-    let len = left.len().max(right.len());
-    (0..len)
-        .map(|index| match (left.get(index), right.get(index)) {
-            (Some(left), Some(right)) => join_types(left, right),
-            (Some(left), None) => left.clone(),
-            (None, Some(right)) => right.clone(),
-            (None, None) => TypeRef::Unknown,
-        })
-        .collect()
-}
-
-pub(crate) fn has_informative_arg_types(arg_types: &[Option<TypeRef>]) -> bool {
-    arg_types.iter().flatten().any(|ty| {
-        !matches!(
-            ty,
-            TypeRef::Unknown | TypeRef::Any | TypeRef::Dynamic | TypeRef::Never
-        )
-    })
 }
