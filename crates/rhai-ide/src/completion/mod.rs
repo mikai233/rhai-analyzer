@@ -957,57 +957,6 @@ fn inferred_completion_type(
         .filter(|ty| !matches!(ty, TypeRef::Unknown))
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::CompletionInsertFormat;
-
-    fn test_context(member_access: bool) -> CompletionContext {
-        CompletionContext {
-            prefix: "sha".to_owned(),
-            replace_range: TextRange::empty(TextSize::from(0)),
-            query_offset: 0,
-            member_access,
-            module_path: None,
-            postfix_completion: None,
-            suppress_completion: false,
-            doc_completion: None,
-            next_char_is_open_paren: false,
-        }
-    }
-
-    fn test_item(source: CompletionItemSource) -> CompletionItem {
-        CompletionItem {
-            label: "shared_helper".to_owned(),
-            kind: CompletionItemKind::Symbol(SymbolKind::Function),
-            source,
-            origin: None,
-            sort_text: String::new(),
-            detail: None,
-            docs: None,
-            filter_text: None,
-            text_edit: None,
-            insert_format: CompletionInsertFormat::PlainText,
-            file_id: None,
-            exported: true,
-            resolve_data: None,
-        }
-    }
-
-    #[test]
-    fn module_candidates_rank_ahead_of_project_candidates() {
-        let mut items = vec![
-            test_item(CompletionItemSource::Project),
-            test_item(CompletionItemSource::Module),
-        ];
-
-        rank_completion_items(&mut items, &test_context(false));
-
-        assert_eq!(items[0].source, CompletionItemSource::Module);
-        assert_eq!(items[1].source, CompletionItemSource::Project);
-    }
-}
-
 fn workspace_completion_metadata(
     snapshot: &DatabaseSnapshot,
     symbol: &rhai_db::LocatedWorkspaceSymbol,
@@ -1091,4 +1040,55 @@ fn builtin_function_docs(function: &rhai_db::HostFunction) -> Option<String> {
     docs.dedup();
 
     (!docs.is_empty()).then(|| docs.join("\n\n"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::CompletionInsertFormat;
+
+    fn test_context(member_access: bool) -> CompletionContext {
+        CompletionContext {
+            prefix: "sha".to_owned(),
+            replace_range: TextRange::empty(TextSize::from(0)),
+            query_offset: 0,
+            member_access,
+            module_path: None,
+            postfix_completion: None,
+            suppress_completion: false,
+            doc_completion: None,
+            next_char_is_open_paren: false,
+        }
+    }
+
+    fn test_item(source: CompletionItemSource) -> CompletionItem {
+        CompletionItem {
+            label: "shared_helper".to_owned(),
+            kind: CompletionItemKind::Symbol(SymbolKind::Function),
+            source,
+            origin: None,
+            sort_text: String::new(),
+            detail: None,
+            docs: None,
+            filter_text: None,
+            text_edit: None,
+            insert_format: CompletionInsertFormat::PlainText,
+            file_id: None,
+            exported: true,
+            resolve_data: None,
+        }
+    }
+
+    #[test]
+    fn module_candidates_rank_ahead_of_project_candidates() {
+        let mut items = vec![
+            test_item(CompletionItemSource::Project),
+            test_item(CompletionItemSource::Module),
+        ];
+
+        rank_completion_items(&mut items, &test_context(false));
+
+        assert_eq!(items[0].source, CompletionItemSource::Module);
+        assert_eq!(items[1].source, CompletionItemSource::Project);
+    }
 }
