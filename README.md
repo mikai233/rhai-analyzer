@@ -35,6 +35,12 @@ The workspace is split into a few focused crates:
 - Keep refining the user-facing IDE surface so inferred and imported semantics present cleanly in completion, hover, and diagnostics.
 - Keep expanding `rhai-fmt` beyond the initial whole-document core toward broader syntax coverage and LSP-facing formatting support.
 
+## Shared Configuration
+
+Project-level formatter configuration is documented in [`RHAI_TOML.md`](./RHAI_TOML.md).
+
+The current `rhai.toml` surface is formatter-focused and is shared by both `rhai-fmt` and `rhai-lsp`.
+
 ## Release Workflow
 
 The repository now includes a manual GitHub Actions release workflow at

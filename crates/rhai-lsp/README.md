@@ -81,6 +81,13 @@ shared state + immutable analysis snapshots" than to a fully async-first server.
 - protocol conversion for navigation, rename, diagnostics, formatting, and completion
 - workspace file operation registration for `.rhai` files
 - work-done progress during workspace warm-up
+- project-level formatting policy via the nearest `rhai.toml` `[formatting]` section, layered with editor formatting options
+
+## Shared Formatter Configuration
+
+Formatting requests served through `rhai-lsp` use the same `rhai-fmt` core as the standalone formatter CLI.
+
+Project-level formatter settings can be provided through `rhai.toml`; see [`RHAI_TOML.md`](../../RHAI_TOML.md) for the formal configuration reference and precedence model.
 
 ## Operational Characteristics
 

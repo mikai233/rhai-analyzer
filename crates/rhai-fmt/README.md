@@ -25,6 +25,7 @@ The crate is intended to be the single formatting policy layer for:
 - Syntax-tree-driven formatting for the current Rhai AST surface
 - Changed/unchanged result reporting for formatter consumers
 - Idempotent formatter behavior backed by regression and guarantee tests
+- Shared formatting core consumed by both editor integrations and the standalone formatter CLI
 
 ### Structural Range Formatting
 
@@ -134,6 +135,23 @@ Current option surface:
 - `container_layout`
 - `import_sort_order`
 
+Project-level formatter configuration can also be loaded from the nearest `rhai.toml` file via a `[formatting]` section.
+
+See [`RHAI_TOML.md`](../../../RHAI_TOML.md) for the formal configuration reference and precedence model.
+
+Example:
+
+```toml
+[formatting]
+indent_style = "spaces"
+indent_width = 4
+max_line_length = 100
+trailing_commas = true
+final_newline = true
+container_layout = "auto"
+import_sort_order = "preserve"
+```
+
 Current policy enums:
 
 - `IndentStyle`
@@ -146,6 +164,34 @@ Current policy enums:
 - `ImportSortOrder`
   - `Preserve`
   - `ModulePath`
+
+## Command-Line Usage
+
+`rhai-fmt` also ships as a standalone formatter binary built on the same formatting core used by `rhai-ide` and `rhai-lsp`.
+
+Typical usage:
+
+```bash
+cargo run -p rhai-fmt --
+cargo run -p rhai-fmt -- path/to/file.rhai
+cargo run -p rhai-fmt -- src scripts --check
+```
+
+When installed as a cargo subcommand binary, it can also be invoked as:
+
+```bash
+cargo rhai-fmt --check
+```
+
+Current CLI behavior:
+
+- recursively formats `.rhai` files from the current directory when no paths are provided
+- accepts file and directory inputs
+- skips `.git` and `target`
+- supports `--check` for CI-style verification
+- loads the nearest `rhai.toml` `[formatting]` section for each file before applying CLI overrides
+- uses the same `FormatOptions` model as the IDE and LSP integrations
+- skips files with syntax errors instead of forcing a rewrite
 
 ## Comment Directives
 

@@ -4,7 +4,10 @@ use lsp_types::{
     SelectionRange, SemanticToken, SemanticTokenModifier, SemanticTokenType, SemanticTokens,
     SemanticTokensLegend, TextEdit, Uri,
 };
-use rhai_fmt::{FormatOptions as RhaiFormatOptions, IndentStyle};
+use rhai_fmt::{
+    FormatOptions as RhaiFormatOptions, IndentStyle, apply_partial_format_options,
+    load_format_config_for_path,
+};
 use rhai_ide::{
     CallHierarchyItem, CompletionItem, DocumentHighlight, DocumentSymbol, FilePosition,
     FoldingRange as IdeFoldingRange, HoverResult, IncomingCall, InlayHint, InlayHintSource,
@@ -217,7 +220,7 @@ impl ServerState {
         let text = analysis
             .file_text(file_id)
             .ok_or_else(|| anyhow!("document `{}` is missing file text", uri.as_str()))?;
-        let format_options = self.formatter_options(&options);
+        let format_options = self.formatter_options_for_uri(uri, &options);
         let Some(change) = analysis.format_document_with_options(file_id, &format_options) else {
             return Ok(None);
         };
@@ -241,7 +244,7 @@ impl ServerState {
         let end = position_to_offset(text.as_ref(), &line_starts, range.end)
             .ok_or_else(|| anyhow!("range end is outside document `{}`", uri.as_str()))?;
         let rhai_range = rhai_syntax::TextRange::new((start as u32).into(), (end as u32).into());
-        let format_options = self.formatter_options(&options);
+        let format_options = self.formatter_options_for_uri(uri, &options);
 
         let Some(change) = analysis.format_range_with_options(file_id, rhai_range, &format_options)
         else {
@@ -273,7 +276,7 @@ impl ServerState {
             TextSize::from(trigger_offset as u32),
             TextSize::from(trigger_offset as u32),
         );
-        let format_options = self.formatter_options(&options);
+        let format_options = self.formatter_options_for_uri(uri, &options);
 
         let change =
             match analysis.format_range_with_options(file_id, trigger_range, &format_options) {
@@ -547,21 +550,30 @@ impl ServerState {
         }
     }
 
-    fn formatter_options(&self, options: &FormattingOptions) -> RhaiFormatOptions {
-        RhaiFormatOptions {
-            indent_style: if options.insert_spaces {
-                IndentStyle::Spaces
-            } else {
-                IndentStyle::Tabs
-            },
-            indent_width: options.tab_size as usize,
-            max_line_length: self.settings.formatter.max_line_length,
-            trailing_commas: self.settings.formatter.trailing_commas,
-            final_newline: self.settings.formatter.final_newline,
-            container_layout: self.settings.formatter.container_layout,
-            import_sort_order: self.settings.formatter.import_sort_order,
-            ..RhaiFormatOptions::default()
+    fn formatter_options_for_uri(
+        &self,
+        uri: &Uri,
+        options: &FormattingOptions,
+    ) -> RhaiFormatOptions {
+        let mut format_options = RhaiFormatOptions::default();
+        if let Some(document) = self.open_documents.get(uri)
+            && let Ok(Some(config)) = load_format_config_for_path(&document.normalized_path)
+        {
+            apply_partial_format_options(&mut format_options, &config.options);
         }
+
+        format_options.max_line_length = self.settings.formatter.max_line_length;
+        format_options.trailing_commas = self.settings.formatter.trailing_commas;
+        format_options.final_newline = self.settings.formatter.final_newline;
+        format_options.container_layout = self.settings.formatter.container_layout;
+        format_options.import_sort_order = self.settings.formatter.import_sort_order;
+        format_options.indent_style = if options.insert_spaces {
+            IndentStyle::Spaces
+        } else {
+            IndentStyle::Tabs
+        };
+        format_options.indent_width = options.tab_size as usize;
+        format_options
     }
 }
 
