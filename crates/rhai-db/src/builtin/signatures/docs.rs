@@ -53,6 +53,35 @@ pub(crate) fn builtin_type_docs(
     sections.join("\n\n")
 }
 
+pub(crate) fn builtin_topic_docs(
+    summary: &str,
+    usage_lines: &[&str],
+    examples: &[&str],
+    reference_url: &str,
+) -> String {
+    let mut sections = vec![summary.trim().to_owned()];
+
+    if !usage_lines.is_empty() {
+        sections.push(format!(
+            "## Usage\n```rhai\n{}\n```",
+            usage_lines.join("\n")
+        ));
+    }
+
+    if !examples.is_empty() {
+        sections.push(format!(
+            "## Examples\n```rhai\n{}\n```",
+            examples.join("\n")
+        ));
+    }
+
+    sections.push(format!(
+        "## Official Rhai Reference\n[Rhai Book]({reference_url})"
+    ));
+
+    sections.join("\n\n")
+}
+
 fn render_callable_docs(
     summary: &str,
     usage_lines: Vec<String>,

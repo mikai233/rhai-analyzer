@@ -8,6 +8,10 @@ mod types;
 mod workspace;
 
 pub use builtin::signatures::{builtin_universal_method_docs, builtin_universal_method_signature};
+pub use builtin::topics::{
+    BuiltinTopicDoc, BuiltinTopicKey, builtin_assignment_operator_topic,
+    builtin_binary_operator_topic, builtin_indexer_topic, builtin_property_access_topic,
+};
 pub use change::{ChangeSet, FileChange};
 pub use db::{AnalyzerDatabase, DatabaseSnapshot};
 pub use infer::generics::specialize_signature_with_receiver_and_arg_types;

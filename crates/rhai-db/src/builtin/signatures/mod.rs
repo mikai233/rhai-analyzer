@@ -4,6 +4,7 @@ mod helpers;
 mod methods;
 mod types;
 
+pub(crate) use crate::builtin::signatures::docs::builtin_topic_docs;
 pub(crate) use crate::builtin::signatures::globals::register_builtin_global_functions;
 pub use crate::builtin::signatures::methods::builtin_universal_method_docs;
 pub(crate) use crate::builtin::signatures::methods::builtin_universal_method_names;
