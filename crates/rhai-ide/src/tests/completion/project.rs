@@ -1,6 +1,7 @@
 use std::path::Path;
 
 use rhai_db::ChangeSet;
+use rhai_project::ProjectConfig;
 use rhai_vfs::DocumentVersion;
 
 use crate::tests::assert_no_syntax_diagnostics;
@@ -261,4 +262,148 @@ fn project_completions_fall_back_to_inferred_symbol_signatures() {
         .find(|item| item.label == "value" && item.source == CompletionItemSource::Project)
         .expect("expected project value completion");
     assert_eq!(value.detail.as_deref(), Some("string"));
+}
+
+#[test]
+fn global_module_completions_expose_file_constants_and_project_modules() {
+    let mut host = AnalysisHost::default();
+    host.apply_change(ChangeSet {
+        files: vec![rhai_db::FileChange {
+            path: "main.rhai".into(),
+            text: r#"
+                /// docs for answer
+                const ANSWER = 42;
+
+                fn run() {
+                    global::
+                    global::math::a
+                }
+            "#
+            .to_owned(),
+            version: DocumentVersion(1),
+        }],
+        removed_files: Vec::new(),
+        project: Some(ProjectConfig {
+            modules: [(
+                "math".to_owned(),
+                rhai_project::ModuleSpec {
+                    docs: Some("Math helpers".to_owned()),
+                    functions: [(
+                        "add".to_owned(),
+                        vec![rhai_project::FunctionSpec {
+                            signature: "fun(int, int) -> int".to_owned(),
+                            return_type: None,
+                            docs: Some("Add numbers".to_owned()),
+                        }],
+                    )]
+                    .into_iter()
+                    .collect(),
+                    constants: Default::default(),
+                },
+            )]
+            .into_iter()
+            .collect(),
+            ..ProjectConfig::default()
+        }),
+    });
+
+    let analysis = host.snapshot();
+    let file_id = analysis
+        .db
+        .vfs()
+        .file_id(Path::new("main.rhai"))
+        .expect("expected main.rhai");
+    assert_no_syntax_diagnostics(&analysis, file_id);
+    let text = analysis.db.file_text(file_id).expect("expected text");
+
+    let global_root_offset =
+        u32::try_from(text.find("global::").expect("expected global path") + "global::".len())
+            .expect("offset");
+    let global_root = analysis.completions(FilePosition {
+        file_id,
+        offset: global_root_offset,
+    });
+    assert!(
+        global_root
+            .iter()
+            .any(|item| { item.label == "ANSWER" && item.source == CompletionItemSource::Module })
+    );
+    assert!(
+        global_root
+            .iter()
+            .any(|item| { item.label == "math" && item.source == CompletionItemSource::Module })
+    );
+
+    let module_offset = u32::try_from(
+        text.find("global::math::a")
+            .expect("expected nested global module completion")
+            + "global::math::a".len(),
+    )
+    .expect("offset");
+    let module_items = analysis.completions(FilePosition {
+        file_id,
+        offset: module_offset,
+    });
+    let add = module_items
+        .iter()
+        .find(|item| item.label == "add" && item.source == CompletionItemSource::Module)
+        .expect("expected global module member completion");
+    assert_eq!(add.origin.as_deref(), Some("global::math"));
+}
+
+#[test]
+fn explicit_global_import_alias_overrides_automatic_global_module_completions() {
+    let mut host = AnalysisHost::default();
+    host.apply_change(ChangeSet {
+        files: vec![
+            rhai_db::FileChange {
+                path: "main.rhai".into(),
+                text: r#"
+                    import "env" as global;
+
+                    const ANSWER = 42;
+
+                    fn run() {
+                        global::DE
+                    }
+                "#
+                .to_owned(),
+                version: DocumentVersion(1),
+            },
+            rhai_db::FileChange {
+                path: "env.rhai".into(),
+                text: r#"
+                    export const DEFAULTS = 1;
+                "#
+                .to_owned(),
+                version: DocumentVersion(1),
+            },
+        ],
+        removed_files: Vec::new(),
+        project: None,
+    });
+
+    let analysis = host.snapshot();
+    let file_id = analysis
+        .db
+        .vfs()
+        .file_id(Path::new("main.rhai"))
+        .expect("expected main.rhai");
+    assert_no_syntax_diagnostics(&analysis, file_id);
+    let text = analysis.db.file_text(file_id).expect("expected text");
+    let offset = u32::try_from(
+        text.find("global::DE").expect("expected global alias path") + "global::DE".len(),
+    )
+    .expect("offset");
+
+    let completions = analysis.completions(FilePosition { file_id, offset });
+    assert!(
+        completions
+            .iter()
+            .any(|item| item.label == "DEFAULTS" && item.source == CompletionItemSource::Module)
+    );
+    assert!(
+        !completions.iter().any(|item| item.label == "ANSWER"),
+        "explicit `global` alias should suppress automatic global members: {completions:?}"
+    );
 }

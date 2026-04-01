@@ -225,3 +225,41 @@ fn find_references_include_outer_scope_captures_inside_functions() {
             && reference.range.contains(usage_offset)
     }));
 }
+
+#[test]
+fn find_references_on_automatic_global_constant_include_global_uses() {
+    let mut db = AnalyzerDatabase::default();
+    db.apply_change(ChangeSet::single_file(
+        "main.rhai",
+        r#"
+            const ANSWER = 42;
+
+            fn run() {
+                global::ANSWER
+            }
+        "#,
+        DocumentVersion(1),
+    ));
+
+    let snapshot = db.snapshot();
+    assert_workspace_files_have_no_syntax_diagnostics(&snapshot);
+    let file_id = snapshot
+        .vfs()
+        .file_id(Path::new("main.rhai"))
+        .expect("expected main.rhai");
+    let text = snapshot.file_text(file_id).expect("expected file text");
+    let declaration_offset = offset_in(&text, "ANSWER =");
+    let usage_offset = offset_in(&text, "global::ANSWER") + TextSize::from(8);
+
+    let references = snapshot
+        .find_references(file_id, declaration_offset)
+        .expect("expected project references");
+
+    assert_eq!(references.targets.len(), 1);
+    assert_eq!(references.targets[0].symbol.name, "ANSWER");
+    assert!(references.references.iter().any(|reference| {
+        reference.file_id == file_id
+            && reference.kind == ProjectReferenceKind::Reference
+            && reference.range.contains(usage_offset)
+    }));
+}

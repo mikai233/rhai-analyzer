@@ -254,16 +254,13 @@ fn hover_for_imported_module_member(
     }
 
     let expr = hir.expr_at_offset(offset)?;
-    let imported = hir.imported_module_path(expr)?;
-    let (member_name, module_path) = imported.parts.split_last()?;
-    if reference.name != *member_name {
-        return None;
-    }
+    let (member_name, module_path) =
+        module_member_path(hir.as_ref(), expr, reference.name.as_str())?;
 
     let completion = snapshot
-        .imported_module_completions(position.file_id, module_path)
+        .imported_module_completions(position.file_id, module_path.as_slice())
         .into_iter()
-        .find(|completion| completion.name == *member_name)?;
+        .find(|completion| completion.name == member_name)?;
 
     let declared_signature = Some(format_symbol_signature(
         completion.name.as_str(),
@@ -285,6 +282,34 @@ fn hover_for_imported_module_member(
                 .to_owned(),
         ],
     })
+}
+
+fn module_member_path(
+    hir: &rhai_hir::FileHir,
+    expr: rhai_hir::ExprId,
+    reference_name: &str,
+) -> Option<(String, Vec<String>)> {
+    if let Some(imported) = hir.imported_module_path(expr) {
+        let (member_name, module_path) = imported.parts.split_last()?;
+        if member_name == reference_name {
+            return Some((member_name.clone(), module_path.to_vec()));
+        }
+    }
+
+    let path = hir.path_expr(expr)?;
+    if !path.rooted_global {
+        return None;
+    }
+
+    let parts = hir.qualified_path_parts(expr)?;
+    let (member_name, module_path) = parts.split_last()?;
+    if member_name != reference_name {
+        return None;
+    }
+
+    let mut rooted_module_path = vec![String::from("global")];
+    rooted_module_path.extend(module_path.iter().cloned());
+    Some((member_name.clone(), rooted_module_path))
 }
 
 fn hover_for_object_field(

@@ -59,7 +59,9 @@ pub(crate) fn infer_expr_types(
             ExprKind::Loop => infer_loop_expr_type(hir, inference, expr_id),
             ExprKind::For => infer_for_expr_type(hir, inference, expr_id),
             ExprKind::Do => infer_do_expr_type(hir, inference, expr_id),
-            ExprKind::Path => infer_path_expr_type(hir, expr_id, external, imported_members),
+            ExprKind::Path => {
+                infer_path_expr_type(hir, expr_id, inference, external, imported_members)
+            }
             ExprKind::Name => infer_name_expr_type(hir, expr_id, inference, external),
             ExprKind::InterpolatedString => Some(TypeRef::String),
             ExprKind::Unary => infer_unary_expr_type(hir, inference, expr_id),
@@ -216,14 +218,49 @@ pub(crate) fn infer_do_expr_type(
 pub(crate) fn infer_path_expr_type(
     hir: &FileHir,
     expr: ExprId,
+    inference: &FileTypeInference,
     external: &ExternalSignatureIndex,
     imported_members: &[ImportedModuleMember],
 ) -> Option<TypeRef> {
+    if let Some(ty) = infer_rooted_global_constant_type(hir, inference, expr) {
+        return Some(ty);
+    }
     if let Some(ty) = imported_module_member_type_for_expr(hir, expr, imported_members) {
         return Some(ty);
     }
     let qualified = qualified_path_name(hir, expr)?;
     external.get(qualified.as_str()).cloned()
+}
+
+fn infer_rooted_global_constant_type(
+    hir: &FileHir,
+    inference: &FileTypeInference,
+    expr: ExprId,
+) -> Option<TypeRef> {
+    let path = hir.path_expr(expr)?;
+    if !path.rooted_global {
+        return None;
+    }
+
+    let parts = hir.qualified_path_parts(expr)?;
+    let [name] = parts.as_slice() else {
+        return None;
+    };
+
+    hir.symbols.iter().enumerate().find_map(|(index, symbol)| {
+        (symbol.kind == SymbolKind::Constant
+            && hir.scope(symbol.scope).kind == rhai_hir::ScopeKind::File
+            && symbol.name == *name)
+            .then(|| {
+                let symbol_id = SymbolId(index as u32);
+                inference
+                    .symbol_types
+                    .get(&symbol_id)
+                    .cloned()
+                    .or_else(|| hir.declared_symbol_type(symbol_id).cloned())
+            })
+            .flatten()
+    })
 }
 
 pub(crate) fn infer_name_expr_type(

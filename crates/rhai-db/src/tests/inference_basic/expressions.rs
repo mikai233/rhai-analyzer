@@ -286,6 +286,40 @@ fn snapshot_infers_builtin_index_and_operator_semantics() {
 }
 
 #[test]
+fn snapshot_infers_automatic_global_constants_from_inferred_types() {
+    let mut db = AnalyzerDatabase::default();
+    db.apply_change(ChangeSet::single_file(
+        "main.rhai",
+        r#"
+            const DEFAULTS = #{ name: "demo", retries: 3 };
+            let name = global::DEFAULTS.name;
+            let retries = global::DEFAULTS.retries;
+        "#,
+        DocumentVersion(1),
+    ));
+
+    let snapshot = db.snapshot();
+    assert_workspace_files_have_no_syntax_diagnostics(&snapshot);
+    let file_id = snapshot
+        .vfs()
+        .file_id(Path::new("main.rhai"))
+        .expect("expected file id");
+    let hir = snapshot.hir(file_id).expect("expected hir");
+
+    let name = symbol_id_by_name(&hir, "name", SymbolKind::Variable);
+    let retries = symbol_id_by_name(&hir, "retries", SymbolKind::Variable);
+
+    assert_eq!(
+        snapshot.inferred_symbol_type(file_id, name),
+        Some(&TypeRef::String)
+    );
+    assert_eq!(
+        snapshot.inferred_symbol_type(file_id, retries),
+        Some(&TypeRef::Int)
+    );
+}
+
+#[test]
 fn snapshot_uses_only_fallthrough_branch_values_for_if_and_switch_exprs() {
     let mut db = AnalyzerDatabase::default();
     db.apply_change(ChangeSet::single_file(

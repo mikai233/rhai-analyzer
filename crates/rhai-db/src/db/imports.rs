@@ -5,7 +5,7 @@ use crate::infer::{ImportedMethodSignature, ImportedModuleMember};
 use crate::types::{
     ImportedModuleCompletion, LinkedModuleImport, LocatedModuleExport, LocatedSymbolIdentity,
 };
-use rhai_hir::{FileBackedSymbolIdentity, FileHir, SymbolId, TypeRef};
+use rhai_hir::{FileBackedSymbolIdentity, FileHir, SymbolId, SymbolKind, TypeRef};
 use rhai_vfs::FileId;
 
 impl AnalyzerDatabase {
@@ -186,6 +186,7 @@ impl DatabaseSnapshot {
         module_path: &[String],
     ) -> Vec<ImportedModuleCompletion> {
         let mut completions = HashMap::<String, ImportedModuleCompletion>::new();
+        let explicit_global_alias = has_import_alias_named(self, file_id, "global");
         let origin_path = resolve_linked_import_origin_path(self, file_id, module_path)
             .unwrap_or_else(|| module_path.to_vec());
 
@@ -203,11 +204,7 @@ impl DatabaseSnapshot {
                         self.hir(export.file_id)
                             .and_then(|hir| hir.declared_symbol_type(identity.symbol).cloned())
                     });
-                let docs = self.hir(export.file_id).and_then(|hir| {
-                    hir.symbol(identity.symbol)
-                        .docs
-                        .map(|docs| hir.doc_block(docs).text.clone())
-                });
+                let docs = export_symbol_docs(self, export);
                 let Some(name) = export.export.exported_name.clone() else {
                     continue;
                 };
@@ -258,6 +255,18 @@ impl DatabaseSnapshot {
 
         collect_host_module_completions(self, file_id, module_path, &mut completions);
         collect_inline_module_completions(self, file_id, module_path, &mut completions);
+        if module_path
+            .first()
+            .is_some_and(|segment| segment == "global")
+            && !explicit_global_alias
+        {
+            collect_automatic_global_module_completions(
+                self,
+                file_id,
+                module_path,
+                &mut completions,
+            );
+        }
 
         let mut values = completions.into_values().collect::<Vec<_>>();
         values.sort_by(|left, right| left.name.cmp(&right.name));
@@ -295,6 +304,15 @@ fn collect_host_module_completions(
     else {
         return;
     };
+    collect_host_module_members(snapshot, module_name.as_str(), None, completions);
+}
+
+fn collect_host_module_members(
+    snapshot: &DatabaseSnapshot,
+    module_name: &str,
+    origin_prefix: Option<&str>,
+    completions: &mut HashMap<String, ImportedModuleCompletion>,
+) {
     let Some(module) = snapshot
         .host_modules()
         .iter()
@@ -302,6 +320,9 @@ fn collect_host_module_completions(
     else {
         return;
     };
+    let origin = origin_prefix
+        .map(|prefix| format!("{prefix}::{module_name}"))
+        .unwrap_or_else(|| module_name.to_owned());
 
     for function in &module.functions {
         completions
@@ -309,7 +330,7 @@ fn collect_host_module_completions(
             .or_insert_with(|| ImportedModuleCompletion {
                 name: function.name.clone(),
                 kind: rhai_hir::SymbolKind::Function,
-                origin: Some(module_name.to_owned()),
+                origin: Some(origin.clone()),
                 file_id: None,
                 symbol: None,
                 annotation: host_function_annotation(function),
@@ -323,11 +344,82 @@ fn collect_host_module_completions(
             .or_insert_with(|| ImportedModuleCompletion {
                 name: constant.name.clone(),
                 kind: rhai_hir::SymbolKind::Constant,
-                origin: Some(module_name.to_owned()),
+                origin: Some(origin.clone()),
                 file_id: None,
                 symbol: None,
                 annotation: constant.ty.clone(),
                 docs: constant.docs.clone(),
+            });
+    }
+}
+
+fn collect_automatic_global_module_completions(
+    snapshot: &DatabaseSnapshot,
+    file_id: FileId,
+    module_path: &[String],
+    completions: &mut HashMap<String, ImportedModuleCompletion>,
+) {
+    let [_global, rest @ ..] = module_path else {
+        return;
+    };
+
+    if rest.is_empty() {
+        collect_file_global_constant_completions(snapshot, file_id, completions);
+        collect_global_host_module_roots(snapshot, completions);
+        return;
+    }
+
+    if rest.len() == 1 {
+        collect_host_module_members(snapshot, rest[0].as_str(), Some("global"), completions);
+    }
+}
+
+fn collect_file_global_constant_completions(
+    snapshot: &DatabaseSnapshot,
+    file_id: FileId,
+    completions: &mut HashMap<String, ImportedModuleCompletion>,
+) {
+    let Some(hir) = snapshot.hir(file_id) else {
+        return;
+    };
+
+    for (index, symbol) in hir.symbols.iter().enumerate() {
+        if symbol.kind != rhai_hir::SymbolKind::Constant
+            || hir.scope(symbol.scope).kind != rhai_hir::ScopeKind::File
+        {
+            continue;
+        }
+
+        let symbol_id = SymbolId(index as u32);
+        completions
+            .entry(symbol.name.clone())
+            .or_insert_with(|| ImportedModuleCompletion {
+                name: symbol.name.clone(),
+                kind: rhai_hir::SymbolKind::Constant,
+                origin: Some(String::from("global")),
+                file_id: Some(file_id),
+                symbol: Some(symbol_id),
+                annotation: snapshot.inferred_symbol_type(file_id, symbol_id).cloned(),
+                docs: symbol.docs.map(|docs| hir.doc_block(docs).text.clone()),
+            });
+    }
+}
+
+fn collect_global_host_module_roots(
+    snapshot: &DatabaseSnapshot,
+    completions: &mut HashMap<String, ImportedModuleCompletion>,
+) {
+    for module in snapshot.host_modules() {
+        completions
+            .entry(module.name.clone())
+            .or_insert_with(|| ImportedModuleCompletion {
+                name: module.name.clone(),
+                kind: rhai_hir::SymbolKind::ImportAlias,
+                origin: Some(String::from("global")),
+                file_id: None,
+                symbol: None,
+                annotation: None,
+                docs: module.docs.clone(),
             });
     }
 }
@@ -358,6 +450,24 @@ fn host_function_docs(function: &crate::HostFunction) -> Option<String> {
     (!docs.is_empty()).then(|| docs.join("\n\n"))
 }
 
+fn export_symbol_docs(snapshot: &DatabaseSnapshot, export: &LocatedModuleExport) -> Option<String> {
+    let hir = snapshot.hir(export.file_id)?;
+
+    export
+        .export
+        .alias
+        .as_ref()
+        .and_then(|alias| hir.symbol(alias.symbol).docs)
+        .or_else(|| {
+            export
+                .export
+                .target
+                .as_ref()
+                .and_then(|target| hir.symbol(target.symbol).docs)
+        })
+        .map(|docs| hir.doc_block(docs).text.clone())
+}
+
 pub(crate) fn project_identity_for_export(
     export: &LocatedModuleExport,
 ) -> Option<&FileBackedSymbolIdentity> {
@@ -380,6 +490,15 @@ pub(crate) fn linked_import_targets_for_path_reference(
     else {
         return Vec::new();
     };
+    if let Some(path_parts) = rooted_global_path_parts(hir, path_expr) {
+        if has_import_alias_named(snapshot, file_id, "global") {
+            let mut aliased_parts = vec![String::from("global")];
+            aliased_parts.extend(path_parts);
+            return resolve_linked_import_path_targets(snapshot, file_id, &aliased_parts);
+        }
+
+        return automatic_global_targets_for_path(file_id, hir, &path_parts);
+    }
     let Some(path_parts) = hir.imported_module_path(path_expr).map(|path| path.parts) else {
         return Vec::new();
     };
@@ -529,6 +648,50 @@ fn linked_import_for_alias_name<'a>(
                 .alias
                 .is_some_and(|alias| hir.symbol(alias).name == alias_name)
         })
+}
+
+fn has_import_alias_named(snapshot: &DatabaseSnapshot, file_id: FileId, alias_name: &str) -> bool {
+    let Some(hir) = snapshot.hir(file_id) else {
+        return false;
+    };
+
+    hir.imports.iter().any(|import| {
+        import
+            .alias
+            .is_some_and(|alias| hir.symbol(alias).name == alias_name)
+    })
+}
+
+fn rooted_global_path_parts(hir: &FileHir, expr: rhai_hir::ExprId) -> Option<Vec<String>> {
+    let path = hir.path_expr(expr)?;
+    path.rooted_global
+        .then(|| hir.qualified_path_parts(expr))
+        .flatten()
+}
+
+fn automatic_global_targets_for_path(
+    file_id: FileId,
+    hir: &FileHir,
+    path_parts: &[String],
+) -> Vec<LocatedSymbolIdentity> {
+    if path_parts.len() != 1 {
+        return Vec::new();
+    }
+    let name = &path_parts[0];
+
+    hir.symbols
+        .iter()
+        .enumerate()
+        .filter_map(|(index, symbol)| {
+            (symbol.kind == SymbolKind::Constant
+                && hir.scope(symbol.scope).kind == rhai_hir::ScopeKind::File
+                && symbol.name == *name)
+                .then_some(LocatedSymbolIdentity {
+                    file_id,
+                    symbol: hir.file_backed_symbol_identity(SymbolId(index as u32)),
+                })
+        })
+        .collect()
 }
 
 fn collect_inline_imported_module_members(

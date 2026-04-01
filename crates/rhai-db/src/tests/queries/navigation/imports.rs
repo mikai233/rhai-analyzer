@@ -4,7 +4,7 @@ use crate::tests::{assert_workspace_files_have_no_syntax_diagnostics, offset_in}
 use crate::{AnalyzerDatabase, ChangeSet, FileChange, ProjectDiagnosticCode};
 use rhai_hir::SemanticDiagnosticCode;
 use rhai_project::ProjectConfig;
-use rhai_syntax::TextSize;
+use rhai_syntax::{TextRange, TextSize};
 use rhai_vfs::DocumentVersion;
 
 #[test]
@@ -295,4 +295,47 @@ fn goto_definition_on_import_module_reference_targets_provider_file() {
 
     assert_eq!(definitions.len(), 1);
     assert_eq!(definitions[0].file_id, provider);
+}
+
+#[test]
+fn goto_definition_on_global_module_constant_targets_file_scope_constant() {
+    let mut db = AnalyzerDatabase::default();
+    db.apply_change(ChangeSet::single_file(
+        "main.rhai",
+        r#"
+            const ANSWER = 42;
+
+            fn run() {
+                global::ANSWER
+            }
+        "#,
+        DocumentVersion(1),
+    ));
+
+    let snapshot = db.snapshot();
+    assert_workspace_files_have_no_syntax_diagnostics(&snapshot);
+    let file_id = snapshot
+        .vfs()
+        .file_id(Path::new("main.rhai"))
+        .expect("expected main.rhai");
+    let text = snapshot.file_text(file_id).expect("expected main text");
+    let constant_offset = TextSize::from(
+        u32::try_from(
+            text.rfind("ANSWER")
+                .expect("expected global constant usage"),
+        )
+        .expect("offset"),
+    );
+
+    let definitions = snapshot.goto_definition(file_id, constant_offset);
+
+    assert_eq!(definitions.len(), 1);
+    assert_eq!(definitions[0].file_id, file_id);
+    assert_eq!(
+        definitions[0].target.focus_range,
+        TextRange::new(
+            offset_in(&text, "ANSWER"),
+            offset_in(&text, "ANSWER") + TextSize::from("ANSWER".len() as u32),
+        )
+    );
 }

@@ -57,3 +57,41 @@ fn project_rename_plan_for_exports_does_not_include_module_import_paths() {
         ProjectReferenceKind::Definition
     );
 }
+
+#[test]
+fn project_rename_plan_for_automatic_global_constant_includes_global_usages() {
+    let mut db = AnalyzerDatabase::default();
+    db.apply_change(ChangeSet::single_file(
+        "main.rhai",
+        r#"
+            const ANSWER = 42;
+
+            fn run() {
+                global::ANSWER
+            }
+        "#,
+        DocumentVersion(1),
+    ));
+
+    let snapshot = db.snapshot();
+    assert_workspace_files_have_no_syntax_diagnostics(&snapshot);
+    let file_id = snapshot
+        .vfs()
+        .file_id(Path::new("main.rhai"))
+        .expect("expected main.rhai");
+    let text = snapshot.file_text(file_id).expect("expected file text");
+
+    let plan = snapshot
+        .rename_plan(file_id, offset_in(&text, "ANSWER ="), "RESULT")
+        .expect("expected project rename plan");
+
+    assert_eq!(plan.targets.len(), 1);
+    assert_eq!(plan.targets[0].symbol.name, "ANSWER");
+    assert_eq!(plan.occurrences.len(), 2);
+    assert!(plan.occurrences.iter().any(|occurrence| {
+        occurrence.kind == ProjectReferenceKind::Reference
+            && occurrence
+                .range
+                .contains(offset_in(&text, "global::ANSWER") + rhai_syntax::TextSize::from(8))
+    }));
+}

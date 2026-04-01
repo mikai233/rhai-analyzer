@@ -164,3 +164,153 @@ fn hover_supports_host_module_constants() {
     assert_eq!(hover.docs.as_deref(), Some("Default environment values"));
     assert_eq!(hover.source, HoverSignatureSource::Declared);
 }
+
+#[test]
+fn hover_supports_global_module_constants() {
+    let mut host = AnalysisHost::default();
+    host.apply_change(ChangeSet::single_file(
+        "main.rhai",
+        r#"
+            /// Answer docs
+            const ANSWER = 42;
+
+            fn run() {
+                global::ANSWER
+            }
+        "#,
+        DocumentVersion(1),
+    ));
+
+    let analysis = host.snapshot();
+    let file_id = analysis
+        .db
+        .vfs()
+        .file_id(Path::new("main.rhai"))
+        .expect("expected main.rhai");
+    assert_no_syntax_diagnostics(&analysis, file_id);
+    let text = analysis.db.file_text(file_id).expect("expected text");
+    let offset =
+        u32::try_from(text.find("ANSWER").expect("expected global constant") + 1).expect("offset");
+
+    let hover = analysis
+        .hover(FilePosition { file_id, offset })
+        .expect("expected global constant hover");
+
+    assert_eq!(hover.signature, "const ANSWER: int");
+    assert_eq!(hover.docs.as_deref(), Some("Answer docs"));
+    assert_eq!(hover.source, HoverSignatureSource::Inferred);
+}
+
+#[test]
+fn hover_supports_global_module_host_members() {
+    let mut host = AnalysisHost::default();
+    host.apply_change(ChangeSet {
+        files: vec![FileChange {
+            path: "main.rhai".into(),
+            text: r#"
+                fn run() {
+                    global::math::PI
+                }
+            "#
+            .to_owned(),
+            version: DocumentVersion(1),
+        }],
+        removed_files: Vec::new(),
+        project: Some(ProjectConfig {
+            modules: [(
+                "math".to_owned(),
+                rhai_project::ModuleSpec {
+                    docs: Some("Math helpers".to_owned()),
+                    functions: Default::default(),
+                    constants: [(
+                        "PI".to_owned(),
+                        rhai_project::ConstantSpec {
+                            type_name: "float".to_owned(),
+                            docs: Some("Circle ratio".to_owned()),
+                        },
+                    )]
+                    .into_iter()
+                    .collect(),
+                },
+            )]
+            .into_iter()
+            .collect(),
+            ..ProjectConfig::default()
+        }),
+    });
+
+    let analysis = host.snapshot();
+    let file_id = analysis
+        .db
+        .vfs()
+        .file_id(Path::new("main.rhai"))
+        .expect("expected main.rhai");
+    assert_no_syntax_diagnostics(&analysis, file_id);
+    let text = analysis.db.file_text(file_id).expect("expected text");
+    let offset =
+        u32::try_from(text.find("PI").expect("expected global host constant") + 1).expect("offset");
+
+    let hover = analysis
+        .hover(FilePosition { file_id, offset })
+        .expect("expected global module host hover");
+
+    assert_eq!(hover.signature, "const PI: float");
+    assert_eq!(hover.docs.as_deref(), Some("Circle ratio"));
+    assert_eq!(hover.source, HoverSignatureSource::Declared);
+}
+
+#[test]
+fn explicit_global_import_alias_overrides_automatic_global_module_hover() {
+    let mut host = AnalysisHost::default();
+    host.apply_change(ChangeSet {
+        files: vec![
+            FileChange {
+                path: "main.rhai".into(),
+                text: r#"
+                    import "env" as global;
+
+                    const ANSWER = 42;
+
+                    fn run() {
+                        global::DEFAULTS
+                    }
+                "#
+                .to_owned(),
+                version: DocumentVersion(1),
+            },
+            FileChange {
+                path: "env.rhai".into(),
+                text: r#"
+                    /// Imported defaults
+                    export const DEFAULTS = 1;
+                "#
+                .to_owned(),
+                version: DocumentVersion(1),
+            },
+        ],
+        removed_files: Vec::new(),
+        project: None,
+    });
+
+    let analysis = host.snapshot();
+    let file_id = analysis
+        .db
+        .vfs()
+        .file_id(Path::new("main.rhai"))
+        .expect("expected main.rhai");
+    assert_no_syntax_diagnostics(&analysis, file_id);
+    let text = analysis.db.file_text(file_id).expect("expected text");
+    let offset = u32::try_from(
+        text.find("DEFAULTS")
+            .expect("expected imported global alias member")
+            + 1,
+    )
+    .expect("offset");
+
+    let hover = analysis
+        .hover(FilePosition { file_id, offset })
+        .expect("expected overridden global hover");
+
+    assert_eq!(hover.signature, "const DEFAULTS: int");
+    assert_eq!(hover.source, HoverSignatureSource::Declared);
+}
