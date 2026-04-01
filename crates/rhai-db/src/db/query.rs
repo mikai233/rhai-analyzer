@@ -27,7 +27,9 @@ impl DatabaseSnapshot {
         let project_symbols = self
             .workspace_symbols
             .iter()
-            .filter(|symbol| !visible_names.contains(symbol.symbol.name.as_str()))
+            .filter(|symbol| {
+                symbol.symbol.exported && !visible_names.contains(symbol.symbol.name.as_str())
+            })
             .cloned()
             .collect();
 

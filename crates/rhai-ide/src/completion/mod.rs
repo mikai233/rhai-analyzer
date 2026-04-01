@@ -120,7 +120,8 @@ fn completion_items(
                 CompletionItem {
                     label: item.name,
                     kind: CompletionItemKind::Symbol(item.kind),
-                    source: CompletionItemSource::Project,
+                    source: CompletionItemSource::Module,
+                    origin: item.origin,
                     sort_text: String::new(),
                     detail: item.annotation.as_ref().map(format_type_ref),
                     docs: if matches!(detail_level, CompletionDetailLevel::Full) {
@@ -183,6 +184,7 @@ fn completion_items(
             label: symbol.name.clone(),
             kind: CompletionItemKind::Symbol(symbol.kind),
             source: CompletionItemSource::Visible,
+            origin: None,
             sort_text: String::new(),
             detail: annotation
                 .filter(|ty| !matches!(ty, TypeRef::Unknown))
@@ -201,7 +203,7 @@ fn completion_items(
     }));
 
     items.extend(inputs.project_symbols.iter().map(|symbol| {
-        let (detail, docs, annotation) =
+        let (detail, docs, annotation, origin) =
             workspace_completion_metadata(snapshot, symbol, detail_level);
         let parameter_names = callable_parameter_names(
             snapshot,
@@ -226,6 +228,7 @@ fn completion_items(
             label: symbol.symbol.name.clone(),
             kind: CompletionItemKind::Symbol(symbol.symbol.kind),
             source: CompletionItemSource::Project,
+            origin,
             sort_text: String::new(),
             detail,
             docs,
@@ -268,6 +271,7 @@ fn completion_items(
             label: member.name.clone(),
             kind: CompletionItemKind::Member,
             source: CompletionItemSource::Member,
+            origin: None,
             sort_text: String::new(),
             detail: member.annotation.as_ref().map(format_type_ref),
             docs: if matches!(detail_level, CompletionDetailLevel::Full) {
@@ -318,6 +322,7 @@ fn builtin_global_completion_items(
                 label: function.name.clone(),
                 kind: CompletionItemKind::Symbol(SymbolKind::Function),
                 source: CompletionItemSource::Builtin,
+                origin: None,
                 sort_text: String::new(),
                 detail: builtin_function_detail(function, annotation.as_ref()),
                 docs,
@@ -759,6 +764,7 @@ fn postfix_completion_items(context: &CompletionContext) -> Vec<CompletionItem> 
         label: label.to_owned(),
         kind: CompletionItemKind::Keyword,
         source: CompletionItemSource::Postfix,
+        origin: None,
         sort_text: String::new(),
         detail: Some("postfix template".to_owned()),
         docs: Some(docs.to_owned()),
@@ -796,6 +802,7 @@ fn doc_tag_completion_items(replace_range: TextRange) -> Vec<CompletionItem> {
         label: label.to_owned(),
         kind: CompletionItemKind::Keyword,
         source: CompletionItemSource::Builtin,
+        origin: None,
         sort_text: String::new(),
         detail: Some("doc tag".to_owned()),
         docs: Some(docs.to_owned()),
@@ -842,6 +849,7 @@ fn doc_type_completion_items(replace_range: TextRange) -> Vec<CompletionItem> {
         label: label.to_owned(),
         kind: CompletionItemKind::Type,
         source: CompletionItemSource::Builtin,
+        origin: None,
         sort_text: String::new(),
         detail: Some("type".to_owned()),
         docs: Some(docs.to_owned()),
@@ -914,12 +922,14 @@ fn source_rank(source: CompletionItemSource, member_access: bool) -> u8 {
         (true, CompletionItemSource::Builtin) => 1,
         (true, CompletionItemSource::Postfix) => 2,
         (true, CompletionItemSource::Visible) => 3,
-        (true, CompletionItemSource::Project) => 4,
+        (true, CompletionItemSource::Module) => 4,
+        (true, CompletionItemSource::Project) => 5,
         (false, CompletionItemSource::Visible) => 0,
-        (false, CompletionItemSource::Project) => 1,
-        (false, CompletionItemSource::Builtin) => 2,
-        (false, CompletionItemSource::Postfix) => 3,
-        (false, CompletionItemSource::Member) => 4,
+        (false, CompletionItemSource::Module) => 1,
+        (false, CompletionItemSource::Project) => 2,
+        (false, CompletionItemSource::Builtin) => 3,
+        (false, CompletionItemSource::Postfix) => 4,
+        (false, CompletionItemSource::Member) => 5,
     }
 }
 
@@ -945,16 +955,72 @@ fn inferred_completion_type(
         .filter(|ty| !matches!(ty, TypeRef::Unknown))
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::CompletionInsertFormat;
+
+    fn test_context(member_access: bool) -> CompletionContext {
+        CompletionContext {
+            prefix: "sha".to_owned(),
+            replace_range: TextRange::empty(TextSize::from(0)),
+            query_offset: 0,
+            member_access,
+            module_path: None,
+            postfix_completion: None,
+            suppress_completion: false,
+            doc_completion: None,
+            next_char_is_open_paren: false,
+        }
+    }
+
+    fn test_item(source: CompletionItemSource) -> CompletionItem {
+        CompletionItem {
+            label: "shared_helper".to_owned(),
+            kind: CompletionItemKind::Symbol(SymbolKind::Function),
+            source,
+            origin: None,
+            sort_text: String::new(),
+            detail: None,
+            docs: None,
+            filter_text: None,
+            text_edit: None,
+            insert_format: CompletionInsertFormat::PlainText,
+            file_id: None,
+            exported: true,
+            resolve_data: None,
+        }
+    }
+
+    #[test]
+    fn module_candidates_rank_ahead_of_project_candidates() {
+        let mut items = vec![
+            test_item(CompletionItemSource::Project),
+            test_item(CompletionItemSource::Module),
+        ];
+
+        rank_completion_items(&mut items, &test_context(false));
+
+        assert_eq!(items[0].source, CompletionItemSource::Module);
+        assert_eq!(items[1].source, CompletionItemSource::Project);
+    }
+}
+
 fn workspace_completion_metadata(
     snapshot: &DatabaseSnapshot,
     symbol: &rhai_db::LocatedWorkspaceSymbol,
     detail_level: CompletionDetailLevel,
-) -> (Option<String>, Option<String>, Option<TypeRef>) {
+) -> (
+    Option<String>,
+    Option<String>,
+    Option<TypeRef>,
+    Option<String>,
+) {
     let Some(hir) = snapshot.hir(symbol.file_id) else {
-        return (None, None, None);
+        return (None, None, None, None);
     };
     let Some(symbol_id) = hir.symbol_at(symbol.symbol.full_range) else {
-        return (None, None, None);
+        return (None, None, None, None);
     };
     let resolved_symbol = hir.symbol(symbol_id);
     let annotation = resolved_symbol
@@ -967,7 +1033,15 @@ fn workspace_completion_metadata(
         _ => None,
     };
 
-    (detail, docs, annotation.cloned())
+    let origin = snapshot
+        .normalized_path(symbol.file_id)
+        .and_then(|path| path.file_stem())
+        .and_then(|stem| stem.to_str())
+        .map(str::trim)
+        .filter(|stem| !stem.is_empty())
+        .map(ToOwned::to_owned);
+
+    (detail, docs, annotation.cloned(), origin)
 }
 
 fn builtin_function_annotation(function: &rhai_db::HostFunction) -> Option<TypeRef> {

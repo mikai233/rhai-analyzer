@@ -238,6 +238,7 @@ pub enum CompletionItemKind {
 pub enum CompletionItemSource {
     Visible,
     Project,
+    Module,
     Member,
     Builtin,
     Postfix,
@@ -248,6 +249,7 @@ pub struct CompletionItem {
     pub label: String,
     pub kind: CompletionItemKind,
     pub source: CompletionItemSource,
+    pub origin: Option<String>,
     pub sort_text: String,
     pub detail: Option<String>,
     pub docs: Option<String>,

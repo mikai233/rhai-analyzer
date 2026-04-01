@@ -186,6 +186,8 @@ impl DatabaseSnapshot {
         module_path: &[String],
     ) -> Vec<ImportedModuleCompletion> {
         let mut completions = HashMap::<String, ImportedModuleCompletion>::new();
+        let origin_path = resolve_linked_import_origin_path(self, file_id, module_path)
+            .unwrap_or_else(|| module_path.to_vec());
 
         if let Some(linked_import) =
             resolve_linked_import_for_module_path(self, file_id, module_path)
@@ -214,6 +216,7 @@ impl DatabaseSnapshot {
                     ImportedModuleCompletion {
                         name,
                         kind: identity.kind,
+                        origin: Some(origin_path.join("::")),
                         file_id: Some(export.file_id),
                         symbol: Some(identity.symbol),
                         annotation,
@@ -242,6 +245,9 @@ impl DatabaseSnapshot {
                     .or_insert(ImportedModuleCompletion {
                         name,
                         kind: rhai_hir::SymbolKind::ImportAlias,
+                        origin: Some(
+                            nested_linked_import_origin_path(&origin_path, nested).join("::"),
+                        ),
                         file_id: None,
                         symbol: None,
                         annotation: None,
@@ -303,6 +309,7 @@ fn collect_host_module_completions(
             .or_insert_with(|| ImportedModuleCompletion {
                 name: function.name.clone(),
                 kind: rhai_hir::SymbolKind::Function,
+                origin: Some(module_name.to_owned()),
                 file_id: None,
                 symbol: None,
                 annotation: host_function_annotation(function),
@@ -316,6 +323,7 @@ fn collect_host_module_completions(
             .or_insert_with(|| ImportedModuleCompletion {
                 name: constant.name.clone(),
                 kind: rhai_hir::SymbolKind::Constant,
+                origin: Some(module_name.to_owned()),
                 file_id: None,
                 symbol: None,
                 annotation: constant.ty.clone(),
@@ -436,6 +444,34 @@ fn resolve_linked_import_for_module_path<'a>(
     }
 
     resolve_linked_import_for_module_path(snapshot, linked_import.provider_file_id, rest)
+}
+
+fn resolve_linked_import_origin_path(
+    snapshot: &DatabaseSnapshot,
+    file_id: FileId,
+    module_path: &[String],
+) -> Option<Vec<String>> {
+    let [alias_name, rest @ ..] = module_path else {
+        return None;
+    };
+    let linked_import = linked_import_for_alias_name(snapshot, file_id, alias_name)?;
+    let mut origin = vec![linked_import.module_name.clone()];
+    if rest.is_empty() {
+        return Some(origin);
+    }
+
+    let nested = resolve_linked_import_origin_path(snapshot, linked_import.provider_file_id, rest)?;
+    origin.extend(nested);
+    Some(origin)
+}
+
+fn nested_linked_import_origin_path(
+    parent_origin_path: &[String],
+    linked_import: &LinkedModuleImport,
+) -> Vec<String> {
+    let mut origin = parent_origin_path.to_vec();
+    origin.push(linked_import.module_name.clone());
+    origin
 }
 
 fn resolve_linked_import_path_targets_inner(
@@ -580,6 +616,7 @@ fn collect_inline_module_completions(
                 } else {
                     rhai_hir::SymbolKind::Constant
                 },
+                origin: Some(base_prefix.clone()),
                 file_id: None,
                 symbol: None,
                 annotation: (!has_more).then(|| ty.clone()),

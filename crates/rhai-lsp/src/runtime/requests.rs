@@ -129,7 +129,7 @@ pub(crate) fn handle_request(
                 is_incomplete: true,
                 items: items
                     .into_iter()
-                    .map(|item| completion_item_to_lsp(text.as_deref(), item))
+                    .map(|item| completion_item_to_lsp(server, text.as_deref(), item))
                     .collect(),
             });
             send_ok(connection, request.id, Some(response))?;
@@ -144,7 +144,7 @@ pub(crate) fn handle_request(
                             .snapshot()
                             .file_text(resolve_data.file_id)
                     });
-                    completion_item_to_lsp(text.as_deref(), server.resolve_completion(item))
+                    completion_item_to_lsp(server, text.as_deref(), server.resolve_completion(item))
                 }
                 None => params,
             };

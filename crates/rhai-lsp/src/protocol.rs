@@ -34,6 +34,7 @@ pub(crate) struct CompletionResolvePayload {
     pub label: String,
     pub kind: CompletionKindPayload,
     pub source: CompletionSourcePayload,
+    pub origin: Option<String>,
     pub sort_text: String,
     pub file_id: Option<u32>,
     pub exported: bool,
@@ -78,6 +79,7 @@ pub(crate) enum SymbolKindPayload {
 pub(crate) enum CompletionSourcePayload {
     Visible,
     Project,
+    Module,
     Member,
     Builtin,
     Postfix,
@@ -121,10 +123,11 @@ pub(crate) fn diagnostic_to_lsp(text: &str, diagnostic: &IdeDiagnostic) -> Optio
 }
 
 pub(crate) fn completion_item_to_lsp(
+    server: &ServerState,
     text: Option<&str>,
     item: IdeCompletionItem,
 ) -> CompletionItem {
-    let label_details = completion_label_details(&item);
+    let label_details = completion_label_details(server, &item);
     let documentation = item.docs.map(markdown_documentation);
     let text_edit = text.zip(item.text_edit.as_ref()).and_then(|(text, edit)| {
         Some(TextEdit {
@@ -137,6 +140,7 @@ pub(crate) fn completion_item_to_lsp(
             label: item.label.clone(),
             kind: completion_kind_payload(item.kind),
             source: completion_source_payload(item.source),
+            origin: item.origin.clone(),
             sort_text: item.sort_text.clone(),
             file_id: item.file_id.map(|file_id| file_id.0),
             exported: item.exported,
@@ -178,6 +182,7 @@ pub(crate) fn completion_item_from_lsp(item: CompletionItem) -> Option<IdeComple
         label: payload.label,
         kind: completion_kind_from_payload(payload.kind),
         source: completion_source_from_payload(payload.source),
+        origin: payload.origin,
         sort_text: payload.sort_text,
         detail: item.detail,
         docs: documentation_text(item.documentation),
@@ -749,23 +754,55 @@ fn signature_active_parameter(
     (parameter_count > 0).then_some(active_parameter.min(parameter_count.saturating_sub(1)))
 }
 
-fn completion_label_details(item: &IdeCompletionItem) -> Option<CompletionItemLabelDetails> {
-    let description = completion_source_description(item);
+fn completion_label_details(
+    server: &ServerState,
+    item: &IdeCompletionItem,
+) -> Option<CompletionItemLabelDetails> {
+    let description = completion_source_description(server, item);
     description.map(|description| CompletionItemLabelDetails {
         detail: None,
         description: Some(description),
     })
 }
 
-fn completion_source_description(item: &IdeCompletionItem) -> Option<String> {
-    Some(match (item.source, item.exported) {
+fn completion_source_description(server: &ServerState, item: &IdeCompletionItem) -> Option<String> {
+    let source = match (item.source, item.exported) {
         (IdeCompletionItemSource::Visible, _) => "local".to_owned(),
         (IdeCompletionItemSource::Project, true) => "project export".to_owned(),
         (IdeCompletionItemSource::Project, false) => "project".to_owned(),
+        (IdeCompletionItemSource::Module, true) => "module export".to_owned(),
+        (IdeCompletionItemSource::Module, false) => "module".to_owned(),
         (IdeCompletionItemSource::Member, _) => "member".to_owned(),
         (IdeCompletionItemSource::Builtin, _) => "builtin".to_owned(),
         (IdeCompletionItemSource::Postfix, _) => "postfix template".to_owned(),
+    };
+
+    let module = item.origin.clone().or_else(|| {
+        item.file_id
+            .and_then(|file_id| completion_module_label(server, file_id))
+    });
+
+    Some(match module {
+        Some(module)
+            if matches!(
+                item.source,
+                IdeCompletionItemSource::Project | IdeCompletionItemSource::Module
+            ) && !module.is_empty() =>
+        {
+            format!("{source} · {module}")
+        }
+        _ => source,
     })
+}
+
+fn completion_module_label(server: &ServerState, file_id: FileId) -> Option<String> {
+    let snapshot = server.analysis_host().snapshot();
+    let path = snapshot.normalized_path(file_id)?;
+    path.file_stem()
+        .and_then(|stem| stem.to_str())
+        .map(str::trim)
+        .filter(|stem| !stem.is_empty())
+        .map(ToOwned::to_owned)
 }
 
 fn markup(value: String) -> MarkupContent {
@@ -839,6 +876,7 @@ fn completion_source_payload(source: IdeCompletionItemSource) -> CompletionSourc
     match source {
         IdeCompletionItemSource::Visible => CompletionSourcePayload::Visible,
         IdeCompletionItemSource::Project => CompletionSourcePayload::Project,
+        IdeCompletionItemSource::Module => CompletionSourcePayload::Module,
         IdeCompletionItemSource::Member => CompletionSourcePayload::Member,
         IdeCompletionItemSource::Builtin => CompletionSourcePayload::Builtin,
         IdeCompletionItemSource::Postfix => CompletionSourcePayload::Postfix,
@@ -849,6 +887,7 @@ fn completion_source_from_payload(source: CompletionSourcePayload) -> IdeComplet
     match source {
         CompletionSourcePayload::Visible => IdeCompletionItemSource::Visible,
         CompletionSourcePayload::Project => IdeCompletionItemSource::Project,
+        CompletionSourcePayload::Module => IdeCompletionItemSource::Module,
         CompletionSourcePayload::Member => IdeCompletionItemSource::Member,
         CompletionSourcePayload::Builtin => IdeCompletionItemSource::Builtin,
         CompletionSourcePayload::Postfix => IdeCompletionItemSource::Postfix,
@@ -1022,12 +1061,12 @@ mod tests {
     };
     use rhai_syntax::{TextRange, TextSize};
 
-    use crate::Server;
     use crate::protocol::{
         completion_item_to_lsp, hover_to_lsp, prepared_rename_to_lsp, signature_help_to_lsp,
         source_change_code_action_to_lsp,
     };
     use crate::tests::file_url;
+    use crate::{Server, ServerState};
 
     #[test]
     fn code_action_conversion_supports_multi_file_edits_and_file_renames() {
@@ -1174,12 +1213,15 @@ mod tests {
 
     #[test]
     fn completion_conversion_surfaces_source_descriptions() {
+        let server = ServerState::new();
         let item = completion_item_to_lsp(
+            &server,
             None,
             CompletionItem {
                 label: "shared_helper".to_owned(),
                 kind: CompletionItemKind::Symbol(SymbolKind::Function),
                 source: CompletionItemSource::Project,
+                origin: None,
                 sort_text: "0".to_owned(),
                 detail: Some("fun() -> ()".to_owned()),
                 docs: None,
@@ -1198,6 +1240,78 @@ mod tests {
                 .as_ref()
                 .and_then(|details| details.description.as_deref()),
             Some("project export")
+        );
+    }
+
+    #[test]
+    fn completion_conversion_includes_project_module_name() {
+        let mut server = ServerState::new();
+        server
+            .open_document(file_url("support.rhai"), 1, "fn shared_helper() {}")
+            .expect("expected support.rhai to open");
+        let file_id = server
+            .analysis_host()
+            .snapshot()
+            .file_id_for_path(&std::env::current_dir().expect("cwd").join("support.rhai"))
+            .expect("expected support.rhai");
+
+        let item = completion_item_to_lsp(
+            &server,
+            None,
+            CompletionItem {
+                label: "shared_helper".to_owned(),
+                kind: CompletionItemKind::Symbol(SymbolKind::Function),
+                source: CompletionItemSource::Project,
+                origin: Some("support".to_owned()),
+                sort_text: "0".to_owned(),
+                detail: Some("fun() -> ()".to_owned()),
+                docs: None,
+                filter_text: None,
+                text_edit: None,
+                insert_format: CompletionInsertFormat::PlainText,
+                file_id: Some(file_id),
+                exported: true,
+                resolve_data: None,
+            },
+        );
+
+        assert_eq!(
+            item.label_details
+                .as_ref()
+                .and_then(|details| details.description.as_deref()),
+            Some("project export · support")
+        );
+    }
+
+    #[test]
+    fn completion_conversion_includes_module_origin_name() {
+        let server = ServerState::new();
+
+        let item = completion_item_to_lsp(
+            &server,
+            None,
+            CompletionItem {
+                label: "shared_helper".to_owned(),
+                kind: CompletionItemKind::Symbol(SymbolKind::Function),
+                source: CompletionItemSource::Module,
+                origin: Some("demo".to_owned()),
+                sort_text: "0".to_owned(),
+                detail: Some("fun() -> ()".to_owned()),
+                docs: None,
+                filter_text: None,
+                text_edit: None,
+                insert_format: CompletionInsertFormat::PlainText,
+                file_id: None,
+                exported: true,
+                resolve_data: None,
+            },
+        );
+
+        assert_eq!(
+            item.label_details
+                .as_ref()
+                .and_then(|details| details.description.as_deref()),
+            Some("module export · demo")
         );
     }
 

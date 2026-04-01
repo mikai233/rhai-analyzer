@@ -93,6 +93,57 @@ fn completions_merge_visible_project_and_member_results() {
 }
 
 #[test]
+fn imported_module_completions_use_original_module_name_as_origin() {
+    let mut host = AnalysisHost::default();
+    host.apply_change(ChangeSet {
+        files: vec![
+            rhai_db::FileChange {
+                path: "main.rhai".into(),
+                text: r#"
+                    import "demo" as dd;
+
+                    fn run() {
+                        dd::sha
+                    }
+                "#
+                .to_owned(),
+                version: DocumentVersion(1),
+            },
+            rhai_db::FileChange {
+                path: "demo.rhai".into(),
+                text: r#"
+                    fn shared_helper() {}
+                    export shared_helper as shared_helper;
+                "#
+                .to_owned(),
+                version: DocumentVersion(1),
+            },
+        ],
+        removed_files: Vec::new(),
+        project: None,
+    });
+
+    let analysis = host.snapshot();
+    let file_id = analysis
+        .db
+        .vfs()
+        .file_id(Path::new("main.rhai"))
+        .expect("expected main.rhai");
+    assert_no_syntax_diagnostics(&analysis, file_id);
+    let text = analysis.db.file_text(file_id).expect("expected text");
+    let offset = u32::try_from(text.find("sha").expect("expected completion prefix") + "sha".len())
+        .expect("offset");
+
+    let completion = analysis
+        .completions(FilePosition { file_id, offset })
+        .into_iter()
+        .find(|item| item.label == "shared_helper" && item.source == CompletionItemSource::Module)
+        .expect("expected imported module completion");
+
+    assert_eq!(completion.origin.as_deref(), Some("demo"));
+}
+
+#[test]
 fn completions_include_builtin_string_members() {
     let mut host = AnalysisHost::default();
     host.apply_change(ChangeSet::single_file(

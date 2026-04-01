@@ -192,6 +192,7 @@ pub struct CompletionInputs {
 pub struct ImportedModuleCompletion {
     pub name: String,
     pub kind: SymbolKind,
+    pub origin: Option<String>,
     pub file_id: Option<FileId>,
     pub symbol: Option<SymbolId>,
     pub annotation: Option<TypeRef>,

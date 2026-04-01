@@ -145,8 +145,10 @@ fn completion_inputs_collect_visible_member_and_project_symbols() {
             FileChange {
                 path: "support.rhai".into(),
                 text: r#"
+                    let hidden_value = 1;
                     fn shared_helper() {}
                     fn project_only() {}
+                    export shared_helper as shared_helper;
                 "#
                 .to_owned(),
                 version: DocumentVersion(1),
@@ -185,6 +187,12 @@ fn completion_inputs_collect_visible_member_and_project_symbols() {
             .project_symbols
             .iter()
             .any(|symbol| symbol.symbol.name == "shared_helper")
+    );
+    assert!(
+        !helper_inputs
+            .project_symbols
+            .iter()
+            .any(|symbol| symbol.symbol.name == "hidden_value")
     );
     assert!(
         !helper_inputs
