@@ -83,6 +83,7 @@ The crate is intended to be the single formatting policy layer for:
   - delimited containers
   - statement and clause boundaries
   - many expression operator and suffix boundaries
+- Comment-directive-based formatter skipping for preserving hand-written source in selected regions
 
 ### Import and Top-Level Normalization
 
@@ -145,6 +146,29 @@ Current policy enums:
 - `ImportSortOrder`
   - `Preserve`
   - `ModulePath`
+
+## Comment Directives
+
+`rhai-fmt` supports a formatter directive for preserving the next syntax item or statement exactly as written:
+
+- `// rhai-fmt: skip`
+
+Example:
+
+```rhai
+fn run() {
+    // rhai-fmt: skip
+    let  weird   =#{ name :"Ada", values :[1,2,3]};
+
+    let normal = 1 + 2;
+}
+```
+
+Current behavior:
+
+- the directive applies to the next format-stable item or statement
+- skipped regions are emitted from original source instead of being reformatted
+- skipped imports are excluded from import-run reordering so the formatter does not shuffle past explicitly preserved source
 
 ## Syntax and Trivia Model
 

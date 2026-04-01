@@ -1,4 +1,5 @@
 mod ast;
+mod directives;
 mod lexer;
 mod parser;
 mod syntax;
@@ -15,6 +16,7 @@ pub use ast::{
     StringSegment, SwitchArm, SwitchArmList, SwitchExpr, SwitchPatternList, ThrowStmt, TryStmt,
     UnaryExpr, WhileExpr,
 };
+pub use directives::{CommentDirective, CommentDirectiveKind, collect_comment_directives};
 pub use lexer::{Lexed, lex_text};
 pub use parser::parse_text;
 pub use syntax::{

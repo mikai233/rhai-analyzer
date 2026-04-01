@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -355,6 +355,14 @@ pub struct HostType {
     pub methods: Vec<HostFunction>,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FileCommentDirectives {
+    pub external_signatures: ExternalSignatureIndex,
+    pub external_modules: BTreeSet<String>,
+    pub allowed_unresolved_names: BTreeSet<String>,
+    pub allowed_unresolved_imports: BTreeSet<String>,
+}
+
 #[derive(Debug, Clone, Default)]
 pub(crate) struct ProjectSemantics {
     pub(crate) external_signatures: ExternalSignatureIndex,
@@ -386,6 +394,7 @@ impl From<&FileBackedSymbolIdentity> for SymbolIdentityKey {
 pub(crate) struct CachedFileAnalysis {
     pub(crate) parse: Arc<Parse>,
     pub(crate) hir: Arc<FileHir>,
+    pub(crate) comment_directives: Arc<FileCommentDirectives>,
     pub(crate) syntax_diagnostics: Arc<[SyntaxError]>,
     pub(crate) semantic_diagnostics: Arc<[SemanticDiagnostic]>,
     pub(crate) file_symbol_index: Arc<FileSymbolIndex>,

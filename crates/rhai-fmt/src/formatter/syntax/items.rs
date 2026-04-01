@@ -163,12 +163,13 @@ impl Formatter<'_> {
     }
 
     fn can_reorder_import_run(&self, items: &[Item]) -> bool {
-        items.windows(2).all(|pair| {
-            let [left, right] = pair else {
-                return true;
-            };
-            self.is_whitespace_only_between_nodes(left.syntax(), right.syntax())
-        })
+        !items.iter().any(|item| self.is_skipped(item.syntax()))
+            && items.windows(2).all(|pair| {
+                let [left, right] = pair else {
+                    return true;
+                };
+                self.is_whitespace_only_between_nodes(left.syntax(), right.syntax())
+            })
     }
 
     fn import_boundary_starts_new_group(&self, left: Item, right: Item) -> bool {
@@ -176,6 +177,10 @@ impl Formatter<'_> {
     }
 
     pub(crate) fn format_item(&self, item: Item, indent: usize) -> Doc {
+        if self.is_skipped(item.syntax()) {
+            return Doc::text(self.raw(item.syntax()));
+        }
+
         if matches!(item_support(&item).level, FormatSupportLevel::RawFallback) {
             return Doc::text(self.raw(item.syntax()));
         }
@@ -227,6 +232,10 @@ impl Formatter<'_> {
     }
 
     pub(crate) fn format_stmt(&self, stmt: Stmt, indent: usize) -> Doc {
+        if self.is_skipped(stmt.syntax()) {
+            return Doc::text(self.raw(stmt.syntax()));
+        }
+
         if matches!(stmt_support(&stmt).level, FormatSupportLevel::RawFallback) {
             return Doc::text(self.raw(stmt.syntax()));
         }

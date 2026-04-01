@@ -52,6 +52,7 @@ It translates database facts into stable IDE-shaped results without exposing raw
 - Builtin and host-type member completion/signature help, including receiver-specialized generic host methods
 - Inlay hints for inferred local variable types, closure parameter types, and function/closure return types
 - Semantic token classification for Rhai keywords, comments, literals, operators, namespaces, HIR-backed symbols, typed-method receivers, and declaration/readonly modifiers
+- Consumption of file-local analysis directives for externally injected names and modules when project metadata is unavailable
 
 ### Rename and Cross-File Editing
 
@@ -59,6 +60,19 @@ It translates database facts into stable IDE-shaped results without exposing raw
 - Rename preflight issue reporting
 - Concrete edit generation from rename plans
 - Preview-friendly grouping of source changes
+
+## Comment-Directive-Aware Analysis
+
+Through `rhai-db`, the IDE layer can consume file-local comment directives that describe runtime-provided globals and modules.
+
+This allows editor-facing queries such as diagnostics, completion, semantic tokens, and signature help to behave more usefully in scripts that depend on host injection but do not yet have matching Rust-side project metadata.
+
+Supported analysis directives include:
+
+- `// rhai: extern <name>: <type>`
+- `// rhai: module <name>`
+- `// rhai: allow unresolved <name>`
+- `// rhai: allow unresolved-import <name>`
 
 ## Current Boundaries
 

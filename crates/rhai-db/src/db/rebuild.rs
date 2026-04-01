@@ -5,6 +5,7 @@ use std::time::Instant;
 
 use crate::change::{ChangeSet, FileChange};
 use crate::db::AnalyzerDatabase;
+use crate::db::comment_directives::file_comment_directives;
 use crate::infer::infer_file_types;
 use crate::project::build_project_semantics;
 use crate::types::{
@@ -177,6 +178,9 @@ impl AnalyzerDatabase {
         self.stats.total_lower_time += lower_started.elapsed();
 
         let index_started = Instant::now();
+        let comment_directives = Arc::new(file_comment_directives(&parse));
+        let mut external_signatures = self.project_semantics.external_signatures.clone();
+        external_signatures.extend_from(&comment_directives.external_signatures);
         let syntax_diagnostics = Arc::<[SyntaxError]>::from(parse.errors().to_vec());
         let semantic_diagnostics = Arc::<[SemanticDiagnostic]>::from(hir.diagnostics());
         let file_symbol_index = Arc::new(hir.file_symbol_index());
@@ -187,7 +191,7 @@ impl AnalyzerDatabase {
         let imported_members = self.imported_module_members(file_id);
         let type_inference = Arc::new(infer_file_types(
             &hir,
-            &self.project_semantics.external_signatures,
+            &external_signatures,
             &self.project_semantics.global_functions,
             &self.project_semantics.types,
             &imported_methods,
@@ -227,6 +231,7 @@ impl AnalyzerDatabase {
             Arc::new(CachedFileAnalysis {
                 parse,
                 hir,
+                comment_directives,
                 syntax_diagnostics,
                 semantic_diagnostics,
                 file_symbol_index,
@@ -298,9 +303,11 @@ impl AnalyzerDatabase {
                 };
                 let imported_methods = self.imported_method_signatures(file_id);
                 let imported_members = self.imported_module_members(file_id);
+                let mut external_signatures = self.project_semantics.external_signatures.clone();
+                external_signatures.extend_from(&existing.comment_directives.external_signatures);
                 let type_inference = Arc::new(infer_file_types(
                     &existing.hir,
-                    &self.project_semantics.external_signatures,
+                    &external_signatures,
                     &self.project_semantics.global_functions,
                     &self.project_semantics.types,
                     &imported_methods,

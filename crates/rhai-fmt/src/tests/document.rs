@@ -271,6 +271,50 @@ fn run() {}
 }
 
 #[test]
+fn formatter_respects_skip_directive_for_next_statement() {
+    let source = r#"fn run() {
+    // rhai-fmt: skip
+    let  weird   =#{ name :"Ada", values :[1,2,3]};
+    let normal=1+2;
+}
+"#;
+
+    let expected = r#"fn run() {
+    // rhai-fmt: skip
+    let  weird   =#{ name :"Ada", values :[1,2,3]};
+    let normal = 1 + 2;
+}
+"#;
+
+    assert_formats_to(source, expected);
+}
+
+#[test]
+fn formatter_does_not_reorder_skipped_imports() {
+    let source = r#"// rhai-fmt: skip
+import "zebra" as zebra;
+import "alpha";
+fn run(){}
+"#;
+
+    let expected = r#"// rhai-fmt: skip
+import "zebra" as zebra;
+import "alpha";
+
+fn run() {}
+"#;
+
+    assert_formats_to_with_options(
+        source,
+        expected,
+        &FormatOptions {
+            import_sort_order: ImportSortOrder::ModulePath,
+            ..FormatOptions::default()
+        },
+    );
+}
+
+#[test]
 fn formatter_formats_try_catch_bindings_with_parentheses() {
     let source = r#"
 fn run(){

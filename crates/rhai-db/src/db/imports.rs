@@ -76,6 +76,35 @@ impl AnalyzerDatabase {
                 &mut members,
             );
         }
+
+        if let Some(directives) = self
+            .analysis
+            .get(&file_id)
+            .map(|analysis| analysis.comment_directives.as_ref())
+        {
+            for import in &importer_hir.imports {
+                let Some(alias) = import.alias else {
+                    continue;
+                };
+                let Some(module_name) = import
+                    .module_text
+                    .as_deref()
+                    .and_then(parse_static_import_module_name)
+                else {
+                    continue;
+                };
+                if !directives.external_modules.contains(module_name.as_str()) {
+                    continue;
+                }
+                collect_inline_imported_module_members(
+                    directives,
+                    module_name.as_str(),
+                    &[importer_hir.symbol(alias).name.clone()],
+                    &mut members,
+                );
+            }
+        }
+
         members
     }
 
@@ -156,71 +185,72 @@ impl DatabaseSnapshot {
         file_id: FileId,
         module_path: &[String],
     ) -> Vec<ImportedModuleCompletion> {
-        let Some(linked_import) = resolve_linked_import_for_module_path(self, file_id, module_path)
-        else {
-            return Vec::new();
-        };
-
         let mut completions = HashMap::<String, ImportedModuleCompletion>::new();
 
-        for export in linked_import.exports.iter() {
-            let Some(identity) = project_identity_for_export(export) else {
-                continue;
-            };
-            let annotation = self
-                .inferred_symbol_type(export.file_id, identity.symbol)
-                .cloned()
-                .or_else(|| {
-                    self.hir(export.file_id)
-                        .and_then(|hir| hir.declared_symbol_type(identity.symbol).cloned())
+        if let Some(linked_import) =
+            resolve_linked_import_for_module_path(self, file_id, module_path)
+        {
+            for export in linked_import.exports.iter() {
+                let Some(identity) = project_identity_for_export(export) else {
+                    continue;
+                };
+                let annotation = self
+                    .inferred_symbol_type(export.file_id, identity.symbol)
+                    .cloned()
+                    .or_else(|| {
+                        self.hir(export.file_id)
+                            .and_then(|hir| hir.declared_symbol_type(identity.symbol).cloned())
+                    });
+                let docs = self.hir(export.file_id).and_then(|hir| {
+                    hir.symbol(identity.symbol)
+                        .docs
+                        .map(|docs| hir.doc_block(docs).text.clone())
                 });
-            let docs = self.hir(export.file_id).and_then(|hir| {
-                hir.symbol(identity.symbol)
-                    .docs
-                    .map(|docs| hir.doc_block(docs).text.clone())
-            });
-            let Some(name) = export.export.exported_name.clone() else {
-                continue;
-            };
-            completions.insert(
-                name.clone(),
-                ImportedModuleCompletion {
-                    name,
-                    kind: identity.kind,
-                    file_id: Some(export.file_id),
-                    symbol: Some(identity.symbol),
-                    annotation,
-                    docs,
-                },
-            );
+                let Some(name) = export.export.exported_name.clone() else {
+                    continue;
+                };
+                completions.insert(
+                    name.clone(),
+                    ImportedModuleCompletion {
+                        name,
+                        kind: identity.kind,
+                        file_id: Some(export.file_id),
+                        symbol: Some(identity.symbol),
+                        annotation,
+                        docs,
+                    },
+                );
+            }
+
+            let provider_hir = self.hir(linked_import.provider_file_id);
+            for nested in self.linked_imports(linked_import.provider_file_id) {
+                let Some(alias_symbol) = provider_hir
+                    .as_ref()
+                    .and_then(|hir| hir.import(nested.import).alias)
+                else {
+                    continue;
+                };
+                let name = provider_hir
+                    .as_ref()
+                    .map(|hir| hir.symbol(alias_symbol).name.clone())
+                    .unwrap_or_default();
+                if name.is_empty() {
+                    continue;
+                }
+                completions
+                    .entry(name.clone())
+                    .or_insert(ImportedModuleCompletion {
+                        name,
+                        kind: rhai_hir::SymbolKind::ImportAlias,
+                        file_id: None,
+                        symbol: None,
+                        annotation: None,
+                        docs: None,
+                    });
+            }
         }
 
-        let provider_hir = self.hir(linked_import.provider_file_id);
-        for nested in self.linked_imports(linked_import.provider_file_id) {
-            let Some(alias_symbol) = provider_hir
-                .as_ref()
-                .and_then(|hir| hir.import(nested.import).alias)
-            else {
-                continue;
-            };
-            let name = provider_hir
-                .as_ref()
-                .map(|hir| hir.symbol(alias_symbol).name.clone())
-                .unwrap_or_default();
-            if name.is_empty() {
-                continue;
-            }
-            completions
-                .entry(name.clone())
-                .or_insert(ImportedModuleCompletion {
-                    name,
-                    kind: rhai_hir::SymbolKind::ImportAlias,
-                    file_id: None,
-                    symbol: None,
-                    annotation: None,
-                    docs: None,
-                });
-        }
+        collect_inline_module_completions(self, file_id, module_path, &mut completions);
 
         let mut values = completions.into_values().collect::<Vec<_>>();
         values.sort_by(|left, right| left.name.cmp(&right.name));
@@ -371,6 +401,135 @@ fn linked_import_for_alias_name<'a>(
                 .alias
                 .is_some_and(|alias| hir.symbol(alias).name == alias_name)
         })
+}
+
+fn collect_inline_imported_module_members(
+    directives: &crate::types::FileCommentDirectives,
+    module_name: &str,
+    alias_path: &[String],
+    members: &mut Vec<ImportedModuleMember>,
+) {
+    let prefix = format!("{module_name}::");
+    for (name, ty) in directives.external_signatures.iter() {
+        let Some(rest) = name.strip_prefix(prefix.as_str()) else {
+            continue;
+        };
+        let mut segments = rest.split("::").collect::<Vec<_>>();
+        let Some(member_name) = segments.pop() else {
+            continue;
+        };
+        let mut module_path = alias_path.to_vec();
+        module_path.extend(segments.into_iter().map(str::to_owned));
+        members.push(ImportedModuleMember {
+            module_path,
+            name: member_name.to_owned(),
+            ty: ty.clone(),
+        });
+    }
+}
+
+fn collect_inline_module_completions(
+    snapshot: &DatabaseSnapshot,
+    file_id: FileId,
+    module_path: &[String],
+    completions: &mut HashMap<String, ImportedModuleCompletion>,
+) {
+    let Some(hir) = snapshot.hir(file_id) else {
+        return;
+    };
+    let Some(directives) = snapshot.comment_directives(file_id) else {
+        return;
+    };
+    let [alias_name, rest @ ..] = module_path else {
+        return;
+    };
+
+    let Some(import) = hir.imports.iter().find(|import| {
+        import
+            .alias
+            .is_some_and(|alias| hir.symbol(alias).name == *alias_name)
+    }) else {
+        return;
+    };
+    let Some(module_name) = import
+        .module_text
+        .as_deref()
+        .and_then(parse_static_import_module_name)
+    else {
+        return;
+    };
+    if !directives.external_modules.contains(module_name.as_str()) {
+        return;
+    }
+
+    let base_prefix = if rest.is_empty() {
+        module_name
+    } else {
+        format!("{module_name}::{}", rest.join("::"))
+    };
+    let qualified_prefix = format!("{base_prefix}::");
+    for (name, ty) in directives.external_signatures.iter() {
+        let Some(rest) = name.strip_prefix(qualified_prefix.as_str()) else {
+            continue;
+        };
+        let mut segments = rest.split("::");
+        let Some(next_name) = segments.next() else {
+            continue;
+        };
+        let has_more = segments.next().is_some();
+        completions
+            .entry(next_name.to_owned())
+            .or_insert_with(|| ImportedModuleCompletion {
+                name: next_name.to_owned(),
+                kind: if has_more {
+                    rhai_hir::SymbolKind::ImportAlias
+                } else if matches!(ty, TypeRef::Function(_)) {
+                    rhai_hir::SymbolKind::Function
+                } else {
+                    rhai_hir::SymbolKind::Constant
+                },
+                file_id: None,
+                symbol: None,
+                annotation: (!has_more).then(|| ty.clone()),
+                docs: None,
+            });
+    }
+}
+
+fn parse_static_import_module_name(module_text: &str) -> Option<String> {
+    if module_text.len() < 2 {
+        return None;
+    }
+
+    if let Some(text) = module_text
+        .strip_prefix('"')
+        .and_then(|text| text.strip_suffix('"'))
+        .or_else(|| {
+            module_text
+                .strip_prefix('`')
+                .and_then(|text| text.strip_suffix('`'))
+        })
+    {
+        return Some(text.to_owned());
+    }
+
+    if !module_text.starts_with('r') {
+        return None;
+    }
+    let quote = module_text.find('"')?;
+    if !module_text.get(1..quote)?.chars().all(|ch| ch == '#') {
+        return None;
+    }
+    let hashes = module_text.get(1..quote)?;
+    let suffix = format!("\"{hashes}");
+    module_text
+        .ends_with(suffix.as_str())
+        .then(|| {
+            module_text
+                .get(quote + 1..module_text.len() - suffix.len())
+                .map(str::to_owned)
+        })
+        .flatten()
 }
 
 pub(crate) fn imported_global_method_symbols(

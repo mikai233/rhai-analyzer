@@ -10,6 +10,7 @@ use crate::types::{
     ProjectSemantics, SymbolIdentityKey, WorkspaceDependencyGraph, WorkspaceIndexes,
 };
 
+mod comment_directives;
 mod diagnostics;
 mod imports;
 mod navigation;

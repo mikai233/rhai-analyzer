@@ -3,13 +3,15 @@ pub(crate) mod support;
 pub(crate) mod syntax;
 pub(crate) mod trivia;
 
+use std::collections::HashSet;
+
 use crate::{FormatOptions, FormatResult, RangeFormatResult};
 use rhai_syntax::{
     AliasClause, ArgList, ArrayItemList, AstNode, BlockExpr, BlockItemList, CatchClause,
-    ClosureParamList, DoCondition, ElseBranch, Expr, ForBindings, InterpolationItemList, Item,
-    ObjectFieldList, ParamList, Root, RootItemList, StringPartList, SwitchArmList,
-    SwitchPatternList, SyntaxKind, SyntaxNode, SyntaxNodeExt, TextRange, TextSize, TriviaStore,
-    parse_text,
+    ClosureParamList, CommentDirectiveKind, DoCondition, ElseBranch, Expr, ForBindings,
+    InterpolationItemList, Item, ObjectFieldList, ParamList, Root, RootItemList, Stmt,
+    StringPartList, SwitchArmList, SwitchPatternList, SyntaxKind, SyntaxNode, SyntaxNodeExt,
+    TextRange, TextSize, TriviaStore, collect_comment_directives, parse_text,
 };
 
 use crate::formatter::layout::doc::Doc;
@@ -36,6 +38,7 @@ pub fn format_text(text: &str, options: &FormatOptions) -> FormatResult {
     let formatter = Formatter {
         source: text,
         trivia: parse.trivia(),
+        skipped_ranges: collect_skip_ranges(root.syntax(), text),
         options,
     };
     let formatted =
@@ -66,6 +69,7 @@ pub fn format_range(
     let formatter = Formatter {
         source: text,
         trivia: parse.trivia(),
+        skipped_ranges: collect_skip_ranges(root.syntax(), text),
         options,
     };
     let owner = select_range_owner(root, structural_range)?;
@@ -176,12 +180,17 @@ pub fn format_range(
 pub(crate) struct Formatter<'a> {
     source: &'a str,
     trivia: &'a TriviaStore,
+    skipped_ranges: HashSet<TextRange>,
     options: &'a FormatOptions,
 }
 
 impl Formatter<'_> {
     pub(crate) fn render_fragment(&self, doc: &Doc, base_indent: usize) -> String {
         render_doc_with_indent(doc, self.options, base_indent)
+    }
+
+    pub(crate) fn is_skipped(&self, node: SyntaxNode) -> bool {
+        self.skipped_ranges.contains(&node.text_range())
     }
 }
 
@@ -426,6 +435,26 @@ fn intersect_ranges(left: TextRange, right: TextRange) -> Option<TextRange> {
     }
 
     Some(TextRange::new(TextSize::from(start), TextSize::from(end)))
+}
+
+fn collect_skip_ranges(root: SyntaxNode, source: &str) -> HashSet<TextRange> {
+    collect_comment_directives(&root, source)
+        .into_iter()
+        .filter(|directive| matches!(directive.kind, CommentDirectiveKind::FormatSkip))
+        .filter_map(|directive| next_skippable_range_after(&root, directive.range))
+        .collect()
+}
+
+fn next_skippable_range_after(root: &SyntaxNode, comment_range: TextRange) -> Option<TextRange> {
+    root.significant_tokens()
+        .find(|token| token.text_range().start() >= comment_range.end())
+        .and_then(|token| {
+            token.parent_ancestors().find_map(|node| {
+                Item::cast(node.clone())
+                    .map(|item| item.syntax().text_range())
+                    .or_else(|| Stmt::cast(node.clone()).map(|stmt| stmt.syntax().text_range()))
+            })
+        })
 }
 
 fn range_contains(container: TextRange, candidate: TextRange) -> bool {

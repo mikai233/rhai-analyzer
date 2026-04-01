@@ -287,6 +287,10 @@ impl ExternalSignatureIndex {
     pub fn iter(&self) -> impl Iterator<Item = (&str, &TypeRef)> {
         self.symbols.iter().map(|(name, ty)| (name.as_str(), ty))
     }
+
+    pub fn extend_from(&mut self, other: &ExternalSignatureIndex) {
+        self.symbols.extend(other.symbols.clone());
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

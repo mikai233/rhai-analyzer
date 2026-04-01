@@ -78,7 +78,7 @@ fn project_semantic_diagnostics(
 
     for diagnostic in diagnostics {
         if diagnostic.kind == SemanticDiagnosticKind::UnresolvedName
-            && unresolved_name_is_known_external(snapshot, hir, diagnostic)
+            && unresolved_name_is_known_external(snapshot, file_id, hir, diagnostic)
         {
             continue;
         }
@@ -196,6 +196,7 @@ fn project_semantic_diagnostics(
 
 fn unresolved_name_is_known_external(
     snapshot: &DatabaseSnapshot,
+    file_id: FileId,
     hir: &FileHir,
     diagnostic: &SemanticDiagnostic,
 ) -> bool {
@@ -203,7 +204,14 @@ fn unresolved_name_is_known_external(
         return false;
     };
     let name = hir.reference(reference_id).name.as_str();
-    snapshot.external_signatures().get(name).is_some() || snapshot.global_function(name).is_some()
+    snapshot.global_function(name).is_some()
+        || snapshot
+            .effective_external_signatures(file_id)
+            .get(name)
+            .is_some()
+        || snapshot
+            .comment_directives(file_id)
+            .is_some_and(|directives| directives.allowed_unresolved_names.contains(name))
 }
 
 #[derive(Debug, Clone)]
@@ -225,7 +233,7 @@ fn unresolved_name_requires_caller_scope(
     diagnostic: &SemanticDiagnostic,
     caller_scope_regular_calls: &mut HashMap<SymbolId, Vec<(FileId, TextRange)>>,
 ) -> Option<CallerScopeUnresolvedContext> {
-    let capture = unresolved_name_caller_scope_capture(snapshot, hir, diagnostic)?;
+    let capture = unresolved_name_caller_scope_capture(snapshot, file_id, hir, diagnostic)?;
 
     let regular_call_sites = caller_scope_regular_calls
         .entry(capture.function_symbol)
@@ -237,11 +245,12 @@ fn unresolved_name_requires_caller_scope(
 
 fn unresolved_name_caller_scope_capture(
     snapshot: &DatabaseSnapshot,
+    file_id: FileId,
     hir: &FileHir,
     diagnostic: &SemanticDiagnostic,
 ) -> Option<CallerScopeCaptureContext> {
     if diagnostic.kind != SemanticDiagnosticKind::UnresolvedName
-        || unresolved_name_is_known_external(snapshot, hir, diagnostic)
+        || unresolved_name_is_known_external(snapshot, file_id, hir, diagnostic)
     {
         return None;
     }
@@ -506,7 +515,12 @@ fn caller_scope_requirement_for_function(
         .semantic_diagnostics
         .iter()
         .filter_map(|diagnostic| {
-            unresolved_name_caller_scope_capture(snapshot, analysis.hir.as_ref(), diagnostic)
+            unresolved_name_caller_scope_capture(
+                snapshot,
+                target_file_id,
+                analysis.hir.as_ref(),
+                diagnostic,
+            )
         })
         .find(|capture| capture.function_symbol == target_symbol)
 }
@@ -532,6 +546,12 @@ fn static_import_missing_module_diagnostics(
                 .host_modules()
                 .iter()
                 .any(|module| module.name == *module_name)
+                && !snapshot
+                    .comment_directives(file_id)
+                    .is_some_and(|directives| {
+                        directives.external_modules.contains(module_name)
+                            || directives.allowed_unresolved_imports.contains(module_name)
+                    })
         })
         .map(|(index, module_name)| {
             let (kind, message) = if module_name_looks_path_like(module_name.as_str()) {
@@ -586,10 +606,19 @@ fn unresolved_import_member_path_diagnostics(
             }
 
             let imported_path = hir.imported_module_path(expr_id)?;
-            snapshot.linked_import(file_id, imported_path.import)?;
+            let has_linked_import = snapshot
+                .linked_import(file_id, imported_path.import)
+                .is_some();
+            let (member_name, module_path) = imported_path.parts.split_last()?;
+            let has_inline_completion = snapshot
+                .imported_module_completions(file_id, module_path)
+                .iter()
+                .any(|completion| completion.name == *member_name);
 
-            linked_import_targets_for_path_reference(snapshot, file_id, hir, reference_id)
-                .is_empty()
+            (has_linked_import
+                && linked_import_targets_for_path_reference(snapshot, file_id, hir, reference_id)
+                    .is_empty()
+                && !has_inline_completion)
                 .then_some((reference_id, imported_path.import, imported_path.parts))
         })
         .map(|(reference_id, import_index, parts)| ProjectDiagnostic {

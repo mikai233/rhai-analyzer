@@ -1,5 +1,8 @@
-use crate::tests::{assert_workspace_files_have_no_syntax_diagnostics, offset_in};
+use crate::tests::{
+    assert_workspace_files_have_no_syntax_diagnostics, offset_in, symbol_id_by_name,
+};
 use crate::{AnalyzerDatabase, ChangeSet, FileChange, ProjectReferenceKind};
+use rhai_hir::{FunctionTypeRef, SymbolKind, TypeRef};
 use rhai_project::ProjectConfig;
 use rhai_syntax::TextSize;
 use rhai_vfs::{DocumentVersion, normalize_path};
@@ -321,6 +324,91 @@ fn builtin_global_functions_suppress_unresolved_name_diagnostics() {
     assert!(
         diagnostics.is_empty(),
         "expected builtin blob call to avoid unresolved-name diagnostics, got {diagnostics:?}"
+    );
+}
+
+#[test]
+fn comment_extern_directives_suppress_unresolved_names_and_seed_types() {
+    let mut db = AnalyzerDatabase::default();
+    db.apply_change(ChangeSet::single_file(
+        "main.rhai",
+        r#"
+            // rhai: extern injected_value: int
+            let result = injected_value + 1;
+        "#,
+        DocumentVersion(1),
+    ));
+
+    let snapshot = db.snapshot();
+    assert_workspace_files_have_no_syntax_diagnostics(&snapshot);
+    let file_id = snapshot
+        .vfs()
+        .file_id(Path::new("main.rhai"))
+        .expect("expected file id");
+    let diagnostics = snapshot.project_diagnostics(file_id);
+    assert!(
+        !diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message == "unresolved name `injected_value`"),
+        "expected extern directive to suppress unresolved name, got {diagnostics:?}"
+    );
+
+    let hir = snapshot.hir(file_id).expect("expected hir");
+    let result = symbol_id_by_name(hir.as_ref(), "result", SymbolKind::Variable);
+    assert_eq!(
+        snapshot.inferred_symbol_type(file_id, result),
+        Some(&TypeRef::Int)
+    );
+}
+
+#[test]
+fn comment_module_directives_seed_import_alias_members_and_call_types() {
+    let mut db = AnalyzerDatabase::default();
+    db.apply_change(ChangeSet::single_file(
+        "main.rhai",
+        r#"
+            // rhai: module env
+            // rhai: extern env::test: fun(int) -> int
+            // rhai: extern env::DEFAULTS: map<string, int>
+            import "env" as env;
+
+            let result = env::test(1);
+        "#,
+        DocumentVersion(1),
+    ));
+
+    let snapshot = db.snapshot();
+    assert_workspace_files_have_no_syntax_diagnostics(&snapshot);
+    let file_id = snapshot
+        .vfs()
+        .file_id(Path::new("main.rhai"))
+        .expect("expected file id");
+    let diagnostics = snapshot.project_diagnostics(file_id);
+    assert!(
+        !diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message == "unresolved import module `env`"),
+        "expected inline module directive to suppress unresolved import, got {diagnostics:?}"
+    );
+
+    let completions = snapshot.imported_module_completions(file_id, &[String::from("env")]);
+    let test_completion = completions
+        .iter()
+        .find(|completion| completion.name == "test")
+        .expect("expected inline module completion for test");
+    assert_eq!(
+        test_completion.annotation,
+        Some(TypeRef::Function(FunctionTypeRef {
+            params: vec![TypeRef::Int],
+            ret: Box::new(TypeRef::Int),
+        }))
+    );
+
+    let hir = snapshot.hir(file_id).expect("expected hir");
+    let result = symbol_id_by_name(hir.as_ref(), "result", SymbolKind::Variable);
+    assert_eq!(
+        snapshot.inferred_symbol_type(file_id, result),
+        Some(&TypeRef::Int)
     );
 }
 

@@ -6,11 +6,11 @@ use crate::db::imports::imported_global_method_symbols;
 use crate::db::navigation::workspace_symbol_match_rank;
 use crate::db::rebuild::{resolved_source_roots, source_root_index_for_path};
 use crate::types::{
-    FileAnalysisDependencies, FilePerformanceStats, FileTypeInference, HostModule, HostType,
-    LinkedModuleImport, LocatedCallHierarchyItem, LocatedIncomingCall, LocatedModuleExport,
-    LocatedModuleGraph, LocatedOutgoingCall, LocatedSymbolIdentity, LocatedWorkspaceSymbol,
-    PerFileQuerySupport, PerformanceStats, SymbolIdentityKey, WorkspaceDependencyGraph,
-    WorkspaceFileInfo,
+    FileAnalysisDependencies, FileCommentDirectives, FilePerformanceStats, FileTypeInference,
+    HostModule, HostType, LinkedModuleImport, LocatedCallHierarchyItem, LocatedIncomingCall,
+    LocatedModuleExport, LocatedModuleGraph, LocatedOutgoingCall, LocatedSymbolIdentity,
+    LocatedWorkspaceSymbol, PerFileQuerySupport, PerformanceStats, SymbolIdentityKey,
+    WorkspaceDependencyGraph, WorkspaceFileInfo,
 };
 use rhai_hir::{
     DocumentSymbol, ExternalSignatureIndex, FileBackedSymbolIdentity, FileHir, FileSymbolIndex,
@@ -81,6 +81,20 @@ impl DatabaseSnapshot {
 
     pub fn external_signatures(&self) -> &ExternalSignatureIndex {
         &self.project_semantics.external_signatures
+    }
+
+    pub fn comment_directives(&self, file_id: FileId) -> Option<&FileCommentDirectives> {
+        self.analysis
+            .get(&file_id)
+            .map(|analysis| analysis.comment_directives.as_ref())
+    }
+
+    pub fn effective_external_signatures(&self, file_id: FileId) -> ExternalSignatureIndex {
+        let mut external = self.project_semantics.external_signatures.clone();
+        if let Some(directives) = self.comment_directives(file_id) {
+            external.extend_from(&directives.external_signatures);
+        }
+        external
     }
 
     pub fn global_functions(&self) -> &[crate::HostFunction] {

@@ -79,7 +79,8 @@ pub(crate) fn signature_help(
         );
     }
 
-    let signature = hir.call_signature(call_id, Some(snapshot.external_signatures()))?;
+    let external = snapshot.effective_external_signatures(file_id);
+    let signature = hir.call_signature(call_id, Some(&external))?;
 
     Some(SignatureHelp {
         signatures: vec![SignatureInformation {

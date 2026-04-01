@@ -143,6 +143,7 @@ fn classify_identifier_token(
             ReferenceKind::PathSegment => {
                 if let Some(kind) = external_signature_kind_for_path(
                     context.snapshot,
+                    context.file_id,
                     hir,
                     token.text_range().start(),
                     token,
@@ -171,11 +172,11 @@ fn classify_identifier_token(
                         .snapshot
                         .global_function(reference.name.as_str())
                         .is_some()
-                        || context
-                            .snapshot
-                            .external_signatures()
-                            .get(reference.name.as_str())
-                            .is_some())
+                        || has_external_signature(
+                            context.snapshot,
+                            context.file_id,
+                            reference.name.as_str(),
+                        ))
                 {
                     SemanticTokenKind::Function
                 } else {
@@ -188,7 +189,7 @@ fn classify_identifier_token(
     let text = token.text();
     if is_call_like_token(token)
         && (context.snapshot.global_function(text).is_some()
-            || context.snapshot.external_signatures().get(text).is_some())
+            || has_external_signature(context.snapshot, context.file_id, text))
     {
         return Some(SemanticTokenKind::Function);
     }
@@ -373,7 +374,7 @@ fn is_default_library_token(
     if matches!(kind, Some(SemanticTokenKind::Function))
         && is_call_like_token(token)
         && (context.snapshot.global_function(text).is_some()
-            || context.snapshot.external_signatures().get(text).is_some())
+            || has_external_signature(context.snapshot, context.file_id, text))
     {
         return true;
     }
@@ -398,12 +399,17 @@ fn is_default_library_token(
                     Some(TokenKind::ColonColon)
                 ))
         {
-            if is_path_external_signature(context.snapshot, hir, token.text_range().start(), token)
-            {
+            if is_path_external_signature(
+                context.snapshot,
+                context.file_id,
+                hir,
+                token.text_range().start(),
+                token,
+            ) {
                 return true;
             }
 
-            if namespace_has_external_prefix(context.snapshot, text) {
+            if namespace_has_external_prefix(context.snapshot, context.file_id, text) {
                 return true;
             }
         }
@@ -575,22 +581,24 @@ fn host_type_matches_method(
 
 fn is_path_external_signature(
     snapshot: &DatabaseSnapshot,
+    file_id: FileId,
     hir: &FileHir,
     offset: TextSize,
     token: &SyntaxToken,
 ) -> bool {
-    external_signature_kind_for_path(snapshot, hir, offset, token).is_some()
+    external_signature_kind_for_path(snapshot, file_id, hir, offset, token).is_some()
 }
 
 fn external_signature_kind_for_path(
     snapshot: &DatabaseSnapshot,
+    file_id: FileId,
     hir: &FileHir,
     offset: TextSize,
     token: &SyntaxToken,
 ) -> Option<SemanticTokenKind> {
     let expr = hir.expr_at_offset(offset)?;
     let qualified_name = hir.qualified_path_name(expr)?;
-    let ty = snapshot.external_signatures().get(&qualified_name)?;
+    let ty = external_signature(snapshot, file_id, &qualified_name)?;
 
     if is_call_like_token(token) {
         return Some(if matches!(ty, rhai_hir::TypeRef::Function(_)) {
@@ -606,11 +614,43 @@ fn external_signature_kind_for_path(
     })
 }
 
-fn namespace_has_external_prefix(snapshot: &DatabaseSnapshot, text: &str) -> bool {
+fn namespace_has_external_prefix(snapshot: &DatabaseSnapshot, file_id: FileId, text: &str) -> bool {
+    let prefix = format!("{text}::");
     snapshot
         .external_signatures()
         .iter()
-        .any(|(name, _)| name.starts_with(&format!("{text}::")))
+        .any(|(name, _)| name.starts_with(prefix.as_str()))
+        || snapshot
+            .comment_directives(file_id)
+            .is_some_and(|directives| {
+                directives
+                    .external_signatures
+                    .iter()
+                    .any(|(name, _)| name.starts_with(prefix.as_str()))
+            })
+}
+
+fn has_external_signature(snapshot: &DatabaseSnapshot, file_id: FileId, name: &str) -> bool {
+    snapshot.external_signatures().get(name).is_some()
+        || snapshot
+            .comment_directives(file_id)
+            .is_some_and(|directives| directives.external_signatures.get(name).is_some())
+}
+
+fn external_signature(
+    snapshot: &DatabaseSnapshot,
+    file_id: FileId,
+    name: &str,
+) -> Option<rhai_hir::TypeRef> {
+    snapshot
+        .external_signatures()
+        .get(name)
+        .cloned()
+        .or_else(|| {
+            snapshot
+                .comment_directives(file_id)
+                .and_then(|directives| directives.external_signatures.get(name).cloned())
+        })
 }
 
 fn token_kind(token: &SyntaxToken) -> Option<TokenKind> {
