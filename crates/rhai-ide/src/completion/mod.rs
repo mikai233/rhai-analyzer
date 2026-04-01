@@ -341,6 +341,8 @@ fn same_completion_item(left: &CompletionItem, right: &CompletionItem) -> bool {
     left.label == right.label
         && left.kind == right.kind
         && left.source == right.source
+        && left.origin == right.origin
+        && left.detail == right.detail
         && left.file_id == right.file_id
         && left.exported == right.exported
 }
@@ -1026,8 +1028,15 @@ fn workspace_completion_metadata(
     let annotation = resolved_symbol
         .annotation
         .as_ref()
-        .filter(|ty| !matches!(ty, TypeRef::Unknown));
-    let detail = annotation.map(format_type_ref);
+        .filter(|ty| !matches!(ty, TypeRef::Unknown))
+        .cloned()
+        .or_else(|| {
+            snapshot
+                .inferred_symbol_type(symbol.file_id, symbol_id)
+                .cloned()
+                .filter(|ty| !matches!(ty, TypeRef::Unknown))
+        });
+    let detail = annotation.as_ref().map(format_type_ref);
     let docs = match (detail_level, resolved_symbol.docs) {
         (CompletionDetailLevel::Full, Some(docs)) => Some(hir.doc_block(docs).text.clone()),
         _ => None,
@@ -1041,7 +1050,7 @@ fn workspace_completion_metadata(
         .filter(|stem| !stem.is_empty())
         .map(ToOwned::to_owned);
 
-    (detail, docs, annotation.cloned(), origin)
+    (detail, docs, annotation, origin)
 }
 
 fn builtin_function_annotation(function: &rhai_db::HostFunction) -> Option<TypeRef> {

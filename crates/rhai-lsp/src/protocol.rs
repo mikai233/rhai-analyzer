@@ -35,6 +35,7 @@ pub(crate) struct CompletionResolvePayload {
     pub kind: CompletionKindPayload,
     pub source: CompletionSourcePayload,
     pub origin: Option<String>,
+    pub signature_detail: Option<String>,
     pub sort_text: String,
     pub file_id: Option<u32>,
     pub exported: bool,
@@ -128,6 +129,7 @@ pub(crate) fn completion_item_to_lsp(
     item: IdeCompletionItem,
 ) -> CompletionItem {
     let label_details = completion_label_details(server, &item);
+    let source_detail = completion_source_description(server, &item);
     let documentation = item.docs.map(markdown_documentation);
     let text_edit = text.zip(item.text_edit.as_ref()).and_then(|(text, edit)| {
         Some(TextEdit {
@@ -141,6 +143,7 @@ pub(crate) fn completion_item_to_lsp(
             kind: completion_kind_payload(item.kind),
             source: completion_source_payload(item.source),
             origin: item.origin.clone(),
+            signature_detail: item.detail.clone(),
             sort_text: item.sort_text.clone(),
             file_id: item.file_id.map(|file_id| file_id.0),
             exported: item.exported,
@@ -153,7 +156,7 @@ pub(crate) fn completion_item_to_lsp(
     CompletionItem {
         label: item.label,
         kind: Some(completion_item_kind(item.kind)),
-        detail: item.detail,
+        detail: source_detail,
         documentation,
         sort_text: Some(item.sort_text),
         insert_text: None,
@@ -177,6 +180,13 @@ pub(crate) fn completion_item_to_lsp(
 
 pub(crate) fn completion_item_from_lsp(item: CompletionItem) -> Option<IdeCompletionItem> {
     let payload = serde_json::from_value::<CompletionResolvePayload>(item.data.clone()?).ok()?;
+    let signature_detail = item
+        .label_details
+        .as_ref()
+        .and_then(|details| details.detail.as_deref())
+        .map(str::trim)
+        .filter(|detail| !detail.is_empty())
+        .map(ToOwned::to_owned);
 
     Some(IdeCompletionItem {
         label: payload.label,
@@ -184,7 +194,10 @@ pub(crate) fn completion_item_from_lsp(item: CompletionItem) -> Option<IdeComple
         source: completion_source_from_payload(payload.source),
         origin: payload.origin,
         sort_text: payload.sort_text,
-        detail: item.detail,
+        detail: payload
+            .signature_detail
+            .or(signature_detail)
+            .or(item.detail),
         docs: documentation_text(item.documentation),
         filter_text: item.filter_text,
         text_edit: None,
@@ -755,13 +768,15 @@ fn signature_active_parameter(
 }
 
 fn completion_label_details(
-    server: &ServerState,
+    _server: &ServerState,
     item: &IdeCompletionItem,
 ) -> Option<CompletionItemLabelDetails> {
-    let description = completion_source_description(server, item);
-    description.map(|description| CompletionItemLabelDetails {
-        detail: None,
-        description: Some(description),
+    let detail = item.detail.as_ref().map(|detail| format!(" {detail}"));
+    detail.as_ref()?;
+
+    Some(CompletionItemLabelDetails {
+        detail,
+        description: None,
     })
 }
 
@@ -1062,8 +1077,8 @@ mod tests {
     use rhai_syntax::{TextRange, TextSize};
 
     use crate::protocol::{
-        completion_item_to_lsp, hover_to_lsp, prepared_rename_to_lsp, signature_help_to_lsp,
-        source_change_code_action_to_lsp,
+        completion_item_from_lsp, completion_item_to_lsp, hover_to_lsp, prepared_rename_to_lsp,
+        signature_help_to_lsp, source_change_code_action_to_lsp,
     };
     use crate::tests::file_url;
     use crate::{Server, ServerState};
@@ -1234,12 +1249,18 @@ mod tests {
             },
         );
 
-        assert_eq!(item.detail.as_deref(), Some("fun() -> ()"));
+        assert_eq!(item.detail.as_deref(), Some("project export"));
+        assert_eq!(
+            item.label_details
+                .as_ref()
+                .and_then(|details| details.detail.as_deref()),
+            Some(" fun() -> ()")
+        );
         assert_eq!(
             item.label_details
                 .as_ref()
                 .and_then(|details| details.description.as_deref()),
-            Some("project export")
+            None
         );
     }
 
@@ -1275,11 +1296,12 @@ mod tests {
             },
         );
 
+        assert_eq!(item.detail.as_deref(), Some("project export · support"));
         assert_eq!(
             item.label_details
                 .as_ref()
-                .and_then(|details| details.description.as_deref()),
-            Some("project export · support")
+                .and_then(|details| details.detail.as_deref()),
+            Some(" fun() -> ()")
         );
     }
 
@@ -1307,12 +1329,75 @@ mod tests {
             },
         );
 
+        assert_eq!(item.detail.as_deref(), Some("module export · demo"));
         assert_eq!(
             item.label_details
                 .as_ref()
-                .and_then(|details| details.description.as_deref()),
-            Some("module export · demo")
+                .and_then(|details| details.detail.as_deref()),
+            Some(" fun() -> ()")
         );
+    }
+
+    #[test]
+    fn completion_roundtrip_restores_signature_detail_from_label_details() {
+        let server = ServerState::new();
+        let item = completion_item_to_lsp(
+            &server,
+            None,
+            CompletionItem {
+                label: "do_something".to_owned(),
+                kind: CompletionItemKind::Symbol(SymbolKind::Function),
+                source: CompletionItemSource::Visible,
+                origin: None,
+                sort_text: "0".to_owned(),
+                detail: Some("fun(int) -> int".to_owned()),
+                docs: None,
+                filter_text: None,
+                text_edit: None,
+                insert_format: CompletionInsertFormat::Snippet,
+                file_id: None,
+                exported: false,
+                resolve_data: Some(rhai_ide::CompletionResolveData {
+                    file_id: rhai_vfs::FileId(0),
+                    offset: 0,
+                }),
+            },
+        );
+
+        let restored = completion_item_from_lsp(item).expect("expected roundtrip completion");
+        assert_eq!(restored.detail.as_deref(), Some("fun(int) -> int"));
+    }
+
+    #[test]
+    fn completion_roundtrip_restores_signature_detail_from_payload_without_ui_fields() {
+        let server = ServerState::new();
+        let mut item = completion_item_to_lsp(
+            &server,
+            None,
+            CompletionItem {
+                label: "do_something".to_owned(),
+                kind: CompletionItemKind::Symbol(SymbolKind::Function),
+                source: CompletionItemSource::Visible,
+                origin: None,
+                sort_text: "0".to_owned(),
+                detail: Some("fun(int) -> int".to_owned()),
+                docs: None,
+                filter_text: None,
+                text_edit: None,
+                insert_format: CompletionInsertFormat::Snippet,
+                file_id: None,
+                exported: false,
+                resolve_data: Some(rhai_ide::CompletionResolveData {
+                    file_id: rhai_vfs::FileId(0),
+                    offset: 0,
+                }),
+            },
+        );
+        item.detail = None;
+        item.label_details = None;
+
+        let restored = completion_item_from_lsp(item).expect("expected roundtrip completion");
+        assert_eq!(restored.detail.as_deref(), Some("fun(int) -> int"));
     }
 
     #[test]

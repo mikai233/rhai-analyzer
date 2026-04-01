@@ -598,6 +598,76 @@ fn completions_prioritize_visible_prefix_matches_over_project_symbols() {
 }
 
 #[test]
+fn project_completions_fall_back_to_inferred_symbol_signatures() {
+    let mut host = AnalysisHost::default();
+    host.apply_change(ChangeSet {
+        files: vec![
+            rhai_db::FileChange {
+                path: "main.rhai".into(),
+                text: r#"
+                    fn run() {
+                        ec;
+                        va;
+                    }
+                "#
+                .to_owned(),
+                version: DocumentVersion(1),
+            },
+            rhai_db::FileChange {
+                path: "support.rhai".into(),
+                text: r#"
+                    fn echo() {
+                        "hello"
+                    }
+
+                    let value = "hello";
+
+                    export echo as echo;
+                    export value as value;
+                "#
+                .to_owned(),
+                version: DocumentVersion(1),
+            },
+        ],
+        removed_files: Vec::new(),
+        project: None,
+    });
+
+    let analysis = host.snapshot();
+    let file_id = analysis
+        .db
+        .vfs()
+        .file_id(Path::new("main.rhai"))
+        .expect("expected main.rhai");
+    assert_no_syntax_diagnostics(&analysis, file_id);
+    let text = analysis.db.file_text(file_id).expect("expected text");
+
+    let echo_offset =
+        u32::try_from(text.find("ec").expect("expected echo prefix") + "ec".len()).expect("offset");
+    let echo_completions = analysis.completions(FilePosition {
+        file_id,
+        offset: echo_offset,
+    });
+    let echo = echo_completions
+        .iter()
+        .find(|item| item.label == "echo" && item.source == CompletionItemSource::Project)
+        .expect("expected project echo completion");
+    assert_eq!(echo.detail.as_deref(), Some("fun() -> string"));
+
+    let value_offset = u32::try_from(text.rfind("va").expect("expected value prefix") + "va".len())
+        .expect("offset");
+    let value_completions = analysis.completions(FilePosition {
+        file_id,
+        offset: value_offset,
+    });
+    let value = value_completions
+        .iter()
+        .find(|item| item.label == "value" && item.source == CompletionItemSource::Project)
+        .expect("expected project value completion");
+    assert_eq!(value.detail.as_deref(), Some("string"));
+}
+
+#[test]
 fn completion_resolve_populates_visible_symbol_docs() {
     let mut host = AnalysisHost::default();
     host.apply_change(ChangeSet::single_file(
@@ -676,6 +746,71 @@ fn function_completions_insert_call_snippets_with_tabstops() {
     assert_eq!(
         add.text_edit.as_ref().map(|edit| edit.new_text.as_str()),
         Some("add(${1:left}, ${2:right})$0")
+    );
+}
+
+#[test]
+fn overload_function_completion_resolve_preserves_selected_signature_snippet() {
+    let mut host = AnalysisHost::default();
+    host.apply_change(ChangeSet::single_file(
+        "main.rhai",
+        r#"
+            /// @return int
+            fn do_something() {
+                1
+            }
+
+            /// @param value int
+            /// @return int
+            fn do_something(value) {
+                value
+            }
+
+            fn run() {
+                do_
+            }
+        "#,
+        DocumentVersion(1),
+    ));
+
+    let analysis = host.snapshot();
+    let file_id = analysis
+        .db
+        .vfs()
+        .file_id(Path::new("main.rhai"))
+        .expect("expected main.rhai");
+    assert_no_syntax_diagnostics(&analysis, file_id);
+    let text = analysis.db.file_text(file_id).expect("expected text");
+    let offset =
+        u32::try_from(text.rfind("do_").expect("expected completion target") + "do_".len())
+            .expect("offset");
+
+    let completions = analysis.completions(FilePosition { file_id, offset });
+    let overload = completions
+        .into_iter()
+        .find(|item| {
+            item.label == "do_something"
+                && item.source == CompletionItemSource::Visible
+                && item.detail.as_deref() == Some("fun(int) -> int")
+        })
+        .expect("expected typed overload completion");
+
+    assert_eq!(
+        overload
+            .text_edit
+            .as_ref()
+            .map(|edit| edit.new_text.as_str()),
+        Some("do_something(${1:value})$0")
+    );
+
+    let resolved = analysis.resolve_completion(overload);
+    assert_eq!(resolved.detail.as_deref(), Some("fun(int) -> int"));
+    assert_eq!(
+        resolved
+            .text_edit
+            .as_ref()
+            .map(|edit| edit.new_text.as_str()),
+        Some("do_something(${1:value})$0")
     );
 }
 
