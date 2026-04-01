@@ -245,7 +245,10 @@ fn incomplete_member_receiver_name(
     offset: TextSize,
 ) -> Option<String> {
     let text = snapshot.file_text(file_id)?;
-    let offset = usize::try_from(u32::from(offset)).ok()?.min(text.len());
+    let offset = clamp_to_char_boundary(
+        text.as_ref(),
+        usize::try_from(u32::from(offset)).ok()?.min(text.len()),
+    );
     let bytes = text.as_bytes();
     let mut prefix_start = offset;
 
@@ -268,11 +271,19 @@ fn incomplete_member_receiver_name(
         return None;
     }
 
-    Some(text[receiver_start..receiver_end].to_owned())
+    text.get(receiver_start..receiver_end).map(str::to_owned)
 }
 
 fn is_identifier_byte(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || byte == b'_'
+}
+
+fn clamp_to_char_boundary(text: &str, mut offset: usize) -> usize {
+    offset = offset.min(text.len());
+    while offset > 0 && !text.is_char_boundary(offset) {
+        offset -= 1;
+    }
+    offset
 }
 
 fn collect_host_type_member_completions(

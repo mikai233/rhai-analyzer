@@ -124,7 +124,10 @@ impl FnItem {
         let text = token.text().to_string();
         match token.kind().token_kind() {
             Some(TokenKind::Ident) => Some(text),
-            Some(TokenKind::String) if text.len() >= 2 => Some(text[1..text.len() - 1].to_owned()),
+            Some(TokenKind::String) => text
+                .strip_prefix('"')
+                .and_then(|text| text.strip_suffix('"'))
+                .map(str::to_owned),
             _ => None,
         }
     }

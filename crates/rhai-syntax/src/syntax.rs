@@ -164,7 +164,7 @@ impl LexToken {
     pub fn text(self, source: &str) -> &str {
         let start = u32::from(self.range.start()) as usize;
         let end = u32::from(self.range.end()) as usize;
-        &source[start..end]
+        source.get(start..end).unwrap_or("")
     }
 }
 

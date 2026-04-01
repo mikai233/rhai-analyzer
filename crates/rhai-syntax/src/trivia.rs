@@ -58,7 +58,7 @@ impl AttachedComment {
     pub fn text<'a>(&self, source: &'a str) -> &'a str {
         let start = u32::from(self.range.start()) as usize;
         let end = u32::from(self.range.end()) as usize;
-        &source[start..end]
+        source.get(start..end).unwrap_or("")
     }
 }
 

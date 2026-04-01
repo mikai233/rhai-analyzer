@@ -451,9 +451,12 @@ fn completion_context(snapshot: &DatabaseSnapshot, position: FilePosition) -> Co
             next_char_is_open_paren: false,
         };
     };
-    let offset = usize::try_from(position.offset)
-        .unwrap_or(usize::MAX)
-        .min(text.len());
+    let offset = clamp_to_char_boundary(
+        text.as_ref(),
+        usize::try_from(position.offset)
+            .unwrap_or(usize::MAX)
+            .min(text.len()),
+    );
     let bytes = text.as_bytes();
     if bytes.get(offset).copied() == Some(b'.') {
         let postfix_completion = postfix_completion_context_at_dot(text.as_ref(), offset);
@@ -503,7 +506,7 @@ fn is_identifier_byte(byte: u8) -> bool {
 }
 
 fn module_path_before_offset(text: &str, prefix_start: usize) -> Option<Vec<String>> {
-    if prefix_start < 2 || &text[prefix_start - 2..prefix_start] != "::" {
+    if !has_double_colon_before(text.as_bytes(), prefix_start) {
         return None;
     }
 
@@ -519,8 +522,8 @@ fn module_path_before_offset(text: &str, prefix_start: usize) -> Option<Vec<Stri
         if start == end {
             return None;
         }
-        parts.push(text[start..end].to_owned());
-        if start < 2 || &text[start - 2..start] != "::" {
+        parts.push(text.get(start..end)?.to_owned());
+        if !has_double_colon_before(bytes, start) {
             break;
         }
         end = start - 2;
@@ -531,14 +534,14 @@ fn module_path_before_offset(text: &str, prefix_start: usize) -> Option<Vec<Stri
 }
 
 fn single_colon_path_context_before_offset(text: &str, prefix_start: usize) -> bool {
-    if prefix_start == 0 || text.as_bytes()[prefix_start - 1] != b':' {
+    let bytes = text.as_bytes();
+    if prefix_start == 0 || bytes[prefix_start - 1] != b':' {
         return false;
     }
-    if prefix_start >= 2 && &text[prefix_start - 2..prefix_start] == "::" {
+    if has_double_colon_before(bytes, prefix_start) {
         return false;
     }
 
-    let bytes = text.as_bytes();
     let mut segment_start = prefix_start - 1;
     while segment_start > 0 && is_identifier_byte(bytes[segment_start - 1]) {
         segment_start -= 1;
@@ -655,7 +658,7 @@ fn postfix_completion_context(
     }
 
     Some(PostfixCompletionContext {
-        receiver_text: text[receiver_start..prefix_start - 1].to_owned(),
+        receiver_text: text.get(receiver_start..prefix_start - 1)?.to_owned(),
         replace_range: text_range(receiver_start, offset),
     })
 }
@@ -679,9 +682,21 @@ fn postfix_completion_context_at_dot(
     }
 
     Some(PostfixCompletionContext {
-        receiver_text: text[receiver_start..dot_offset].to_owned(),
+        receiver_text: text.get(receiver_start..dot_offset)?.to_owned(),
         replace_range: text_range(receiver_start, dot_offset + 1),
     })
+}
+
+fn clamp_to_char_boundary(text: &str, mut offset: usize) -> usize {
+    offset = offset.min(text.len());
+    while offset > 0 && !text.is_char_boundary(offset) {
+        offset -= 1;
+    }
+    offset
+}
+
+fn has_double_colon_before(bytes: &[u8], offset: usize) -> bool {
+    offset >= 2 && bytes[offset - 2] == b':' && bytes[offset - 1] == b':'
 }
 
 fn postfix_completion_items(context: &CompletionContext) -> Vec<CompletionItem> {

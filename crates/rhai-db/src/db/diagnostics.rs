@@ -608,24 +608,35 @@ fn parse_static_import_module_name(module_text: &str) -> Option<String> {
         return None;
     }
 
-    if (module_text.starts_with('"') && module_text.ends_with('"'))
-        || (module_text.starts_with('`') && module_text.ends_with('`'))
+    if let Some(text) = module_text
+        .strip_prefix('"')
+        .and_then(|text| text.strip_suffix('"'))
+        .or_else(|| {
+            module_text
+                .strip_prefix('`')
+                .and_then(|text| text.strip_suffix('`'))
+        })
     {
-        return Some(module_text[1..module_text.len() - 1].to_owned());
+        return Some(text.to_owned());
     }
 
     if !module_text.starts_with('r') {
         return None;
     }
     let quote = module_text.find('"')?;
-    if !module_text[1..quote].chars().all(|ch| ch == '#') {
+    if !module_text.get(1..quote)?.chars().all(|ch| ch == '#') {
         return None;
     }
-    let hashes = &module_text[1..quote];
+    let hashes = module_text.get(1..quote)?;
     let suffix = format!("\"{hashes}");
     module_text
         .ends_with(suffix.as_str())
-        .then(|| module_text[quote + 1..module_text.len() - suffix.len()].to_owned())
+        .then(|| {
+            module_text
+                .get(quote + 1..module_text.len() - suffix.len())
+                .map(str::to_owned)
+        })
+        .flatten()
 }
 
 fn module_name_looks_path_like(module_name: &str) -> bool {

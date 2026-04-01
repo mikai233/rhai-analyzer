@@ -239,11 +239,10 @@ impl WorkspaceIndexes {
 }
 
 fn static_import_module_path(module_text: &str) -> Option<String> {
-    if module_text.len() >= 2 && module_text.starts_with('"') && module_text.ends_with('"') {
-        return Some(module_text[1..module_text.len() - 1].to_owned());
-    }
-
-    None
+    module_text
+        .strip_prefix('"')
+        .and_then(|text| text.strip_suffix('"'))
+        .map(str::to_owned)
 }
 
 fn resolve_workspace_module_file(

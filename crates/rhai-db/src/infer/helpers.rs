@@ -434,8 +434,8 @@ fn index_key_for_expr(hir: &FileHir, expr: ExprId) -> Option<ReadTargetIndexKey>
 }
 
 fn unquote_string_index_literal(text: &str) -> Option<&str> {
-    (text.len() >= 2 && text.starts_with('"') && text.ends_with('"'))
-        .then_some(&text[1..text.len() - 1])
+    text.strip_prefix('"')
+        .and_then(|text| text.strip_suffix('"'))
 }
 
 fn string_index_field_name(hir: &FileHir, expr: rhai_hir::ExprId) -> Option<&str> {
@@ -444,8 +444,8 @@ fn string_index_field_name(hir: &FileHir, expr: rhai_hir::ExprId) -> Option<&str
         .then_some(literal.text.as_deref())
         .flatten()
         .and_then(|text| {
-            (text.len() >= 2 && text.starts_with('"') && text.ends_with('"'))
-                .then_some(&text[1..text.len() - 1])
+            text.strip_prefix('"')
+                .and_then(|text| text.strip_suffix('"'))
         })
 }
 

@@ -184,8 +184,8 @@ pub(crate) fn string_literal_value(hir: &FileHir, expr: ExprId) -> Option<&str> 
 }
 
 pub(crate) fn unquote_string_literal(text: &str) -> Option<&str> {
-    (text.len() >= 2 && text.starts_with('"') && text.ends_with('"'))
-        .then_some(&text[1..text.len() - 1])
+    text.strip_prefix('"')
+        .and_then(|text| text.strip_suffix('"'))
 }
 
 pub(crate) fn inferred_object_value_union(fields: &BTreeMap<String, TypeRef>) -> Option<TypeRef> {

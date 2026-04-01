@@ -1999,7 +1999,7 @@ impl Formatter<'_> {
     pub(crate) fn raw(&self, node: SyntaxNode) -> String {
         let start = u32::from(node.text_range().start()) as usize;
         let end = u32::from(node.text_range().end()) as usize;
-        self.source[start..end].trim().to_owned()
+        self.source.get(start..end).unwrap_or("").trim().to_owned()
     }
 
     fn doc_renders_single_line(&self, doc: &Doc, indent: usize) -> bool {

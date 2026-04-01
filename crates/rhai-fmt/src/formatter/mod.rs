@@ -151,7 +151,7 @@ pub fn format_range(
     };
     let start = u32::from(owner.range.start()) as usize;
     let end = u32::from(owner.range.end()) as usize;
-    let original = &text[start..end];
+    let original = text.get(start..end)?;
     let (local_start, local_end, replacement) = minimal_changed_region(original, &replacement)?;
 
     let local_range = TextRange::new(

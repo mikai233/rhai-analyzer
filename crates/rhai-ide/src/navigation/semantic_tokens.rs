@@ -432,11 +432,9 @@ fn typed_method_receiver_name(token: &SyntaxToken) -> Option<String> {
 }
 
 fn unquote_type_name(text: &str) -> &str {
-    if text.len() >= 2 && text.starts_with('"') && text.ends_with('"') {
-        &text[1..text.len() - 1]
-    } else {
-        text
-    }
+    text.strip_prefix('"')
+        .and_then(|text| text.strip_suffix('"'))
+        .unwrap_or(text)
 }
 
 fn is_call_like_token(token: &SyntaxToken) -> bool {

@@ -53,7 +53,8 @@ pub(crate) fn organize_imports(
     rendered_imports.dedup();
 
     let new_text = rendered_imports.join("\n");
-    let old_text = &file_text[usize::from(block.range.start())..usize::from(block.range.end())];
+    let old_text =
+        file_text.get(usize::from(block.range.start())..usize::from(block.range.end()))?;
     if old_text == new_text {
         return None;
     }
@@ -221,7 +222,8 @@ fn import_block<'a>(hir: &'a FileHir, file_text: &str) -> Option<ImportBlock<'a>
         let [left, right] = pair else {
             continue;
         };
-        let between = &file_text[usize::from(left.range.end())..usize::from(right.range.start())];
+        let between =
+            file_text.get(usize::from(left.range.end())..usize::from(right.range.start()))?;
         if between.chars().any(|ch| !ch.is_whitespace()) {
             return None;
         }

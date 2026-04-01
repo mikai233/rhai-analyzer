@@ -355,7 +355,11 @@ impl<'a> LoweringContext<'a> {
     pub(crate) fn text_for_range(&self, range: TextRange) -> String {
         let start: u32 = range.start().into();
         let end: u32 = range.end().into();
-        self.parse.text()[start as usize..end as usize].to_owned()
+        self.parse
+            .text()
+            .get(start as usize..end as usize)
+            .unwrap_or("")
+            .to_owned()
     }
 
     pub(crate) fn doc_block(&self, docs: Option<DocBlockId>) -> Option<&DocBlock> {

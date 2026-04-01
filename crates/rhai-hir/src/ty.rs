@@ -232,7 +232,7 @@ impl<'a> Parser<'a> {
             }
         }
 
-        (self.cursor > start).then(|| self.text[start..self.cursor].to_owned())
+        (self.cursor > start).then(|| self.text.get(start..self.cursor).unwrap_or("").to_owned())
     }
 
     fn expect_char(&mut self, expected: char) -> Option<()> {

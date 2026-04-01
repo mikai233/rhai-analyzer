@@ -114,7 +114,7 @@ pub fn lex_text(text: &str) -> Lexed {
             }
             c if is_ident_start(c) => {
                 offset = consume_while(text, offset, is_ident_continue);
-                match &text[start..offset] {
+                match text.get(start..offset).unwrap_or("") {
                     "_" => TokenKind::Underscore,
                     "let" => TokenKind::LetKw,
                     "const" => TokenKind::ConstKw,
@@ -157,7 +157,7 @@ pub fn lex_text(text: &str) -> Lexed {
             }
             c if c.is_ascii_digit() => {
                 offset = lex_number(text, offset);
-                classify_number(&text[start..offset])
+                classify_number(text.get(start..offset).unwrap_or(""))
             }
             '(' => {
                 offset += 1;
@@ -538,9 +538,10 @@ fn lex_backtick_token_or_parts(
             let interpolation_end = lex_interpolation_block(text, cursor, errors);
             let close_brace_start = interpolation_end.saturating_sub(1);
 
-            if close_brace_start > cursor {
-                let body_lexed = lex_text(&text[cursor..close_brace_start])
-                    .shifted(TextSize::from(cursor as u32));
+            if close_brace_start > cursor
+                && let Some(body_text) = text.get(cursor..close_brace_start)
+            {
+                let body_lexed = lex_text(body_text).shifted(TextSize::from(cursor as u32));
                 let (body_tokens, body_errors) = body_lexed.into_parts();
                 tokens.extend(body_tokens);
                 errors.extend(body_errors);
@@ -751,9 +752,8 @@ fn consume_while(text: &str, mut offset: usize, predicate: impl Fn(char) -> bool
 }
 
 fn next_char(text: &str, offset: usize) -> char {
-    text[offset..]
-        .chars()
-        .next()
+    text.get(offset..)
+        .and_then(|rest| rest.chars().next())
         .expect("valid offset while lexing")
 }
 
