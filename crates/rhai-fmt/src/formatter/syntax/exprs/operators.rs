@@ -143,7 +143,11 @@ impl Formatter<'_> {
         }
     }
 
-    pub(crate) fn format_binary_with_operator_comments_doc(&self, binary: BinaryExpr, indent: usize) -> Doc {
+    pub(crate) fn format_binary_with_operator_comments_doc(
+        &self,
+        binary: BinaryExpr,
+        indent: usize,
+    ) -> Doc {
         let lhs_expr = binary.lhs();
         let rhs_expr = binary.rhs();
         let lhs = lhs_expr
@@ -250,5 +254,4 @@ impl Formatter<'_> {
                 .trivia
                 .boundary_has_comments(&TriviaBoundary::TokenNode(operator_token, rhs.syntax()))
     }
-
 }

@@ -3,7 +3,11 @@ use rhai_syntax::*;
 use crate::ContainerLayoutStyle;
 use crate::formatter::Formatter;
 use crate::formatter::layout::doc::Doc;
-use crate::formatter::syntax::exprs::{DelimitedItemDoc, DelimitedNodeSpec, boundary_from_element_to_token, boundary_from_token_to_element, gap_requires_trivia_layout, hard_lines, merge_boundary_gaps, range_end, range_start};
+use crate::formatter::syntax::exprs::{
+    DelimitedItemDoc, DelimitedNodeSpec, boundary_from_element_to_token,
+    boundary_from_token_to_element, gap_requires_trivia_layout, hard_lines, merge_boundary_gaps,
+    range_end, range_start,
+};
 
 impl Formatter<'_> {
     pub(crate) fn format_array_item_list_body_doc(
@@ -134,7 +138,11 @@ impl Formatter<'_> {
         Doc::concat(vec![Doc::text(format!("{name}: ")), value])
     }
 
-    pub(crate) fn format_interpolated_string_doc(&self, string: InterpolatedStringExpr, indent: usize) -> Doc {
+    pub(crate) fn format_interpolated_string_doc(
+        &self,
+        string: InterpolatedStringExpr,
+        indent: usize,
+    ) -> Doc {
         let mut parts = vec![Doc::text("`")];
         parts.push(
             string
@@ -161,7 +169,11 @@ impl Formatter<'_> {
             .unwrap_or_else(Doc::nil)
     }
 
-    pub(crate) fn format_interpolation_item_docs(&self, items: Vec<rhai_syntax::Item>, indent: usize) -> Doc {
+    pub(crate) fn format_interpolation_item_docs(
+        &self,
+        items: Vec<rhai_syntax::Item>,
+        indent: usize,
+    ) -> Doc {
         if items.is_empty() {
             return Doc::nil();
         }
@@ -335,7 +347,11 @@ impl Formatter<'_> {
             .collect::<Vec<_>>()
     }
 
-    pub(crate) fn array_item_list_items(&self, items: ArrayItemList, indent: usize) -> Vec<DelimitedItemDoc> {
+    pub(crate) fn array_item_list_items(
+        &self,
+        items: ArrayItemList,
+        indent: usize,
+    ) -> Vec<DelimitedItemDoc> {
         items
             .exprs()
             .map(|expr| DelimitedItemDoc {
@@ -506,7 +522,11 @@ impl Formatter<'_> {
         Doc::indent(1, Doc::concat(body_parts))
     }
 
-    pub(crate) fn leading_delimited_gap_doc(&self, gap: &GapTrivia, include_terminal_newline: bool) -> Doc {
+    pub(crate) fn leading_delimited_gap_doc(
+        &self,
+        gap: &GapTrivia,
+        include_terminal_newline: bool,
+    ) -> Doc {
         if gap.has_vertical_comments() {
             let vertical_comments = gap.vertical_comments();
             let mut parts = vec![hard_lines(vertical_comments[0].blank_lines_before + 1)];
@@ -602,5 +622,4 @@ impl Formatter<'_> {
 
         body_parts
     }
-
 }

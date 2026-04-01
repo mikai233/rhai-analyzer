@@ -71,5 +71,4 @@ impl Formatter<'_> {
     pub(crate) fn statement_tail_renders_single_line(&self, doc: &Doc, indent: usize) -> bool {
         !self.render_fragment(doc, indent).contains('\n')
     }
-
 }

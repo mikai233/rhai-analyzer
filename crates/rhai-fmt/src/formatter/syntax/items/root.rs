@@ -169,7 +169,6 @@ impl Formatter<'_> {
     fn import_boundary_starts_new_group(&self, left: Item, right: Item) -> bool {
         self.has_blank_line_between_nodes(left.syntax(), right.syntax())
     }
-
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -226,4 +225,3 @@ struct RootEntry {
     kind: TopLevelItemKind,
     doc: Doc,
 }
-

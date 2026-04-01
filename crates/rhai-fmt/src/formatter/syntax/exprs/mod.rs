@@ -241,4 +241,3 @@ pub(crate) fn range_start(range: TextRange) -> usize {
 pub(crate) fn range_end(range: TextRange) -> usize {
     u32::from(range.end()) as usize
 }
-

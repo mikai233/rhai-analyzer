@@ -164,7 +164,10 @@ impl Formatter<'_> {
         self.node_has_unowned_comments_outside_boundaries(if_expr.syntax(), &allowed_boundaries)
     }
 
-    pub(crate) fn else_branch_requires_raw_fallback(&self, else_branch: rhai_syntax::ElseBranch) -> bool {
+    pub(crate) fn else_branch_requires_raw_fallback(
+        &self,
+        else_branch: rhai_syntax::ElseBranch,
+    ) -> bool {
         let Some(body) = else_branch.body() else {
             return self.node_has_unowned_comments(else_branch.syntax());
         };
@@ -439,7 +442,10 @@ impl Formatter<'_> {
             )
     }
 
-    pub(crate) fn switch_patterns_requires_raw_fallback(&self, patterns: SwitchPatternList) -> bool {
+    pub(crate) fn switch_patterns_requires_raw_fallback(
+        &self,
+        patterns: SwitchPatternList,
+    ) -> bool {
         if patterns.wildcard_token().is_some() {
             return self.node_has_unowned_comments(patterns.syntax());
         }
@@ -495,5 +501,4 @@ impl Formatter<'_> {
             ],
         )
     }
-
 }

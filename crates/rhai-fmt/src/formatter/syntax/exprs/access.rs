@@ -297,5 +297,4 @@ impl Formatter<'_> {
             self.group_tight_suffix_doc(receiver, Doc::text(format!("{accessor}{name}")))
         }
     }
-
 }

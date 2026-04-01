@@ -98,7 +98,11 @@ impl Formatter<'_> {
         self.tight_comment_gap_from_gap(&gap, true)
     }
 
-    pub(crate) fn function_signature_separator_doc(&self, gap: Option<GapTrivia>, inline_text: &str) -> Doc {
+    pub(crate) fn function_signature_separator_doc(
+        &self,
+        gap: Option<GapTrivia>,
+        inline_text: &str,
+    ) -> Doc {
         if gap.as_ref().is_none_or(|gap| !gap.has_comments()) {
             return if inline_text.is_empty() {
                 Doc::text("")
@@ -109,7 +113,6 @@ impl Formatter<'_> {
 
         self.tight_comment_gap_from_gap(&gap.unwrap_or_default(), true)
     }
-
 }
 
 fn function_signature_inline_separator(
@@ -124,4 +127,3 @@ fn function_signature_inline_separator(
         _ => " ",
     }
 }
-

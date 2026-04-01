@@ -15,7 +15,11 @@ impl Formatter<'_> {
         self.format_comma_separated_body_doc(&arms.syntax(), item_docs)
     }
 
-    pub(crate) fn switch_arm_list_items(&self, arms: SwitchArmList, indent: usize) -> Vec<DelimitedItemDoc> {
+    pub(crate) fn switch_arm_list_items(
+        &self,
+        arms: SwitchArmList,
+        indent: usize,
+    ) -> Vec<DelimitedItemDoc> {
         arms.arms()
             .map(|arm| DelimitedItemDoc {
                 element: arm.syntax().into(),
@@ -750,5 +754,4 @@ impl Formatter<'_> {
             },
         ])
     }
-
 }

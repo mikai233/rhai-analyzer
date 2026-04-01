@@ -290,7 +290,11 @@ impl Formatter<'_> {
         ])
     }
 
-    pub(crate) fn format_export_stmt(&self, export_stmt: rhai_syntax::ExportStmt, indent: usize) -> Doc {
+    pub(crate) fn format_export_stmt(
+        &self,
+        export_stmt: rhai_syntax::ExportStmt,
+        indent: usize,
+    ) -> Doc {
         if self.export_stmt_requires_raw_fallback(&export_stmt) {
             return Doc::text(self.raw(export_stmt.syntax()));
         }
@@ -519,7 +523,10 @@ impl Formatter<'_> {
         self.node_has_unowned_comments_outside_boundaries(try_stmt.syntax(), &allowed_boundaries)
     }
 
-    pub(crate) fn catch_clause_requires_raw_fallback(&self, catch_clause: rhai_syntax::CatchClause) -> bool {
+    pub(crate) fn catch_clause_requires_raw_fallback(
+        &self,
+        catch_clause: rhai_syntax::CatchClause,
+    ) -> bool {
         let Some(body) = catch_clause.body() else {
             return self.node_has_unowned_comments(catch_clause.syntax());
         };
@@ -548,7 +555,10 @@ impl Formatter<'_> {
         self.node_has_unowned_comments_outside_boundaries(import_stmt.syntax(), &allowed_boundaries)
     }
 
-    pub(crate) fn export_stmt_requires_raw_fallback(&self, export_stmt: &rhai_syntax::ExportStmt) -> bool {
+    pub(crate) fn export_stmt_requires_raw_fallback(
+        &self,
+        export_stmt: &rhai_syntax::ExportStmt,
+    ) -> bool {
         let mut allowed_boundaries = Vec::new();
         if let Some(alias) = export_stmt.alias() {
             if self.alias_clause_requires_raw_fallback(alias.clone()) {
@@ -563,7 +573,10 @@ impl Formatter<'_> {
         self.node_has_unowned_comments_outside_boundaries(export_stmt.syntax(), &allowed_boundaries)
     }
 
-    pub(crate) fn alias_clause_requires_raw_fallback(&self, alias: rhai_syntax::AliasClause) -> bool {
+    pub(crate) fn alias_clause_requires_raw_fallback(
+        &self,
+        alias: rhai_syntax::AliasClause,
+    ) -> bool {
         let Some(as_token) = self.token(alias.syntax(), TokenKind::AsKw) else {
             return self.node_has_unowned_comments(alias.syntax());
         };
@@ -748,7 +761,11 @@ impl Formatter<'_> {
         self.format_statement_tail_doc(head, "", value, indent)
     }
 
-    pub(crate) fn statement_semicolon_doc(&self, value_expr: Option<Expr>, stmt: &SyntaxNode) -> Doc {
+    pub(crate) fn statement_semicolon_doc(
+        &self,
+        value_expr: Option<Expr>,
+        stmt: &SyntaxNode,
+    ) -> Doc {
         let Some(semicolon_token) = self.token(stmt.clone(), TokenKind::Semicolon) else {
             return Doc::nil();
         };
@@ -766,7 +783,11 @@ impl Formatter<'_> {
         ])
     }
 
-    pub(crate) fn keyword_semicolon_doc(&self, keyword_token: SyntaxToken, stmt: &SyntaxNode) -> Doc {
+    pub(crate) fn keyword_semicolon_doc(
+        &self,
+        keyword_token: SyntaxToken,
+        stmt: &SyntaxNode,
+    ) -> Doc {
         let Some(semicolon_token) = self.token(stmt.clone(), TokenKind::Semicolon) else {
             return Doc::nil();
         };
