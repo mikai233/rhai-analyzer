@@ -7,7 +7,7 @@ mod project;
 mod types;
 mod workspace;
 
-pub use builtin::signatures::builtin_universal_method_signature;
+pub use builtin::signatures::{builtin_universal_method_docs, builtin_universal_method_signature};
 pub use change::{ChangeSet, FileChange};
 pub use db::{AnalyzerDatabase, DatabaseSnapshot};
 pub use infer::generics::specialize_signature_with_receiver_and_arg_types;

@@ -7,6 +7,14 @@ use rhai_vfs::DocumentVersion;
 use crate::tests::assert_no_syntax_diagnostics;
 use crate::{AnalysisHost, FilePosition, HoverSignatureSource};
 
+fn assert_structured_builtin_docs(docs: &str, topic: &str) {
+    assert!(!docs.trim().is_empty());
+    assert!(docs.contains("## Usage"));
+    assert!(docs.contains("## Examples"));
+    assert!(docs.contains("## Official Rhai Reference"));
+    assert!(docs.contains(topic));
+}
+
 #[test]
 fn hover_supports_builtin_global_functions() {
     let mut host = AnalysisHost::default();
@@ -36,10 +44,8 @@ fn hover_supports_builtin_global_functions() {
 
     assert_eq!(hover.signature, "fn print(any) -> ()");
     assert_eq!(hover.source, HoverSignatureSource::Declared);
-    assert_eq!(
-        hover.docs.as_deref(),
-        Some("Print a value via the engine's print callback.")
-    );
+    let docs = hover.docs.as_deref().expect("expected builtin docs");
+    assert_structured_builtin_docs(docs, "print");
 }
 #[test]
 fn hover_supports_host_module_functions() {

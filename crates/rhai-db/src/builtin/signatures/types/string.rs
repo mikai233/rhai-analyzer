@@ -1,71 +1,116 @@
 use rhai_hir::{FunctionTypeRef, TypeRef};
 
-use crate::builtin::signatures::helpers::builtin_method;
-use crate::types::HostType;
+use crate::builtin::signatures::docs::builtin_type_docs;
+use crate::builtin::signatures::helpers::builtin_documented_method;
+use crate::types::{HostFunction, HostType};
+
+const STRING_REFERENCE_URL: &str = "https://rhai.rs/book/ref/strings-chars.html";
+
+fn string_method(
+    name: &str,
+    signatures: Vec<FunctionTypeRef>,
+    summary: &str,
+    examples: &[&str],
+) -> HostFunction {
+    builtin_documented_method(
+        "string",
+        name,
+        signatures,
+        summary,
+        examples,
+        STRING_REFERENCE_URL,
+    )
+}
 
 pub(crate) fn builtin_string_type() -> HostType {
     HostType {
         name: "string".to_owned(),
         generic_params: Vec::new(),
-        docs: Some("Builtin Rhai string type.".to_owned()),
+        docs: Some(builtin_type_docs(
+            "string",
+            "Builtin Rhai string type for UTF-8 text and character-oriented string processing.",
+            &[
+                "let text = \"hello\";",
+                "let upper = text.to_upper();",
+                "// upper == \"HELLO\"",
+            ],
+            STRING_REFERENCE_URL,
+        )),
         methods: vec![
-            builtin_method(
+            string_method(
                 "len",
                 vec![FunctionTypeRef {
                     params: Vec::new(),
                     ret: Box::new(TypeRef::Int),
                 }],
-                Some("Returns the number of characters in the string.".to_owned()),
+                "Return the number of characters in the string.",
+                &["let count = \"hello\".len();", "// count == 5"],
             ),
-            builtin_method(
+            string_method(
                 "bytes",
                 vec![FunctionTypeRef {
                     params: Vec::new(),
                     ret: Box::new(TypeRef::Int),
                 }],
-                Some("Returns the number of UTF-8 bytes in the string.".to_owned()),
+                "Return the number of UTF-8 bytes used by the string.",
+                &["let bytes = \"hello\".bytes();", "// bytes == 5"],
             ),
-            builtin_method(
+            string_method(
                 "is_empty",
                 vec![FunctionTypeRef {
                     params: Vec::new(),
                     ret: Box::new(TypeRef::Bool),
                 }],
-                Some("Returns true if the string is empty.".to_owned()),
+                "Return `true` if the string is empty.",
+                &["let empty = \"\".is_empty();", "// empty == true"],
             ),
-            builtin_method(
+            string_method(
                 "to_blob",
                 vec![FunctionTypeRef {
                     params: Vec::new(),
                     ret: Box::new(TypeRef::Blob),
                 }],
-                Some("Converts the string into a UTF-8 encoded BLOB.".to_owned()),
+                "Convert the string into a UTF-8 encoded BLOB.",
+                &[
+                    "let bytes = \"hello\".to_blob();",
+                    "// bytes == [104, 101, 108, 108, 111]",
+                ],
             ),
-            builtin_method(
+            string_method(
                 "to_chars",
                 vec![FunctionTypeRef {
                     params: Vec::new(),
                     ret: Box::new(TypeRef::Array(Box::new(TypeRef::Char))),
                 }],
-                Some("Splits the string into individual characters.".to_owned()),
+                "Split the string into an array of individual characters.",
+                &[
+                    "let chars = \"hello\".to_chars();",
+                    "// chars == ['h', 'e', 'l', 'l', 'o']",
+                ],
             ),
-            builtin_method(
+            string_method(
                 "get",
                 vec![FunctionTypeRef {
                     params: vec![TypeRef::Int],
                     ret: Box::new(TypeRef::Union(vec![TypeRef::Char, TypeRef::Unit])),
                 }],
-                Some("Gets the character at the specified position.".to_owned()),
+                "Get the character at the specified position.",
+                &["let first = \"hello\".get(0);", "// first == 'h'"],
             ),
-            builtin_method(
+            string_method(
                 "set",
                 vec![FunctionTypeRef {
                     params: vec![TypeRef::Int, TypeRef::Char],
                     ret: Box::new(TypeRef::Unit),
                 }],
-                Some("Sets the character at the specified position.".to_owned()),
+                "Set the character at the specified position.",
+                &[
+                    "let text = \"hello\";",
+                    "text.set(0, 'H');",
+                    "// text == \"Hello\"",
+                ],
             ),
-            builtin_method(
+            string_method(
                 "pad",
                 vec![
                     FunctionTypeRef {
@@ -77,17 +122,27 @@ pub(crate) fn builtin_string_type() -> HostType {
                         ret: Box::new(TypeRef::Unit),
                     },
                 ],
-                Some("Pads the string to the target length.".to_owned()),
+                "Pad the string to the target length.",
+                &[
+                    "let text = \"42\";",
+                    "text.pad(5, '0');",
+                    "// text == \"42000\"",
+                ],
             ),
-            builtin_method(
+            string_method(
                 "append",
                 vec![FunctionTypeRef {
                     params: vec![TypeRef::Any],
                     ret: Box::new(TypeRef::Unit),
                 }],
-                Some("Appends an item to the string.".to_owned()),
+                "Append a value to the end of the string.",
+                &[
+                    "let text = \"item: \";",
+                    "text.append(42);",
+                    "// text == \"item: 42\"",
+                ],
             ),
-            builtin_method(
+            string_method(
                 "remove",
                 vec![
                     FunctionTypeRef {
@@ -99,9 +154,14 @@ pub(crate) fn builtin_string_type() -> HostType {
                         ret: Box::new(TypeRef::Unit),
                     },
                 ],
-                Some("Removes a character or substring from the string.".to_owned()),
+                "Remove a character or substring from the string.",
+                &[
+                    "let text = \"banana\";",
+                    "text.remove(\"na\");",
+                    "// text == \"ba\"",
+                ],
             ),
-            builtin_method(
+            string_method(
                 "pop",
                 vec![
                     FunctionTypeRef {
@@ -113,65 +173,94 @@ pub(crate) fn builtin_string_type() -> HostType {
                         ret: Box::new(TypeRef::String),
                     },
                 ],
-                Some("Removes characters from the end of the string.".to_owned()),
+                "Remove characters from the end of the string.",
+                &[
+                    "let text = \"hello\";",
+                    "let last = text.pop();",
+                    "// last == 'o'",
+                    "// text == \"hell\"",
+                ],
             ),
-            builtin_method(
+            string_method(
                 "clear",
                 vec![FunctionTypeRef {
                     params: Vec::new(),
                     ret: Box::new(TypeRef::Unit),
                 }],
-                Some("Empties the string.".to_owned()),
+                "Clear the string in place.",
+                &["let text = \"hello\";", "text.clear();", "// text == \"\""],
             ),
-            builtin_method(
+            string_method(
                 "truncate",
                 vec![FunctionTypeRef {
                     params: vec![TypeRef::Int],
                     ret: Box::new(TypeRef::Unit),
                 }],
-                Some("Cuts the string to the specified length.".to_owned()),
+                "Truncate the string to the specified length.",
+                &[
+                    "let text = \"hello\";",
+                    "text.truncate(3);",
+                    "// text == \"hel\"",
+                ],
             ),
-            builtin_method(
+            string_method(
                 "to_upper",
                 vec![FunctionTypeRef {
                     params: Vec::new(),
                     ret: Box::new(TypeRef::String),
                 }],
-                Some("Returns an upper-case copy of the string.".to_owned()),
+                "Return an upper-case copy of the string.",
+                &["let upper = \"hello\".to_upper();", "// upper == \"HELLO\""],
             ),
-            builtin_method(
+            string_method(
                 "to_lower",
                 vec![FunctionTypeRef {
                     params: Vec::new(),
                     ret: Box::new(TypeRef::String),
                 }],
-                Some("Returns a lower-case copy of the string.".to_owned()),
+                "Return a lower-case copy of the string.",
+                &["let lower = \"HELLO\".to_lower();", "// lower == \"hello\""],
             ),
-            builtin_method(
+            string_method(
                 "make_upper",
                 vec![FunctionTypeRef {
                     params: Vec::new(),
                     ret: Box::new(TypeRef::Unit),
                 }],
-                Some("Converts the string to upper-case in place.".to_owned()),
+                "Convert the string to upper-case in place.",
+                &[
+                    "let text = \"hello\";",
+                    "text.make_upper();",
+                    "// text == \"HELLO\"",
+                ],
             ),
-            builtin_method(
+            string_method(
                 "make_lower",
                 vec![FunctionTypeRef {
                     params: Vec::new(),
                     ret: Box::new(TypeRef::Unit),
                 }],
-                Some("Converts the string to lower-case in place.".to_owned()),
+                "Convert the string to lower-case in place.",
+                &[
+                    "let text = \"HELLO\";",
+                    "text.make_lower();",
+                    "// text == \"hello\"",
+                ],
             ),
-            builtin_method(
+            string_method(
                 "trim",
                 vec![FunctionTypeRef {
                     params: Vec::new(),
                     ret: Box::new(TypeRef::Unit),
                 }],
-                Some("Trims leading and trailing whitespace.".to_owned()),
+                "Trim leading and trailing whitespace in place.",
+                &[
+                    "let text = \"  hello  \";",
+                    "text.trim();",
+                    "// text == \"hello\"",
+                ],
             ),
-            builtin_method(
+            string_method(
                 "contains",
                 vec![
                     FunctionTypeRef {
@@ -183,25 +272,34 @@ pub(crate) fn builtin_string_type() -> HostType {
                         ret: Box::new(TypeRef::Bool),
                     },
                 ],
-                Some("Checks whether the string contains a character or substring.".to_owned()),
+                "Check whether the string contains a character or substring.",
+                &[
+                    "let found = \"hello\".contains(\"ell\");",
+                    "// found == true",
+                ],
             ),
-            builtin_method(
+            string_method(
                 "starts_with",
                 vec![FunctionTypeRef {
                     params: vec![TypeRef::String],
                     ret: Box::new(TypeRef::Bool),
                 }],
-                Some("Checks whether the string starts with a prefix.".to_owned()),
+                "Check whether the string starts with the given prefix.",
+                &["let ok = \"prefix\".starts_with(\"pre\");", "// ok == true"],
             ),
-            builtin_method(
+            string_method(
                 "ends_with",
                 vec![FunctionTypeRef {
                     params: vec![TypeRef::String],
                     ret: Box::new(TypeRef::Bool),
                 }],
-                Some("Checks whether the string ends with a suffix.".to_owned()),
+                "Check whether the string ends with the given suffix.",
+                &[
+                    "let ok = \"main.rhai\".ends_with(\".rhai\");",
+                    "// ok == true",
+                ],
             ),
-            builtin_method(
+            string_method(
                 "index_of",
                 vec![
                     FunctionTypeRef {
@@ -221,9 +319,10 @@ pub(crate) fn builtin_string_type() -> HostType {
                         ret: Box::new(TypeRef::Int),
                     },
                 ],
-                Some("Finds the position of a character or substring.".to_owned()),
+                "Find the position of a character or substring.",
+                &["let pos = \"hello\".index_of(\"ll\");", "// pos == 2"],
             ),
-            builtin_method(
+            string_method(
                 "sub_string",
                 vec![
                     FunctionTypeRef {
@@ -243,9 +342,13 @@ pub(crate) fn builtin_string_type() -> HostType {
                         ret: Box::new(TypeRef::String),
                     },
                 ],
-                Some("Extracts a substring.".to_owned()),
+                "Extract a substring from the string.",
+                &[
+                    "let part = \"hello\".sub_string(1, 3);",
+                    "// part == \"ell\"",
+                ],
             ),
-            builtin_method(
+            string_method(
                 "split",
                 vec![
                     FunctionTypeRef {
@@ -273,9 +376,13 @@ pub(crate) fn builtin_string_type() -> HostType {
                         ret: Box::new(TypeRef::Array(Box::new(TypeRef::String))),
                     },
                 ],
-                Some("Splits the string into segments.".to_owned()),
+                "Split the string into segments.",
+                &[
+                    "let parts = \"a,b,c\".split(\",\");",
+                    "// parts == [\"a\", \"b\", \"c\"]",
+                ],
             ),
-            builtin_method(
+            string_method(
                 "split_rev",
                 vec![
                     FunctionTypeRef {
@@ -295,9 +402,13 @@ pub(crate) fn builtin_string_type() -> HostType {
                         ret: Box::new(TypeRef::Array(Box::new(TypeRef::String))),
                     },
                 ],
-                Some("Splits the string in reverse order.".to_owned()),
+                "Split the string in reverse order.",
+                &[
+                    "let parts = \"a,b,c\".split_rev(\",\", 2);",
+                    "// parts == [\"c\", \"a,b\"]",
+                ],
             ),
-            builtin_method(
+            string_method(
                 "crop",
                 vec![
                     FunctionTypeRef {
@@ -317,9 +428,14 @@ pub(crate) fn builtin_string_type() -> HostType {
                         ret: Box::new(TypeRef::Unit),
                     },
                 ],
-                Some("Retains only a portion of the string.".to_owned()),
+                "Retain only a portion of the string.",
+                &[
+                    "let text = \"hello\";",
+                    "text.crop(1, 3);",
+                    "// text == \"ell\"",
+                ],
             ),
-            builtin_method(
+            string_method(
                 "replace",
                 vec![
                     FunctionTypeRef {
@@ -331,9 +447,14 @@ pub(crate) fn builtin_string_type() -> HostType {
                         ret: Box::new(TypeRef::Unit),
                     },
                 ],
-                Some("Replaces a character or substring.".to_owned()),
+                "Replace a character or substring in place.",
+                &[
+                    "let text = \"hello\";",
+                    "text.replace(\"ll\", \"yy\");",
+                    "// text == \"heyyo\"",
+                ],
             ),
-            builtin_method(
+            string_method(
                 "chars",
                 vec![
                     FunctionTypeRef {
@@ -349,7 +470,11 @@ pub(crate) fn builtin_string_type() -> HostType {
                         ret: Box::new(TypeRef::Array(Box::new(TypeRef::Char))),
                     },
                 ],
-                Some("Iterates over the characters of the string.".to_owned()),
+                "Collect characters from the string into an array.",
+                &[
+                    "let chars = \"hello\".chars();",
+                    "// chars == ['h', 'e', 'l', 'l', 'o']",
+                ],
             ),
         ],
     }

@@ -288,11 +288,7 @@ fn completion_items(
             origin: None,
             sort_text: String::new(),
             detail: member.annotation.as_ref().map(format_type_ref),
-            docs: if matches!(detail_level, CompletionDetailLevel::Full) {
-                member.docs.clone()
-            } else {
-                None
-            },
+            docs: member.docs.clone(),
             filter_text: None,
             text_edit,
             insert_format,

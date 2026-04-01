@@ -1,7 +1,7 @@
 use rhai_vfs::FileId;
 
 use crate::hints::signature_help::{host_method_candidates_for_type, signature_help};
-use rhai_db::builtin_universal_method_signature;
+use rhai_db::{builtin_universal_method_docs, builtin_universal_method_signature};
 use rhai_hir::{SymbolKind, TypeRef};
 
 use crate::support::convert::{format_field_signature, format_symbol_signature, text_size};
@@ -525,16 +525,6 @@ fn builtin_function_docs(function: &rhai_db::HostFunction) -> Option<String> {
     docs.sort_unstable();
     docs.dedup();
     (!docs.is_empty()).then(|| docs.join("\n\n"))
-}
-
-fn builtin_universal_method_docs(method_name: &str) -> Option<String> {
-    match method_name {
-        "type_of" => Some("Returns the dynamic type name of the current value.".to_owned()),
-        "is_shared" => {
-            Some("Returns true when the current value is stored in a shared wrapper.".to_owned())
-        }
-        _ => None,
-    }
 }
 
 fn parse_import_module_name(module_text: &str) -> Option<String> {
