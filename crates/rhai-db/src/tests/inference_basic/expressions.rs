@@ -199,6 +199,92 @@ fn snapshot_infers_block_index_and_field_expression_types() {
         Some(&TypeRef::Int)
     );
 }
+
+#[test]
+fn snapshot_infers_builtin_index_and_operator_semantics() {
+    let mut db = AnalyzerDatabase::default();
+    db.apply_change(ChangeSet::single_file(
+        "main.rhai",
+        r#"
+            let text = "Rhai";
+            let first = text[0];
+            let part = text[1..3];
+
+            let buf = blob(4, 7);
+            let byte = buf[0];
+            let slice = buf[1..3];
+
+            let flags = 10;
+            let bit = flags[1];
+            let bits = flags[1..=2];
+
+            let merged = #{ a: 1 } + #{ b: 2.0 };
+            let appended = [1, 2] + [3.0];
+        "#,
+        DocumentVersion(1),
+    ));
+
+    let snapshot = db.snapshot();
+    assert_workspace_files_have_no_syntax_diagnostics(&snapshot);
+    let file_id = snapshot
+        .vfs()
+        .file_id(Path::new("main.rhai"))
+        .expect("expected file id");
+    let hir = snapshot.hir(file_id).expect("expected hir");
+
+    let first = symbol_id_by_name(&hir, "first", SymbolKind::Variable);
+    let part = symbol_id_by_name(&hir, "part", SymbolKind::Variable);
+    let byte = symbol_id_by_name(&hir, "byte", SymbolKind::Variable);
+    let slice = symbol_id_by_name(&hir, "slice", SymbolKind::Variable);
+    let bit = symbol_id_by_name(&hir, "bit", SymbolKind::Variable);
+    let bits = symbol_id_by_name(&hir, "bits", SymbolKind::Variable);
+    let merged = symbol_id_by_name(&hir, "merged", SymbolKind::Variable);
+    let appended = symbol_id_by_name(&hir, "appended", SymbolKind::Variable);
+
+    assert_eq!(
+        snapshot.inferred_symbol_type(file_id, first),
+        Some(&TypeRef::Char)
+    );
+    assert_eq!(
+        snapshot.inferred_symbol_type(file_id, part),
+        Some(&TypeRef::String)
+    );
+    assert_eq!(
+        snapshot.inferred_symbol_type(file_id, byte),
+        Some(&TypeRef::Int)
+    );
+    assert_eq!(
+        snapshot.inferred_symbol_type(file_id, slice),
+        Some(&TypeRef::Blob)
+    );
+    assert_eq!(
+        snapshot.inferred_symbol_type(file_id, bit),
+        Some(&TypeRef::Bool)
+    );
+    assert_eq!(
+        snapshot.inferred_symbol_type(file_id, bits),
+        Some(&TypeRef::Int)
+    );
+    assert_eq!(
+        snapshot.inferred_symbol_type(file_id, merged),
+        Some(&TypeRef::Object(
+            [
+                ("a".to_owned(), TypeRef::Int),
+                ("b".to_owned(), TypeRef::Float),
+            ]
+            .into_iter()
+            .collect(),
+        ))
+    );
+    assert_eq!(
+        snapshot.inferred_symbol_type(file_id, appended),
+        Some(&TypeRef::Array(Box::new(TypeRef::Union(vec![
+            TypeRef::Int,
+            TypeRef::Float,
+        ]))))
+    );
+}
+
 #[test]
 fn snapshot_uses_only_fallthrough_branch_values_for_if_and_switch_exprs() {
     let mut db = AnalyzerDatabase::default();

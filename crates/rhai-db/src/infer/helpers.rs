@@ -6,13 +6,53 @@ use rhai_hir::{
     ExprId, FileHir, FunctionTypeRef, LiteralKind, MutationPathSegment, SymbolId, TypeRef,
 };
 
-pub(crate) fn infer_additive_result(
+pub(crate) fn array_item_type(ty: &TypeRef) -> Option<TypeRef> {
+    match ty {
+        TypeRef::Array(inner) => Some((**inner).clone()),
+        TypeRef::Map(key, value)
+            if matches!(
+                key.as_ref(),
+                TypeRef::Int | TypeRef::Unknown | TypeRef::Never
+            ) =>
+        {
+            Some((**value).clone())
+        }
+        TypeRef::Nullable(inner) => array_item_type(inner),
+        TypeRef::Union(items) | TypeRef::Ambiguous(items) => items
+            .iter()
+            .filter_map(array_item_type)
+            .reduce(|left, right| join_types(&left, &right)),
+        _ => None,
+    }
+}
+
+pub(crate) fn infer_map_merge_result(
     lhs: Option<&TypeRef>,
     rhs: Option<&TypeRef>,
 ) -> Option<TypeRef> {
     match (lhs?, rhs?) {
-        (TypeRef::String, TypeRef::String) => Some(TypeRef::String),
-        (left, right) => infer_numeric_result(Some(left), Some(right)),
+        (TypeRef::Object(_), TypeRef::Object(_)) | (TypeRef::Map(_, _), TypeRef::Map(_, _)) => {
+            Some(join_types(lhs?, rhs?))
+        }
+        (TypeRef::Object(fields), TypeRef::Map(key, value))
+        | (TypeRef::Map(key, value), TypeRef::Object(fields)) => Some(TypeRef::Map(
+            Box::new(join_types(key, &TypeRef::String)),
+            Box::new(join_types(
+                value,
+                &inferred_object_value_union(fields).unwrap_or(TypeRef::Unknown),
+            )),
+        )),
+        (TypeRef::Nullable(inner), other) | (other, TypeRef::Nullable(inner)) => {
+            infer_map_merge_result(Some(inner), Some(other))
+        }
+        (TypeRef::Union(items), other)
+        | (other, TypeRef::Union(items))
+        | (TypeRef::Ambiguous(items), other)
+        | (other, TypeRef::Ambiguous(items)) => items
+            .iter()
+            .filter_map(|item| infer_map_merge_result(Some(item), Some(other)))
+            .reduce(|left, right| join_types(&left, &right)),
+        _ => None,
     }
 }
 

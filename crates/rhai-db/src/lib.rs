@@ -7,6 +7,10 @@ mod project;
 mod types;
 mod workspace;
 
+pub(crate) use builtin::semantic_keys::{
+    BuiltinSemanticKey, builtin_assignment_semantic_key, builtin_binary_semantic_key,
+    builtin_index_semantic_key, builtin_unary_semantic_key,
+};
 pub use builtin::signatures::{builtin_universal_method_docs, builtin_universal_method_signature};
 pub use builtin::topics::{
     BuiltinTopicDoc, BuiltinTopicKey, builtin_assignment_operator_topic,

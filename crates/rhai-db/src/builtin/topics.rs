@@ -1,3 +1,7 @@
+use crate::builtin::semantic_keys::{
+    BuiltinSemanticKey, builtin_assignment_semantic_key, builtin_binary_semantic_key,
+    builtin_index_semantic_key, builtin_property_access_semantic_key, builtin_unary_semantic_key,
+};
 use crate::builtin::signatures::builtin_topic_docs;
 use rhai_hir::{AssignmentOperator, BinaryOperator, TypeRef, UnaryOperator};
 
@@ -48,47 +52,11 @@ pub fn builtin_indexer_topic(
     receiver_ty: &TypeRef,
     index_ty: Option<&TypeRef>,
 ) -> Option<BuiltinTopicDoc> {
-    match receiver_ty {
-        TypeRef::Array(_) => {
-            if is_range_index(index_ty) {
-                Some(array_range_index_topic())
-            } else {
-                Some(array_index_topic())
-            }
-        }
-        TypeRef::Blob => {
-            if is_range_index(index_ty) {
-                Some(blob_range_index_topic())
-            } else {
-                Some(blob_index_topic())
-            }
-        }
-        TypeRef::String => {
-            if is_range_index(index_ty) {
-                Some(string_range_index_topic())
-            } else {
-                Some(string_index_topic())
-            }
-        }
-        TypeRef::Map(_, _) | TypeRef::Object(_) => Some(map_index_topic()),
-        TypeRef::Int => {
-            if is_range_index(index_ty) {
-                Some(int_bit_range_index_topic())
-            } else if is_int_index(index_ty) {
-                Some(int_bit_index_topic())
-            } else {
-                None
-            }
-        }
-        _ => None,
-    }
+    builtin_index_semantic_key(receiver_ty, index_ty).map(index_topic_for_key)
 }
 
 pub fn builtin_property_access_topic(receiver_ty: &TypeRef) -> Option<BuiltinTopicDoc> {
-    match receiver_ty {
-        TypeRef::Map(_, _) | TypeRef::Object(_) => Some(map_property_access_topic()),
-        _ => None,
-    }
+    builtin_property_access_semantic_key(receiver_ty).map(property_topic_for_key)
 }
 
 pub fn builtin_binary_operator_topic(
@@ -96,27 +64,30 @@ pub fn builtin_binary_operator_topic(
     lhs_ty: Option<&TypeRef>,
     rhs_ty: Option<&TypeRef>,
 ) -> Option<BuiltinTopicDoc> {
-    match operator {
-        BinaryOperator::In => contains_operator_topic(lhs_ty, rhs_ty),
-        BinaryOperator::Range => Some(range_operator_topic()),
-        BinaryOperator::RangeInclusive => Some(range_inclusive_operator_topic()),
-        BinaryOperator::Add => additive_operator_topic(lhs_ty, rhs_ty),
-        BinaryOperator::Subtract
-        | BinaryOperator::Multiply
-        | BinaryOperator::Divide
-        | BinaryOperator::Remainder
-        | BinaryOperator::Power
-        | BinaryOperator::ShiftLeft
-        | BinaryOperator::ShiftRight
-        | BinaryOperator::Or
-        | BinaryOperator::Xor
-        | BinaryOperator::And => numeric_operator_topic(operator),
-        BinaryOperator::EqEq | BinaryOperator::NotEq => equality_operator_topic(lhs_ty, rhs_ty),
-        BinaryOperator::Gt | BinaryOperator::GtEq | BinaryOperator::Lt | BinaryOperator::LtEq => {
-            comparison_operator_topic(lhs_ty, rhs_ty)
+    let key = builtin_binary_semantic_key(operator, lhs_ty, rhs_ty)?;
+
+    match key {
+        BuiltinSemanticKey::ContainsArray
+        | BuiltinSemanticKey::ContainsString
+        | BuiltinSemanticKey::ContainsBlob
+        | BuiltinSemanticKey::ContainsMap
+        | BuiltinSemanticKey::ContainsRange => Some(contains_operator_topic(key)),
+        BuiltinSemanticKey::RangeOperator => Some(range_operator_topic()),
+        BuiltinSemanticKey::RangeInclusiveOperator => Some(range_inclusive_operator_topic()),
+        BuiltinSemanticKey::NumericAddition => Some(numeric_addition_operator_topic()),
+        BuiltinSemanticKey::NumericArithmetic => numeric_operator_topic(operator),
+        BuiltinSemanticKey::EqualityString
+        | BuiltinSemanticKey::EqualityScalar
+        | BuiltinSemanticKey::EqualityContainer => Some(equality_operator_topic(key)),
+        BuiltinSemanticKey::ComparisonString | BuiltinSemanticKey::ComparisonNumber => {
+            Some(comparison_operator_topic(key))
         }
-        BinaryOperator::NullCoalesce => Some(null_coalesce_operator_topic()),
-        BinaryOperator::OrOr | BinaryOperator::AndAnd => None,
+        BuiltinSemanticKey::StringConcatenation => Some(string_concatenation_operator_topic()),
+        BuiltinSemanticKey::ArrayConcatenation => Some(array_concatenation_operator_topic()),
+        BuiltinSemanticKey::BlobConcatenation => Some(blob_concatenation_operator_topic()),
+        BuiltinSemanticKey::MapMerge => Some(map_merge_operator_topic()),
+        BuiltinSemanticKey::NullCoalesce => Some(null_coalesce_operator_topic()),
+        _ => None,
     }
 }
 
@@ -125,20 +96,16 @@ pub fn builtin_assignment_operator_topic(
     lhs_ty: Option<&TypeRef>,
     rhs_ty: Option<&TypeRef>,
 ) -> Option<BuiltinTopicDoc> {
-    match operator {
-        AssignmentOperator::Assign => None,
-        AssignmentOperator::NullCoalesce => Some(null_coalesce_assignment_topic()),
-        AssignmentOperator::Add => additive_assignment_topic(lhs_ty, rhs_ty),
-        AssignmentOperator::Subtract
-        | AssignmentOperator::Multiply
-        | AssignmentOperator::Divide
-        | AssignmentOperator::Remainder
-        | AssignmentOperator::Power => Some(numeric_assignment_topic(operator)),
-        AssignmentOperator::ShiftLeft
-        | AssignmentOperator::ShiftRight
-        | AssignmentOperator::Or
-        | AssignmentOperator::Xor
-        | AssignmentOperator::And => Some(bitwise_assignment_topic(operator)),
+    let key = builtin_assignment_semantic_key(operator, lhs_ty, rhs_ty)?;
+
+    match key {
+        BuiltinSemanticKey::NullCoalesceAssignment => Some(null_coalesce_assignment_topic()),
+        BuiltinSemanticKey::NumericAssignment => Some(numeric_assignment_topic(operator)),
+        BuiltinSemanticKey::StringAppendAssignment => Some(string_append_assignment_topic()),
+        BuiltinSemanticKey::ArrayAppendAssignment => Some(array_append_assignment_topic()),
+        BuiltinSemanticKey::BlobAppendAssignment => Some(blob_append_assignment_topic()),
+        BuiltinSemanticKey::BitwiseAssignment => Some(bitwise_assignment_topic(operator)),
+        _ => None,
     }
 }
 
@@ -146,10 +113,33 @@ pub fn builtin_unary_operator_topic(
     operator: UnaryOperator,
     operand_ty: Option<&TypeRef>,
 ) -> Option<BuiltinTopicDoc> {
-    match operator {
-        UnaryOperator::Plus => unary_plus_operator_topic(operand_ty),
-        UnaryOperator::Minus => unary_minus_operator_topic(operand_ty),
-        UnaryOperator::Not => logical_not_operator_topic(operand_ty),
+    match builtin_unary_semantic_key(operator, operand_ty)? {
+        BuiltinSemanticKey::UnaryPlusNumber => Some(unary_plus_operator_topic()),
+        BuiltinSemanticKey::UnaryMinusNumber => Some(unary_minus_operator_topic()),
+        BuiltinSemanticKey::LogicalNotBool => Some(logical_not_operator_topic()),
+        _ => None,
+    }
+}
+
+fn index_topic_for_key(key: BuiltinSemanticKey) -> BuiltinTopicDoc {
+    match key {
+        BuiltinSemanticKey::ArrayIndex => array_index_topic(),
+        BuiltinSemanticKey::ArrayRangeIndex => array_range_index_topic(),
+        BuiltinSemanticKey::BlobIndex => blob_index_topic(),
+        BuiltinSemanticKey::BlobRangeIndex => blob_range_index_topic(),
+        BuiltinSemanticKey::StringIndex => string_index_topic(),
+        BuiltinSemanticKey::StringRangeIndex => string_range_index_topic(),
+        BuiltinSemanticKey::MapIndex => map_index_topic(),
+        BuiltinSemanticKey::IntBitIndex => int_bit_index_topic(),
+        BuiltinSemanticKey::IntBitRangeIndex => int_bit_range_index_topic(),
+        _ => unreachable!("unexpected index semantic key: {key:?}"),
+    }
+}
+
+fn property_topic_for_key(key: BuiltinSemanticKey) -> BuiltinTopicDoc {
+    match key {
+        BuiltinSemanticKey::MapPropertyAccess => map_property_access_topic(),
+        _ => unreachable!("unexpected property semantic key: {key:?}"),
     }
 }
 
@@ -375,36 +365,17 @@ fn int_bit_range_index_topic() -> BuiltinTopicDoc {
     }
 }
 
-fn contains_operator_topic(
-    _lhs_ty: Option<&TypeRef>,
-    rhs_ty: Option<&TypeRef>,
-) -> Option<BuiltinTopicDoc> {
-    let rhs = rhs_ty?;
-    let signature = match rhs {
-        TypeRef::Array(_) => "value in array -> bool",
-        TypeRef::String => "char in string -> bool",
-        TypeRef::Blob => "byte in blob -> bool",
-        TypeRef::Map(_, _) | TypeRef::Object(_) => "string in map -> bool",
-        TypeRef::Range | TypeRef::RangeInclusive => "int in range -> bool",
-        TypeRef::Union(members) | TypeRef::Ambiguous(members) => {
-            let resolved = members.iter().find(|member| {
-                matches!(
-                    member,
-                    TypeRef::Array(_)
-                        | TypeRef::String
-                        | TypeRef::Blob
-                        | TypeRef::Map(_, _)
-                        | TypeRef::Object(_)
-                        | TypeRef::Range
-                        | TypeRef::RangeInclusive
-                )
-            })?;
-            return contains_operator_topic(None, Some(resolved));
-        }
-        _ => return None,
+fn contains_operator_topic(key: BuiltinSemanticKey) -> BuiltinTopicDoc {
+    let signature = match key {
+        BuiltinSemanticKey::ContainsArray => "value in array -> bool",
+        BuiltinSemanticKey::ContainsString => "char in string -> bool",
+        BuiltinSemanticKey::ContainsBlob => "byte in blob -> bool",
+        BuiltinSemanticKey::ContainsMap => "string in map -> bool",
+        BuiltinSemanticKey::ContainsRange => "int in range -> bool",
+        _ => unreachable!("unexpected contains semantic key: {key:?}"),
     };
 
-    Some(BuiltinTopicDoc {
+    BuiltinTopicDoc {
         key: BuiltinTopicKey::ContainsOperator,
         signature: signature.to_owned(),
         docs: builtin_topic_docs(
@@ -421,22 +392,100 @@ fn contains_operator_topic(
             "https://rhai.rs/book/language/expressions.html",
         ),
         notes: vec!["Builtin membership operator.".to_owned()],
-    })
+    }
 }
 
-fn additive_operator_topic(
-    lhs_ty: Option<&TypeRef>,
-    rhs_ty: Option<&TypeRef>,
-) -> Option<BuiltinTopicDoc> {
-    let ty = dominant_operator_type(lhs_ty, rhs_ty)?;
+fn equality_operator_topic(key: BuiltinSemanticKey) -> BuiltinTopicDoc {
+    let (signature, summary, examples, reference_url): (&str, &str, &[&str], &str) = match key {
+        BuiltinSemanticKey::EqualityString => (
+            "string == string -> bool",
+            "Compare strings or characters for equality or inequality.",
+            &[
+                "let same = \"Ada\" == \"Ada\";",
+                "// same == true",
+                "let different = 'a' != 'b';",
+                "// different == true",
+            ],
+            "https://rhai.rs/book/ref/strings-chars.html",
+        ),
+        BuiltinSemanticKey::EqualityScalar => (
+            "value == value -> bool",
+            "Compare builtin scalar values for equality or inequality.",
+            &[
+                "let same = 2 == 2;",
+                "// same == true",
+                "let different = 2 != 3;",
+                "// different == true",
+            ],
+            "https://rhai.rs/book/ref/numbers.html",
+        ),
+        BuiltinSemanticKey::EqualityContainer => (
+            "value == value -> bool",
+            "Compare builtin container values for equality or inequality.",
+            &[
+                "let same = [1, 2] == [1, 2];",
+                "// same == true",
+                "let changed = #{ a: 1 } != #{ a: 2 };",
+                "// changed == true",
+            ],
+            "https://rhai.rs/book/language/expressions.html",
+        ),
+        _ => unreachable!("unexpected equality semantic key: {key:?}"),
+    };
 
-    match ty {
-        TypeRef::String | TypeRef::Char => Some(string_concatenation_operator_topic()),
-        TypeRef::Array(_) => Some(array_concatenation_operator_topic()),
-        TypeRef::Blob => Some(blob_concatenation_operator_topic()),
-        TypeRef::Map(_, _) | TypeRef::Object(_) => Some(map_merge_operator_topic()),
-        TypeRef::Int | TypeRef::Float | TypeRef::Decimal => Some(numeric_addition_operator_topic()),
-        _ => None,
+    BuiltinTopicDoc {
+        key: BuiltinTopicKey::EqualityOperator,
+        signature: signature.to_owned(),
+        docs: builtin_topic_docs(
+            summary,
+            &[
+                "let same = left == right;",
+                "let different = left != right;",
+            ],
+            examples,
+            reference_url,
+        ),
+        notes: vec!["Builtin equality operator.".to_owned()],
+    }
+}
+
+fn comparison_operator_topic(key: BuiltinSemanticKey) -> BuiltinTopicDoc {
+    let (signature, summary, examples, reference_url): (&str, &str, &[&str], &str) = match key {
+        BuiltinSemanticKey::ComparisonString => (
+            "string < string -> bool",
+            "Compare strings or characters using lexical ordering.",
+            &[
+                "let ordered = \"alpha\" < \"beta\";",
+                "// ordered == true",
+                "let after = 'z' > 'a';",
+                "// after == true",
+            ],
+            "https://rhai.rs/book/ref/strings-chars.html",
+        ),
+        BuiltinSemanticKey::ComparisonNumber => (
+            "number < number -> bool",
+            "Compare numeric values using ordering operators.",
+            &[
+                "let ordered = 2 < 5;",
+                "// ordered == true",
+                "let at_least = 3 >= 3;",
+                "// at_least == true",
+            ],
+            "https://rhai.rs/book/ref/numbers.html",
+        ),
+        _ => unreachable!("unexpected comparison semantic key: {key:?}"),
+    };
+
+    BuiltinTopicDoc {
+        key: BuiltinTopicKey::ComparisonOperator,
+        signature: signature.to_owned(),
+        docs: builtin_topic_docs(
+            summary,
+            &["let ordered = left < right;"],
+            examples,
+            reference_url,
+        ),
+        notes: vec!["Builtin comparison operator.".to_owned()],
     }
 }
 
@@ -445,62 +494,62 @@ fn numeric_operator_topic(operator: BinaryOperator) -> Option<BuiltinTopicDoc> {
         BinaryOperator::Subtract => (
             "number - number -> number",
             "Subtract the right-hand numeric value from the left-hand numeric value.",
-            &["let diff = 10 - 3;"][..],
-            &["let diff = 10 - 3;", "// diff == 7"][..],
+            &["let diff = 10 - 3;"],
+            &["let diff = 10 - 3;", "// diff == 7"],
         ),
         BinaryOperator::Multiply => (
             "number * number -> number",
             "Multiply two numeric values.",
-            &["let product = 6 * 7;"][..],
-            &["let product = 6 * 7;", "// product == 42"][..],
+            &["let product = 6 * 7;"],
+            &["let product = 6 * 7;", "// product == 42"],
         ),
         BinaryOperator::Divide => (
             "number / number -> number",
             "Divide one numeric value by another.",
-            &["let ratio = 21 / 3;"][..],
-            &["let ratio = 21 / 3;", "// ratio == 7"][..],
+            &["let ratio = 21 / 3;"],
+            &["let ratio = 21 / 3;", "// ratio == 7"],
         ),
         BinaryOperator::Remainder => (
             "number % number -> number",
             "Compute the remainder left after division.",
-            &["let remainder = 10 % 4;"][..],
-            &["let remainder = 10 % 4;", "// remainder == 2"][..],
+            &["let remainder = 10 % 4;"],
+            &["let remainder = 10 % 4;", "// remainder == 2"],
         ),
         BinaryOperator::Power => (
             "number ** number -> number",
             "Raise the left-hand numeric value to the power of the right-hand numeric value.",
-            &["let result = 2 ** 3;"][..],
-            &["let result = 2 ** 3;", "// result == 8"][..],
+            &["let result = 2 ** 3;"],
+            &["let result = 2 ** 3;", "// result == 8"],
         ),
         BinaryOperator::ShiftLeft => (
             "int << int -> int",
             "Shift an integer left by the specified number of bits.",
-            &["let shifted = 1 << 3;"][..],
-            &["let shifted = 1 << 3;", "// shifted == 8"][..],
+            &["let shifted = 1 << 3;"],
+            &["let shifted = 1 << 3;", "// shifted == 8"],
         ),
         BinaryOperator::ShiftRight => (
             "int >> int -> int",
             "Shift an integer right by the specified number of bits.",
-            &["let shifted = 16 >> 2;"][..],
-            &["let shifted = 16 >> 2;", "// shifted == 4"][..],
+            &["let shifted = 16 >> 2;"],
+            &["let shifted = 16 >> 2;", "// shifted == 4"],
         ),
         BinaryOperator::Or => (
             "int | int -> int",
             "Combine two integers with bitwise OR.",
-            &["let flags = 0b0101 | 0b0011;"][..],
-            &["let flags = 0b0101 | 0b0011;", "// flags == 0b0111"][..],
+            &["let flags = 0b0101 | 0b0011;"],
+            &["let flags = 0b0101 | 0b0011;", "// flags == 0b0111"],
         ),
         BinaryOperator::Xor => (
             "int ^ int -> int",
             "Combine two integers with bitwise XOR.",
-            &["let flags = 0b0101 ^ 0b0011;"][..],
-            &["let flags = 0b0101 ^ 0b0011;", "// flags == 0b0110"][..],
+            &["let flags = 0b0101 ^ 0b0011;"],
+            &["let flags = 0b0101 ^ 0b0011;", "// flags == 0b0110"],
         ),
         BinaryOperator::And => (
             "int & int -> int",
             "Combine two integers with bitwise AND.",
-            &["let flags = 0b0101 & 0b0011;"][..],
-            &["let flags = 0b0101 & 0b0011;", "// flags == 0b0001"][..],
+            &["let flags = 0b0101 & 0b0011;"],
+            &["let flags = 0b0101 & 0b0011;", "// flags == 0b0001"],
         ),
         _ => return None,
     };
@@ -515,108 +564,6 @@ fn numeric_operator_topic(operator: BinaryOperator) -> Option<BuiltinTopicDoc> {
             "https://rhai.rs/book/ref/numbers.html",
         ),
         notes: vec!["Builtin numeric operator.".to_owned()],
-    })
-}
-
-fn equality_operator_topic(
-    lhs_ty: Option<&TypeRef>,
-    rhs_ty: Option<&TypeRef>,
-) -> Option<BuiltinTopicDoc> {
-    let ty = dominant_operator_type(lhs_ty, rhs_ty)?;
-    let (signature, summary, examples, reference_url): (&str, &str, &[&str], &str) = match ty {
-        TypeRef::String | TypeRef::Char => (
-            "string == string -> bool",
-            "Compare strings or characters for equality or inequality.",
-            &[
-                "let same = \"Ada\" == \"Ada\";",
-                "// same == true",
-                "let different = 'a' != 'b';",
-                "// different == true",
-            ][..],
-            "https://rhai.rs/book/ref/strings-chars.html",
-        ),
-        TypeRef::Int | TypeRef::Float | TypeRef::Decimal | TypeRef::Bool => (
-            "value == value -> bool",
-            "Compare builtin scalar values for equality or inequality.",
-            &[
-                "let same = 2 == 2;",
-                "// same == true",
-                "let different = 2 != 3;",
-                "// different == true",
-            ][..],
-            "https://rhai.rs/book/ref/numbers.html",
-        ),
-        TypeRef::Array(_) | TypeRef::Blob | TypeRef::Map(_, _) | TypeRef::Object(_) => (
-            "value == value -> bool",
-            "Compare builtin container values for equality or inequality.",
-            &[
-                "let same = [1, 2] == [1, 2];",
-                "// same == true",
-                "let changed = #{ a: 1 } != #{ a: 2 };",
-                "// changed == true",
-            ][..],
-            "https://rhai.rs/book/language/expressions.html",
-        ),
-        _ => return None,
-    };
-
-    Some(BuiltinTopicDoc {
-        key: BuiltinTopicKey::EqualityOperator,
-        signature: signature.to_owned(),
-        docs: builtin_topic_docs(
-            summary,
-            &[
-                "let same = left == right;",
-                "let different = left != right;",
-            ],
-            examples,
-            reference_url,
-        ),
-        notes: vec!["Builtin equality operator.".to_owned()],
-    })
-}
-
-fn comparison_operator_topic(
-    lhs_ty: Option<&TypeRef>,
-    rhs_ty: Option<&TypeRef>,
-) -> Option<BuiltinTopicDoc> {
-    let ty = dominant_operator_type(lhs_ty, rhs_ty)?;
-    let (signature, summary, examples, reference_url): (&str, &str, &[&str], &str) = match ty {
-        TypeRef::String | TypeRef::Char => (
-            "string < string -> bool",
-            "Compare strings or characters using lexical ordering.",
-            &[
-                "let ordered = \"alpha\" < \"beta\";",
-                "// ordered == true",
-                "let after = 'z' > 'a';",
-                "// after == true",
-            ][..],
-            "https://rhai.rs/book/ref/strings-chars.html",
-        ),
-        TypeRef::Int | TypeRef::Float | TypeRef::Decimal => (
-            "number < number -> bool",
-            "Compare numeric values using ordering operators.",
-            &[
-                "let ordered = 2 < 5;",
-                "// ordered == true",
-                "let at_least = 3 >= 3;",
-                "// at_least == true",
-            ][..],
-            "https://rhai.rs/book/ref/numbers.html",
-        ),
-        _ => return None,
-    };
-
-    Some(BuiltinTopicDoc {
-        key: BuiltinTopicKey::ComparisonOperator,
-        signature: signature.to_owned(),
-        docs: builtin_topic_docs(
-            summary,
-            &["let ordered = left < right;"],
-            examples,
-            reference_url,
-        ),
-        notes: vec!["Builtin comparison operator.".to_owned()],
     })
 }
 
@@ -718,64 +665,47 @@ fn map_merge_operator_topic() -> BuiltinTopicDoc {
     }
 }
 
-fn additive_assignment_topic(
-    lhs_ty: Option<&TypeRef>,
-    rhs_ty: Option<&TypeRef>,
-) -> Option<BuiltinTopicDoc> {
-    let ty = dominant_operator_type(lhs_ty, rhs_ty)?;
-
-    match ty {
-        TypeRef::String | TypeRef::Char => Some(string_append_assignment_topic()),
-        TypeRef::Array(_) => Some(array_append_assignment_topic()),
-        TypeRef::Blob => Some(blob_append_assignment_topic()),
-        TypeRef::Int | TypeRef::Float | TypeRef::Decimal => {
-            Some(numeric_assignment_topic(AssignmentOperator::Add))
-        }
-        _ => None,
-    }
-}
-
 fn numeric_assignment_topic(operator: AssignmentOperator) -> BuiltinTopicDoc {
     let (signature, summary, usage, examples): (&str, &str, &[&str], &[&str]) = match operator {
         AssignmentOperator::Add => (
             "number += number",
             "Add the right-hand numeric value into the left-hand variable in place.",
-            &["total += 5;"][..],
-            &["let total = 10;", "total += 5;", "// total == 15"][..],
+            &["total += 5;"],
+            &["let total = 10;", "total += 5;", "// total == 15"],
         ),
         AssignmentOperator::Subtract => (
             "number -= number",
             "Subtract the right-hand numeric value from the left-hand variable in place.",
-            &["count -= 1;"][..],
-            &["let count = 3;", "count -= 1;", "// count == 2"][..],
+            &["count -= 1;"],
+            &["let count = 3;", "count -= 1;", "// count == 2"],
         ),
         AssignmentOperator::Multiply => (
             "number *= number",
             "Multiply the left-hand numeric variable by the right-hand value in place.",
-            &["score *= 2;"][..],
-            &["let score = 7;", "score *= 2;", "// score == 14"][..],
+            &["score *= 2;"],
+            &["let score = 7;", "score *= 2;", "// score == 14"],
         ),
         AssignmentOperator::Divide => (
             "number /= number",
             "Divide the left-hand numeric variable by the right-hand value in place.",
-            &["ratio /= 2;"][..],
-            &["let ratio = 8;", "ratio /= 2;", "// ratio == 4"][..],
+            &["ratio /= 2;"],
+            &["let ratio = 8;", "ratio /= 2;", "// ratio == 4"],
         ),
         AssignmentOperator::Remainder => (
             "number %= number",
             "Update the left-hand numeric variable with the remainder after division.",
-            &["remainder %= 3;"][..],
+            &["remainder %= 3;"],
             &[
                 "let remainder = 10;",
                 "remainder %= 3;",
                 "// remainder == 1",
-            ][..],
+            ],
         ),
         AssignmentOperator::Power => (
             "number **= number",
             "Raise the left-hand numeric variable to a power in place.",
-            &["value **= 3;"][..],
-            &["let value = 2;", "value **= 3;", "// value == 8"][..],
+            &["value **= 3;"],
+            &["let value = 2;", "value **= 3;", "// value == 8"],
         ),
         _ => unreachable!(),
     };
@@ -852,44 +782,44 @@ fn bitwise_assignment_topic(operator: AssignmentOperator) -> BuiltinTopicDoc {
         AssignmentOperator::ShiftLeft => (
             "int <<= int",
             "Shift the left-hand integer left by the specified number of bits in place.",
-            &["flags <<= 1;"][..],
-            &["let flags = 0b0011;", "flags <<= 1;", "// flags == 0b0110"][..],
+            &["flags <<= 1;"],
+            &["let flags = 0b0011;", "flags <<= 1;", "// flags == 0b0110"],
         ),
         AssignmentOperator::ShiftRight => (
             "int >>= int",
             "Shift the left-hand integer right by the specified number of bits in place.",
-            &["flags >>= 1;"][..],
-            &["let flags = 0b0110;", "flags >>= 1;", "// flags == 0b0011"][..],
+            &["flags >>= 1;"],
+            &["let flags = 0b0110;", "flags >>= 1;", "// flags == 0b0011"],
         ),
         AssignmentOperator::Or => (
             "int |= int",
             "Apply bitwise OR to the left-hand integer in place.",
-            &["flags |= 0b0100;"][..],
+            &["flags |= 0b0100;"],
             &[
                 "let flags = 0b0001;",
                 "flags |= 0b0100;",
                 "// flags == 0b0101",
-            ][..],
+            ],
         ),
         AssignmentOperator::Xor => (
             "int ^= int",
             "Apply bitwise XOR to the left-hand integer in place.",
-            &["flags ^= 0b0101;"][..],
+            &["flags ^= 0b0101;"],
             &[
                 "let flags = 0b0111;",
                 "flags ^= 0b0101;",
                 "// flags == 0b0010",
-            ][..],
+            ],
         ),
         AssignmentOperator::And => (
             "int &= int",
             "Apply bitwise AND to the left-hand integer in place.",
-            &["flags &= 0b0011;"][..],
+            &["flags &= 0b0011;"],
             &[
                 "let flags = 0b0111;",
                 "flags &= 0b0011;",
                 "// flags == 0b0011",
-            ][..],
+            ],
         ),
         _ => unreachable!(),
     };
@@ -925,13 +855,8 @@ fn null_coalesce_assignment_topic() -> BuiltinTopicDoc {
     }
 }
 
-fn unary_plus_operator_topic(operand_ty: Option<&TypeRef>) -> Option<BuiltinTopicDoc> {
-    let ty = operand_ty?;
-    if !type_may_be_numeric(ty) {
-        return None;
-    }
-
-    Some(BuiltinTopicDoc {
+fn unary_plus_operator_topic() -> BuiltinTopicDoc {
+    BuiltinTopicDoc {
         key: BuiltinTopicKey::UnaryPlusOperator,
         signature: "+number -> number".to_owned(),
         docs: builtin_topic_docs(
@@ -941,16 +866,11 @@ fn unary_plus_operator_topic(operand_ty: Option<&TypeRef>) -> Option<BuiltinTopi
             "https://rhai.rs/book/ref/numbers.html",
         ),
         notes: vec!["Builtin unary numeric operator.".to_owned()],
-    })
+    }
 }
 
-fn unary_minus_operator_topic(operand_ty: Option<&TypeRef>) -> Option<BuiltinTopicDoc> {
-    let ty = operand_ty?;
-    if !type_may_be_numeric(ty) {
-        return None;
-    }
-
-    Some(BuiltinTopicDoc {
+fn unary_minus_operator_topic() -> BuiltinTopicDoc {
+    BuiltinTopicDoc {
         key: BuiltinTopicKey::UnaryMinusOperator,
         signature: "-number -> number".to_owned(),
         docs: builtin_topic_docs(
@@ -960,16 +880,11 @@ fn unary_minus_operator_topic(operand_ty: Option<&TypeRef>) -> Option<BuiltinTop
             "https://rhai.rs/book/ref/numbers.html",
         ),
         notes: vec!["Builtin unary numeric negation operator.".to_owned()],
-    })
+    }
 }
 
-fn logical_not_operator_topic(operand_ty: Option<&TypeRef>) -> Option<BuiltinTopicDoc> {
-    let ty = operand_ty?;
-    if !type_may_be_bool(ty) {
-        return None;
-    }
-
-    Some(BuiltinTopicDoc {
+fn logical_not_operator_topic() -> BuiltinTopicDoc {
+    BuiltinTopicDoc {
         key: BuiltinTopicKey::LogicalNotOperator,
         signature: "!bool -> bool".to_owned(),
         docs: builtin_topic_docs(
@@ -983,7 +898,7 @@ fn logical_not_operator_topic(operand_ty: Option<&TypeRef>) -> Option<BuiltinTop
             "https://rhai.rs/book/language/expressions.html",
         ),
         notes: vec!["Builtin logical negation operator.".to_owned()],
-    })
+    }
 }
 
 fn range_operator_topic() -> BuiltinTopicDoc {
@@ -1021,85 +936,5 @@ fn range_inclusive_operator_topic() -> BuiltinTopicDoc {
             "https://rhai.rs/book/ref/ranges.html",
         ),
         notes: vec!["Builtin inclusive range operator.".to_owned()],
-    }
-}
-
-fn dominant_operator_type<'a>(
-    lhs_ty: Option<&'a TypeRef>,
-    rhs_ty: Option<&'a TypeRef>,
-) -> Option<&'a TypeRef> {
-    lhs_ty
-        .filter(|ty| is_operator_topic_type(ty))
-        .or_else(|| rhs_ty.filter(|ty| is_operator_topic_type(ty)))
-}
-
-fn is_operator_topic_type(ty: &TypeRef) -> bool {
-    match ty {
-        TypeRef::Int
-        | TypeRef::Float
-        | TypeRef::Decimal
-        | TypeRef::String
-        | TypeRef::Char
-        | TypeRef::Blob
-        | TypeRef::Map(_, _)
-        | TypeRef::Object(_)
-        | TypeRef::Array(_) => true,
-        TypeRef::Nullable(inner) => is_operator_topic_type(inner),
-        TypeRef::Union(members) | TypeRef::Ambiguous(members) => {
-            members.iter().any(is_operator_topic_type)
-        }
-        _ => false,
-    }
-}
-
-fn type_may_be_numeric(ty: &TypeRef) -> bool {
-    match ty {
-        TypeRef::Int | TypeRef::Float | TypeRef::Decimal => true,
-        TypeRef::Nullable(inner) => type_may_be_numeric(inner),
-        TypeRef::Union(members) | TypeRef::Ambiguous(members) => {
-            members.iter().any(type_may_be_numeric)
-        }
-        _ => false,
-    }
-}
-
-fn type_may_be_bool(ty: &TypeRef) -> bool {
-    match ty {
-        TypeRef::Bool => true,
-        TypeRef::Nullable(inner) => type_may_be_bool(inner),
-        TypeRef::Union(members) | TypeRef::Ambiguous(members) => {
-            members.iter().any(type_may_be_bool)
-        }
-        _ => false,
-    }
-}
-
-fn is_int_index(index_ty: Option<&TypeRef>) -> bool {
-    index_ty.is_none_or(type_may_be_int)
-}
-
-fn is_range_index(index_ty: Option<&TypeRef>) -> bool {
-    index_ty.is_some_and(type_may_be_range)
-}
-
-fn type_may_be_int(ty: &TypeRef) -> bool {
-    match ty {
-        TypeRef::Int => true,
-        TypeRef::Nullable(inner) => type_may_be_int(inner),
-        TypeRef::Union(members) | TypeRef::Ambiguous(members) => {
-            members.iter().any(type_may_be_int)
-        }
-        _ => false,
-    }
-}
-
-fn type_may_be_range(ty: &TypeRef) -> bool {
-    match ty {
-        TypeRef::Range | TypeRef::RangeInclusive => true,
-        TypeRef::Nullable(inner) => type_may_be_range(inner),
-        TypeRef::Union(members) | TypeRef::Ambiguous(members) => {
-            members.iter().any(type_may_be_range)
-        }
-        _ => false,
     }
 }

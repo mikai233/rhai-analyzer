@@ -3,6 +3,10 @@ use crate::builtin::semantics::{
     refine_type_from_type_of_switch_for_target,
 };
 use crate::builtin::signatures::builtin_universal_method_signature;
+use crate::{
+    BuiltinSemanticKey, builtin_assignment_semantic_key, builtin_binary_semantic_key,
+    builtin_index_semantic_key, builtin_unary_semantic_key,
+};
 use std::collections::BTreeMap;
 
 use crate::infer::calls::{
@@ -10,8 +14,9 @@ use crate::infer::calls::{
     inferred_expr_type,
 };
 use crate::infer::helpers::{
-    ReadTargetKey, infer_additive_result, infer_numeric_result, join_option_types, join_types,
-    make_ambiguous_type, nested_mutation_container_type, symbol_target_key,
+    ReadTargetKey, array_item_type, infer_map_merge_result, infer_numeric_result,
+    join_option_types, join_types, make_ambiguous_type, nested_mutation_container_type,
+    symbol_target_key,
 };
 use crate::infer::loops::{
     block_expr_result_type, function_like_body_result_type, infer_loop_like_expr_type,
@@ -724,12 +729,10 @@ pub(crate) fn infer_unary_expr_type(
             .cloned()
     })?;
 
-    match unary.operator {
-        UnaryOperator::Not => Some(TypeRef::Bool),
-        UnaryOperator::Plus | UnaryOperator::Minus => match operand {
-            TypeRef::Int | TypeRef::Float | TypeRef::Decimal => Some(operand),
-            _ => None,
-        },
+    match builtin_unary_semantic_key(unary.operator, Some(&operand))? {
+        BuiltinSemanticKey::LogicalNotBool => Some(TypeRef::Bool),
+        BuiltinSemanticKey::UnaryPlusNumber | BuiltinSemanticKey::UnaryMinusNumber => Some(operand),
+        _ => None,
     }
 }
 
@@ -746,30 +749,35 @@ pub(crate) fn infer_binary_expr_type(
         .rhs
         .and_then(|rhs| inference.expr_types.get(hir.expr_result_slot(rhs)).cloned());
 
-    match binary.operator {
-        BinaryOperator::OrOr
-        | BinaryOperator::AndAnd
-        | BinaryOperator::EqEq
-        | BinaryOperator::NotEq
-        | BinaryOperator::In
-        | BinaryOperator::Gt
-        | BinaryOperator::GtEq
-        | BinaryOperator::Lt
-        | BinaryOperator::LtEq => Some(TypeRef::Bool),
-        BinaryOperator::Range => Some(TypeRef::Range),
-        BinaryOperator::RangeInclusive => Some(TypeRef::RangeInclusive),
-        BinaryOperator::NullCoalesce => join_option_types(lhs.as_ref(), rhs.as_ref()),
-        BinaryOperator::Add => infer_additive_result(lhs.as_ref(), rhs.as_ref()),
-        BinaryOperator::Subtract
-        | BinaryOperator::Multiply
-        | BinaryOperator::Divide
-        | BinaryOperator::Remainder
-        | BinaryOperator::Power
-        | BinaryOperator::ShiftLeft
-        | BinaryOperator::ShiftRight
-        | BinaryOperator::Or
-        | BinaryOperator::Xor
-        | BinaryOperator::And => infer_numeric_result(lhs.as_ref(), rhs.as_ref()),
+    match builtin_binary_semantic_key(binary.operator, lhs.as_ref(), rhs.as_ref())? {
+        BuiltinSemanticKey::ContainsArray
+        | BuiltinSemanticKey::ContainsString
+        | BuiltinSemanticKey::ContainsBlob
+        | BuiltinSemanticKey::ContainsMap
+        | BuiltinSemanticKey::ContainsRange
+        | BuiltinSemanticKey::EqualityString
+        | BuiltinSemanticKey::EqualityScalar
+        | BuiltinSemanticKey::EqualityContainer
+        | BuiltinSemanticKey::ComparisonString
+        | BuiltinSemanticKey::ComparisonNumber => Some(TypeRef::Bool),
+        BuiltinSemanticKey::RangeOperator => Some(TypeRef::Range),
+        BuiltinSemanticKey::RangeInclusiveOperator => Some(TypeRef::RangeInclusive),
+        BuiltinSemanticKey::NullCoalesce => join_option_types(lhs.as_ref(), rhs.as_ref()),
+        BuiltinSemanticKey::NumericAddition | BuiltinSemanticKey::NumericArithmetic => {
+            infer_numeric_result(lhs.as_ref(), rhs.as_ref())
+        }
+        BuiltinSemanticKey::StringConcatenation => Some(TypeRef::String),
+        BuiltinSemanticKey::ArrayConcatenation => {
+            let lhs_item = lhs.as_ref().and_then(array_item_type);
+            let rhs_item = rhs.as_ref().and_then(array_item_type);
+            Some(TypeRef::Array(Box::new(join_option_types(
+                lhs_item.as_ref(),
+                rhs_item.as_ref(),
+            )?)))
+        }
+        BuiltinSemanticKey::BlobConcatenation => Some(TypeRef::Blob),
+        BuiltinSemanticKey::MapMerge => infer_map_merge_result(lhs.as_ref(), rhs.as_ref()),
+        _ => None,
     }
 }
 
@@ -786,20 +794,26 @@ pub(crate) fn infer_assign_expr_type(
         .rhs
         .and_then(|rhs| inferred_expr_type(hir, inference, rhs));
 
-    match assign.operator {
-        AssignmentOperator::Assign => rhs,
-        AssignmentOperator::NullCoalesce => join_option_types(lhs.as_ref(), rhs.as_ref()),
-        AssignmentOperator::Add => infer_additive_result(lhs.as_ref(), rhs.as_ref()),
-        AssignmentOperator::Subtract
-        | AssignmentOperator::Multiply
-        | AssignmentOperator::Divide
-        | AssignmentOperator::Remainder
-        | AssignmentOperator::Power
-        | AssignmentOperator::ShiftLeft
-        | AssignmentOperator::ShiftRight
-        | AssignmentOperator::Or
-        | AssignmentOperator::Xor
-        | AssignmentOperator::And => infer_numeric_result(lhs.as_ref(), rhs.as_ref()),
+    if assign.operator == AssignmentOperator::Assign {
+        return rhs;
+    }
+
+    match builtin_assignment_semantic_key(assign.operator, lhs.as_ref(), rhs.as_ref())? {
+        BuiltinSemanticKey::NullCoalesceAssignment => join_option_types(lhs.as_ref(), rhs.as_ref()),
+        BuiltinSemanticKey::NumericAssignment | BuiltinSemanticKey::BitwiseAssignment => {
+            infer_numeric_result(lhs.as_ref(), rhs.as_ref())
+        }
+        BuiltinSemanticKey::StringAppendAssignment => Some(TypeRef::String),
+        BuiltinSemanticKey::ArrayAppendAssignment => {
+            let lhs_item = lhs.as_ref().and_then(array_item_type);
+            let rhs_item = rhs.as_ref().and_then(array_item_type);
+            Some(TypeRef::Array(Box::new(join_option_types(
+                lhs_item.as_ref(),
+                rhs_item.as_ref(),
+            )?)))
+        }
+        BuiltinSemanticKey::BlobAppendAssignment => Some(TypeRef::Blob),
+        _ => None,
     }
 }
 
@@ -861,16 +875,33 @@ pub(crate) fn infer_index_expr_type(
     }
 
     let index = hir.index_expr(expr)?;
-    match inferred_expr_type(hir, inference, index.receiver?)? {
-        TypeRef::Array(inner) => Some(*inner),
-        TypeRef::Map(_, value) => Some(*value),
-        TypeRef::Object(fields) => {
-            let key = index
-                .index
-                .and_then(|index_expr| string_literal_value(hir, index_expr));
-            key.and_then(|key| fields.get(key).cloned())
-                .or_else(|| inferred_object_value_union(&fields))
+    let receiver_ty = inferred_expr_type(hir, inference, index.receiver?)?;
+    let index_ty = index
+        .index
+        .and_then(|index_expr| inferred_expr_type(hir, inference, index_expr));
+
+    match builtin_index_semantic_key(&receiver_ty, index_ty.as_ref())? {
+        BuiltinSemanticKey::ArrayIndex => array_item_type(&receiver_ty),
+        BuiltinSemanticKey::ArrayRangeIndex => {
+            Some(TypeRef::Array(Box::new(array_item_type(&receiver_ty)?)))
         }
+        BuiltinSemanticKey::BlobIndex => Some(TypeRef::Int),
+        BuiltinSemanticKey::BlobRangeIndex => Some(TypeRef::Blob),
+        BuiltinSemanticKey::StringIndex => Some(TypeRef::Char),
+        BuiltinSemanticKey::StringRangeIndex => Some(TypeRef::String),
+        BuiltinSemanticKey::MapIndex => match receiver_ty {
+            TypeRef::Map(_, value) => Some(*value),
+            TypeRef::Object(fields) => {
+                let key = index
+                    .index
+                    .and_then(|index_expr| string_literal_value(hir, index_expr));
+                key.and_then(|key| fields.get(key).cloned())
+                    .or_else(|| inferred_object_value_union(&fields))
+            }
+            _ => None,
+        },
+        BuiltinSemanticKey::IntBitIndex => Some(TypeRef::Bool),
+        BuiltinSemanticKey::IntBitRangeIndex => Some(TypeRef::Int),
         _ => None,
     }
 }
