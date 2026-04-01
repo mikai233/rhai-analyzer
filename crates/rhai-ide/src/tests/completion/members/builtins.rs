@@ -125,3 +125,216 @@ fn completions_include_builtin_primitive_members() {
     member_completion(&char_completions, "to_upper");
     member_completion(&char_completions, "to_int");
 }
+
+#[test]
+fn completions_include_builtin_members_for_literal_receivers() {
+    let (analysis, file_id, text) = load_analysis(
+        r#"
+            fn run() {
+                "hello".
+                next();
+            }
+
+            fn next() {}
+        "#,
+    );
+    let string_offset = u32::try_from(
+        text.find("\"hello\".")
+            .expect("expected string member access")
+            + "\"hello\".".len(),
+    )
+    .expect("offset");
+    let string_completions = completions_at(&analysis, file_id, string_offset);
+    member_completion(&string_completions, "contains");
+    member_completion(&string_completions, "len");
+
+    let (analysis, file_id, text) = load_analysis(
+        r#"
+            fn run() {
+                [1, 2, 3].
+                next();
+            }
+
+            fn next() {}
+        "#,
+    );
+    let array_offset = u32::try_from(
+        text.find("[1, 2, 3].")
+            .expect("expected array literal member access")
+            + "[1, 2, 3].".len(),
+    )
+    .expect("offset");
+    let array_completions = completions_at(&analysis, file_id, array_offset);
+    member_completion(&array_completions, "push");
+    member_completion(&array_completions, "len");
+
+    let (analysis, file_id, text) = load_analysis(
+        r#"
+            fn run() {
+                #{ name: "Ada" }.
+                next();
+            }
+
+            fn next() {}
+        "#,
+    );
+    let map_offset = u32::try_from(
+        text.find("#{ name: \"Ada\" }.")
+            .expect("expected object literal member access")
+            + "#{ name: \"Ada\" }.".len(),
+    )
+    .expect("offset");
+    let map_completions = completions_at(&analysis, file_id, map_offset);
+    member_completion(&map_completions, "name");
+    member_completion(&map_completions, "keys");
+
+    let (analysis, file_id, text) = load_analysis(
+        r#"
+            fn run() {
+                blob(4, 0).
+                next();
+            }
+
+            fn next() {}
+        "#,
+    );
+    let blob_offset = u32::try_from(
+        text.find("blob(4, 0).")
+            .expect("expected blob member access")
+            + "blob(4, 0).".len(),
+    )
+    .expect("offset");
+    let blob_completions = completions_at(&analysis, file_id, blob_offset);
+    member_completion(&blob_completions, "len");
+    member_completion(&blob_completions, "push");
+}
+
+#[test]
+fn completions_include_builtin_members_for_expression_receivers() {
+    let (analysis, file_id, text) = load_analysis(
+        r#"
+            fn run() {
+                ("hello").
+                next();
+            }
+
+            fn next() {}
+        "#,
+    );
+    let grouped_offset = u32::try_from(
+        text.find("(\"hello\").")
+            .expect("expected grouped string member access")
+            + "(\"hello\").".len(),
+    )
+    .expect("offset");
+    let grouped_completions = completions_at(&analysis, file_id, grouped_offset);
+    member_completion(&grouped_completions, "contains");
+    member_completion(&grouped_completions, "len");
+
+    let (analysis, file_id, text) = load_analysis(
+        r#"
+            fn make_text() {
+                "hello"
+            }
+
+            fn run() {
+                make_text().
+                next();
+            }
+
+            fn next() {}
+        "#,
+    );
+    let call_offset = u32::try_from(
+        text.find("make_text().")
+            .expect("expected call receiver member access")
+            + "make_text().".len(),
+    )
+    .expect("offset");
+    let call_completions = completions_at(&analysis, file_id, call_offset);
+    member_completion(&call_completions, "contains");
+    member_completion(&call_completions, "len");
+
+    let (analysis, file_id, text) = load_analysis(
+        r#"
+            fn run(flag) {
+                (if flag { "left" } else { "right" }).
+                next();
+            }
+
+            fn next() {}
+        "#,
+    );
+    let conditional_offset = u32::try_from(
+        text.find("(if flag { \"left\" } else { \"right\" }).")
+            .expect("expected conditional receiver member access")
+            + "(if flag { \"left\" } else { \"right\" }).".len(),
+    )
+    .expect("offset");
+    let conditional_completions = completions_at(&analysis, file_id, conditional_offset);
+    member_completion(&conditional_completions, "contains");
+    member_completion(&conditional_completions, "len");
+}
+
+#[test]
+fn completions_include_builtin_members_for_chained_and_indexed_receivers() {
+    let (analysis, file_id, text) = load_analysis(
+        r#"
+            fn run() {
+                "hello".to_upper().
+                next();
+            }
+
+            fn next() {}
+        "#,
+    );
+    let chained_offset = u32::try_from(
+        text.find("\"hello\".to_upper().")
+            .expect("expected chained string member access")
+            + "\"hello\".to_upper().".len(),
+    )
+    .expect("offset");
+    let chained_completions = completions_at(&analysis, file_id, chained_offset);
+    member_completion(&chained_completions, "contains");
+    member_completion(&chained_completions, "len");
+
+    let (analysis, file_id, text) = load_analysis(
+        r#"
+            fn run() {
+                [1, 2, 3][0].
+                next();
+            }
+
+            fn next() {}
+        "#,
+    );
+    let indexed_offset = u32::try_from(
+        text.find("[1, 2, 3][0].")
+            .expect("expected indexed int member access")
+            + "[1, 2, 3][0].".len(),
+    )
+    .expect("offset");
+    let indexed_completions = completions_at(&analysis, file_id, indexed_offset);
+    member_completion(&indexed_completions, "is_odd");
+    member_completion(&indexed_completions, "to_float");
+
+    let (analysis, file_id, text) = load_analysis(
+        r#"
+            fn run() {
+                #{ name: "Ada" }.name.
+                next();
+            }
+
+            fn next() {}
+        "#,
+    );
+    let field_offset = u32::try_from(
+        text.find("#{ name: \"Ada\" }.name.")
+            .expect("expected object field string member access")
+            + "#{ name: \"Ada\" }.name.".len(),
+    )
+    .expect("offset");
+    let field_completions = completions_at(&analysis, file_id, field_offset);
+    member_completion(&field_completions, "contains");
+    member_completion(&field_completions, "len");
+}

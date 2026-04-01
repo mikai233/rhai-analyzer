@@ -203,39 +203,53 @@ fn fallback_member_completion_at(
     analysis: &CachedFileAnalysis,
     offset: TextSize,
 ) -> Vec<MemberCompletion> {
-    let Some(receiver_name) = incomplete_member_receiver_name(snapshot, file_id, offset) else {
-        return Vec::new();
-    };
+    let mut members = BTreeMap::<String, MemberCompletion>::new();
+    if let Some(receiver_name) = incomplete_member_receiver_name(snapshot, file_id, offset)
+        && let Some(symbol) = analysis
+            .hir
+            .visible_symbols_at(offset)
+            .into_iter()
+            .rev()
+            .find(|symbol| analysis.hir.symbol(*symbol).name == receiver_name)
+    {
+        if let Some(query_support) = analysis.query_support.as_ref()
+            && let Some(cached) = query_support.member_completion_sets_by_symbol.get(&symbol)
+        {
+            for member in cached.iter().cloned() {
+                members.entry(member.name.clone()).or_insert(member);
+            }
+        }
 
-    let Some(symbol) = analysis
-        .hir
-        .visible_symbols_at(offset)
-        .into_iter()
-        .rev()
-        .find(|symbol| analysis.hir.symbol(*symbol).name == receiver_name)
+        if let Some(receiver_ty) = snapshot.inferred_symbol_type(file_id, symbol).cloned() {
+            let mut host_members = BTreeMap::<String, MemberCompletion>::new();
+            collect_host_type_member_completions(
+                &mut host_members,
+                snapshot.host_types(),
+                &receiver_ty,
+            );
+            for member in host_members.into_values() {
+                members.entry(member.name.clone()).or_insert(member);
+            }
+        }
+
+        return members.into_values().collect();
+    }
+
+    let Some(receiver_expr) = incomplete_member_receiver_expr(snapshot, file_id, analysis, offset)
     else {
         return Vec::new();
     };
 
-    let mut members = BTreeMap::<String, MemberCompletion>::new();
-    if let Some(query_support) = analysis.query_support.as_ref()
-        && let Some(cached) = query_support.member_completion_sets_by_symbol.get(&symbol)
-    {
-        for member in cached.iter().cloned() {
-            members.entry(member.name.clone()).or_insert(member);
-        }
+    for member in object_field_member_completions(&analysis.hir, receiver_expr) {
+        members.entry(member.name.clone()).or_insert(member);
     }
 
-    if let Some(receiver_ty) = snapshot.inferred_symbol_type(file_id, symbol).cloned() {
-        let mut host_members = BTreeMap::<String, MemberCompletion>::new();
-        collect_host_type_member_completions(
-            &mut host_members,
-            snapshot.host_types(),
-            &receiver_ty,
-        );
-        for member in host_members.into_values() {
-            members.entry(member.name.clone()).or_insert(member);
-        }
+    for member in analysis.hir.member_completions_for_expr(receiver_expr) {
+        members.entry(member.name.clone()).or_insert(member);
+    }
+
+    for member in host_type_member_completions(snapshot, file_id, analysis, receiver_expr) {
+        members.entry(member.name.clone()).or_insert(member);
     }
 
     members.into_values().collect()
@@ -274,6 +288,35 @@ fn incomplete_member_receiver_name(
     }
 
     text.get(receiver_start..receiver_end).map(str::to_owned)
+}
+
+fn incomplete_member_receiver_expr(
+    snapshot: &DatabaseSnapshot,
+    file_id: FileId,
+    analysis: &CachedFileAnalysis,
+    offset: TextSize,
+) -> Option<rhai_hir::ExprId> {
+    let text = snapshot.file_text(file_id)?;
+    let offset = clamp_to_char_boundary(
+        text.as_ref(),
+        usize::try_from(u32::from(offset)).ok()?.min(text.len()),
+    );
+    if offset == 0 || text.as_bytes().get(offset - 1).copied() != Some(b'.') {
+        return None;
+    }
+
+    let dot_offset = TextSize::from((offset - 1) as u32);
+    analysis
+        .hir
+        .exprs
+        .iter()
+        .enumerate()
+        .filter_map(|(index, expr)| {
+            (expr.range.end() == dot_offset)
+                .then_some((rhai_hir::ExprId(index as u32), expr.range.len()))
+        })
+        .max_by_key(|(_, len)| *len)
+        .map(|(expr, _)| expr)
 }
 
 fn is_identifier_byte(byte: u8) -> bool {
