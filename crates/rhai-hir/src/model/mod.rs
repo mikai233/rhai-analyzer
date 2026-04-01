@@ -5,7 +5,9 @@ mod module;
 mod scope;
 mod symbol;
 
-pub use crate::model::diagnostics::{SemanticDiagnostic, SemanticDiagnosticKind};
+pub use crate::model::diagnostics::{
+    SemanticDiagnostic, SemanticDiagnosticCode, SemanticDiagnosticKind,
+};
 pub use crate::model::expr::{
     ArrayExprInfo, AssignExprInfo, AssignmentOperator, BinaryExprInfo, BinaryOperator,
     BlockExprInfo, CallSite, CallSiteId, ClosureExprInfo, ExpectedTypeSite, ExpectedTypeSource,

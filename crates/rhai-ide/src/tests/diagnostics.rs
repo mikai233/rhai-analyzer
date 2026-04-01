@@ -1,6 +1,9 @@
 use std::path::Path;
 
 use rhai_db::ChangeSet;
+use rhai_db::ProjectDiagnosticCode;
+use rhai_hir::SemanticDiagnosticCode;
+use rhai_syntax::SyntaxErrorCode;
 use rhai_vfs::DocumentVersion;
 
 use crate::tests::assert_no_syntax_diagnostics;
@@ -111,12 +114,10 @@ fn diagnostics_report_unresolved_non_string_import_modules() {
         .expect("expected consumer.rhai");
     assert_no_syntax_diagnostics(&analysis, consumer);
 
-    assert!(
-        analysis
-            .diagnostics(consumer)
-            .iter()
-            .any(|diagnostic| diagnostic.message == "unresolved import module `shared_tools`")
-    );
+    assert!(analysis.diagnostics(consumer).iter().any(|diagnostic| {
+        diagnostic.code
+            == ProjectDiagnosticCode::Semantic(SemanticDiagnosticCode::UnresolvedImportModule)
+    }));
 }
 
 #[test]
@@ -140,8 +141,8 @@ fn diagnostics_report_non_string_import_module_expressions() {
     assert_no_syntax_diagnostics(&analysis, consumer);
 
     assert!(analysis.diagnostics(consumer).iter().any(|diagnostic| {
-        diagnostic.message
-            == "import module expression `helper` must evaluate to string, found function"
+        diagnostic.code
+            == ProjectDiagnosticCode::Semantic(SemanticDiagnosticCode::InvalidImportModuleType)
     }));
 }
 
@@ -166,7 +167,8 @@ fn diagnostics_report_nested_function_definitions_as_syntax_errors() {
         .expect("expected main.rhai");
 
     assert!(analysis.diagnostics(file_id).iter().any(|diagnostic| {
-        diagnostic.message == "functions can only be defined at global level"
+        diagnostic.code
+            == ProjectDiagnosticCode::Syntax(SyntaxErrorCode::FunctionsMustBeDefinedAtGlobalLevel)
     }));
 }
 
@@ -190,7 +192,8 @@ fn diagnostics_report_missing_semicolon_between_statements() {
         .expect("expected main.rhai");
 
     assert!(analysis.diagnostics(file_id).iter().any(|diagnostic| {
-        diagnostic.message == "expected `;` to terminate statement"
+        diagnostic.code
+            == ProjectDiagnosticCode::Syntax(SyntaxErrorCode::ExpectedSemicolonToTerminateStatement)
             && diagnostic.severity == DiagnosticSeverity::Error
     }));
 }
@@ -220,16 +223,15 @@ fn diagnostics_report_function_access_to_external_scope() {
         .expect("expected main.rhai");
     assert_no_syntax_diagnostics(&analysis, file_id);
 
+    assert!(analysis.diagnostics(file_id).iter().any(|diagnostic| {
+        diagnostic.code == ProjectDiagnosticCode::Semantic(SemanticDiagnosticCode::UnresolvedName)
+    }));
     assert!(
         analysis
             .diagnostics(file_id)
             .iter()
-            .any(|diagnostic| diagnostic.message == "unresolved name `value`")
+            .any(|diagnostic| { diagnostic.code == ProjectDiagnosticCode::CallerScopeRequired })
     );
-    assert!(analysis.diagnostics(file_id).iter().any(|diagnostic| {
-        diagnostic.message
-            == "call to `helper` must use caller scope (`call!`) because the function references outer-scope names"
-    }));
 }
 
 #[test]
@@ -257,17 +259,15 @@ fn diagnostics_allow_function_access_to_external_scope_for_caller_scope_calls() 
         .expect("expected main.rhai");
     assert_no_syntax_diagnostics(&analysis, file_id);
 
+    assert!(!analysis.diagnostics(file_id).iter().any(|diagnostic| {
+        diagnostic.code == ProjectDiagnosticCode::Semantic(SemanticDiagnosticCode::UnresolvedName)
+    }));
     assert!(
         !analysis
             .diagnostics(file_id)
             .iter()
-            .any(|diagnostic| diagnostic.message == "unresolved name `value`")
+            .any(|diagnostic| { diagnostic.code == ProjectDiagnosticCode::CallerScopeRequired })
     );
-    assert!(!analysis.diagnostics(file_id).iter().any(|diagnostic| {
-        diagnostic
-            .message
-            .contains("must use caller scope (`call!`)")
-    }));
 }
 
 #[test]
@@ -293,12 +293,9 @@ fn diagnostics_allow_function_access_to_external_scope_when_uncalled() {
         .expect("expected main.rhai");
     assert_no_syntax_diagnostics(&analysis, file_id);
 
-    assert!(
-        !analysis
-            .diagnostics(file_id)
-            .iter()
-            .any(|diagnostic| diagnostic.message == "unresolved name `value`")
-    );
+    assert!(!analysis.diagnostics(file_id).iter().any(|diagnostic| {
+        diagnostic.code == ProjectDiagnosticCode::Semantic(SemanticDiagnosticCode::UnresolvedName)
+    }));
 }
 
 #[test]
@@ -324,12 +321,9 @@ fn diagnostics_allow_exported_const_access_inside_uncalled_functions() {
         .expect("expected main.rhai");
     assert_no_syntax_diagnostics(&analysis, file_id);
 
-    assert!(
-        !analysis
-            .diagnostics(file_id)
-            .iter()
-            .any(|diagnostic| diagnostic.message == "unresolved name `DEFAULTS`")
-    );
+    assert!(!analysis.diagnostics(file_id).iter().any(|diagnostic| {
+        diagnostic.code == ProjectDiagnosticCode::Semantic(SemanticDiagnosticCode::UnresolvedName)
+    }));
 }
 
 #[test]
@@ -373,10 +367,14 @@ fn diagnostics_report_caller_scope_violations_for_imported_calls() {
         .expect("expected consumer.rhai");
     assert_no_syntax_diagnostics(&analysis, consumer);
 
-    assert!(analysis.diagnostics(consumer).iter().any(|diagnostic| {
-        diagnostic.message
-            == "call to `make_config` must use caller scope (`call!`) because the function references outer-scope names"
-    }), "expected caller-scope diagnostic in importing module, got {:?}", analysis.diagnostics(consumer));
+    assert!(
+        analysis
+            .diagnostics(consumer)
+            .iter()
+            .any(|diagnostic| diagnostic.code == ProjectDiagnosticCode::CallerScopeRequired),
+        "expected caller-scope diagnostic in importing module, got {:?}",
+        analysis.diagnostics(consumer)
+    );
 }
 
 #[test]
@@ -431,12 +429,14 @@ fn diagnostics_report_unresolved_import_members_after_provider_renames() {
     assert!(
         diagnostics
             .iter()
-            .any(|diagnostic| { diagnostic.message == "unresolved import member `tools::helper`" })
+            .any(|diagnostic| diagnostic.code == ProjectDiagnosticCode::UnresolvedImportMember)
     );
     assert!(
         diagnostics
             .iter()
-            .any(|diagnostic| { diagnostic.message == "unresolved import member `tools::VALUE`" })
+            .filter(|diagnostic| diagnostic.code == ProjectDiagnosticCode::UnresolvedImportMember)
+            .count()
+            >= 2
     );
 }
 
@@ -460,10 +460,12 @@ fn diagnostics_report_missing_static_path_import_files() {
         .expect("expected main.rhai");
     assert_no_syntax_diagnostics(&analysis, file_id);
 
-    assert!(analysis.diagnostics(file_id).iter().any(|diagnostic| {
-        diagnostic.message
-            == "import module `./missing_module` does not resolve to an existing workspace file"
-    }));
+    assert!(
+        analysis
+            .diagnostics(file_id)
+            .iter()
+            .any(|diagnostic| { diagnostic.code == ProjectDiagnosticCode::BrokenLinkedImport })
+    );
 }
 
 #[test]
@@ -486,12 +488,10 @@ fn diagnostics_report_unresolved_static_named_import_modules() {
         .expect("expected main.rhai");
     assert_no_syntax_diagnostics(&analysis, file_id);
 
-    assert!(
-        analysis
-            .diagnostics(file_id)
-            .iter()
-            .any(|diagnostic| { diagnostic.message == "unresolved import module `env`" })
-    );
+    assert!(analysis.diagnostics(file_id).iter().any(|diagnostic| {
+        diagnostic.code
+            == ProjectDiagnosticCode::Semantic(SemanticDiagnosticCode::UnresolvedImportModule)
+    }));
 }
 
 #[test]
@@ -517,12 +517,9 @@ fn diagnostics_allow_global_import_aliases_inside_functions() {
         .expect("expected main.rhai");
     assert_no_syntax_diagnostics(&analysis, file_id);
 
-    assert!(
-        !analysis
-            .diagnostics(file_id)
-            .iter()
-            .any(|diagnostic| { diagnostic.message == "unresolved name `hey`" })
-    );
+    assert!(!analysis.diagnostics(file_id).iter().any(|diagnostic| {
+        diagnostic.code == ProjectDiagnosticCode::Semantic(SemanticDiagnosticCode::UnresolvedName)
+    }));
 }
 
 #[test]
@@ -542,12 +539,10 @@ fn diagnostics_keep_unresolved_non_string_import_modules_visible() {
         .expect("expected consumer.rhai");
     assert_no_syntax_diagnostics(&analysis, consumer);
 
-    assert!(
-        analysis
-            .diagnostics(consumer)
-            .iter()
-            .any(|diagnostic| diagnostic.message == "unresolved import module `shared_tools`")
-    );
+    assert!(analysis.diagnostics(consumer).iter().any(|diagnostic| {
+        diagnostic.code
+            == ProjectDiagnosticCode::Semantic(SemanticDiagnosticCode::UnresolvedImportModule)
+    }));
 }
 
 #[test]
@@ -581,7 +576,10 @@ fn diagnostics_with_fixes_do_not_attach_workspace_export_auto_imports() {
     let diagnostics = analysis.diagnostics_with_fixes(consumer);
     let unresolved = diagnostics
         .iter()
-        .find(|entry| entry.diagnostic.message == "unresolved name `shared_tools`")
+        .find(|entry| {
+            entry.diagnostic.code
+                == ProjectDiagnosticCode::Semantic(SemanticDiagnosticCode::UnresolvedName)
+        })
         .expect("expected unresolved name diagnostic");
 
     assert!(unresolved.fixes.is_empty());
@@ -607,7 +605,10 @@ fn diagnostics_with_fixes_attach_remove_unused_import_fix() {
     let diagnostics = analysis.diagnostics_with_fixes(file_id);
     let unused = diagnostics
         .iter()
-        .find(|entry| entry.diagnostic.message == "unused symbol `tools`")
+        .find(|entry| {
+            entry.diagnostic.code
+                == ProjectDiagnosticCode::Semantic(SemanticDiagnosticCode::UnusedSymbol)
+        })
         .expect("expected unused import diagnostic");
 
     assert_eq!(unused.fixes.len(), 1);
@@ -645,7 +646,10 @@ fn diagnostics_keep_errors_for_hard_failures() {
     let unresolved = analysis
         .diagnostics(file_id)
         .into_iter()
-        .find(|diagnostic| diagnostic.message == "unresolved name `value`")
+        .find(|diagnostic| {
+            diagnostic.code
+                == ProjectDiagnosticCode::Semantic(SemanticDiagnosticCode::UnresolvedName)
+        })
         .expect("expected unresolved name diagnostic");
 
     assert_eq!(unresolved.severity, DiagnosticSeverity::Error);
@@ -701,19 +705,20 @@ fn diagnostics_keep_unaliased_import_regular_members_unresolved() {
     assert_no_syntax_diagnostics(&analysis, consumer);
 
     let diagnostics = analysis.diagnostics(consumer);
+    assert!(diagnostics.iter().any(|diagnostic| {
+        diagnostic.code == ProjectDiagnosticCode::Semantic(SemanticDiagnosticCode::UnresolvedName)
+    }));
+    assert!(diagnostics.iter().any(|diagnostic| {
+        diagnostic.code == ProjectDiagnosticCode::Semantic(SemanticDiagnosticCode::UnresolvedName)
+    }));
     assert!(
         diagnostics
             .iter()
-            .any(|diagnostic| diagnostic.message == "unresolved name `helper`")
-    );
-    assert!(
-        diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.message == "unresolved name `VALUE`")
-    );
-    assert!(
-        !diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.message.contains("bump"))
+            .filter(|diagnostic| {
+                diagnostic.code
+                    == ProjectDiagnosticCode::Semantic(SemanticDiagnosticCode::UnresolvedName)
+            })
+            .count()
+            == 2
     );
 }

@@ -6,10 +6,10 @@ use std::time::Duration;
 use rhai_hir::{
     CompletionSymbol, DocumentSymbol, ExternalSignatureIndex, FileBackedSymbolIdentity, FileHir,
     FileSymbolIndex, FunctionTypeRef, MemberCompletion, ModuleExportEdge, ModuleGraphIndex,
-    NavigationTarget, RenamePreflightIssue, SemanticDiagnostic, StableSymbolKey, SymbolId,
-    SymbolKind, TypeRef, TypeSlotAssignments, WorkspaceSymbol,
+    NavigationTarget, RenamePreflightIssue, SemanticDiagnostic, SemanticDiagnosticCode,
+    StableSymbolKey, SymbolId, SymbolKind, TypeRef, TypeSlotAssignments, WorkspaceSymbol,
 };
-use rhai_syntax::{Parse, SyntaxError, TextRange, TextSize};
+use rhai_syntax::{Parse, SyntaxError, SyntaxErrorCode, TextRange, TextSize};
 use rhai_vfs::{DocumentVersion, FileId};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -227,9 +227,20 @@ pub enum ProjectDiagnosticTag {
     Unnecessary,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum ProjectDiagnosticCode {
+    Syntax(SyntaxErrorCode),
+    Semantic(SemanticDiagnosticCode),
+    BrokenLinkedImport,
+    AmbiguousLinkedImport,
+    UnresolvedImportMember,
+    CallerScopeRequired,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProjectDiagnostic {
     pub kind: ProjectDiagnosticKind,
+    pub code: ProjectDiagnosticCode,
     pub severity: ProjectDiagnosticSeverity,
     pub range: TextRange,
     pub message: String,

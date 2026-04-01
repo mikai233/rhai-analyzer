@@ -1,6 +1,9 @@
 use crate::Server;
 use crate::tests::{absolute_test_path, assert_valid_rhai_syntax, file_url};
+use rhai_db::ProjectDiagnosticCode;
+use rhai_hir::SemanticDiagnosticCode;
 use rhai_ide::{DiagnosticSeverity, DiagnosticTag};
+use rhai_syntax::SyntaxErrorCode;
 
 #[test]
 fn opening_document_returns_diagnostics_for_that_document() {
@@ -15,6 +18,9 @@ fn opening_document_returns_diagnostics_for_that_document() {
     assert_eq!(updates[0].uri, uri);
     assert_eq!(updates[0].version, Some(1));
     assert!(!updates[0].diagnostics.is_empty());
+    assert!(updates[0].diagnostics.iter().any(|diagnostic| {
+        diagnostic.code == ProjectDiagnosticCode::Syntax(SyntaxErrorCode::ExpectedExpression)
+    }));
 }
 
 #[test]
@@ -94,7 +100,9 @@ fn unused_diagnostics_are_published_as_warnings() {
     let unused = updates
         .iter()
         .flat_map(|update| update.diagnostics.iter())
-        .find(|diagnostic| diagnostic.message == "unused symbol `tools`")
+        .find(|diagnostic| {
+            diagnostic.code == ProjectDiagnosticCode::Semantic(SemanticDiagnosticCode::UnusedSymbol)
+        })
         .expect("expected unused diagnostic");
 
     assert_eq!(unused.severity, DiagnosticSeverity::Warning);
@@ -142,7 +150,10 @@ fn changing_importer_republishes_dependency_diagnostics_immediately() {
         provider_update_with_call
             .diagnostics
             .iter()
-            .any(|diagnostic| { diagnostic.message == "unresolved name `defaults`" })
+            .any(|diagnostic| {
+                diagnostic.code
+                    == ProjectDiagnosticCode::Semantic(SemanticDiagnosticCode::UnresolvedName)
+            })
     );
 
     let updates_without_call = server
@@ -156,7 +167,10 @@ fn changing_importer_republishes_dependency_diagnostics_immediately() {
         !provider_update_without_call
             .diagnostics
             .iter()
-            .any(|diagnostic| diagnostic.message == "unresolved name `defaults`"),
+            .any(|diagnostic| {
+                diagnostic.code
+                    == ProjectDiagnosticCode::Semantic(SemanticDiagnosticCode::UnresolvedName)
+            }),
         "expected unresolved capture diagnostic to clear without regular calls, got {:?}",
         provider_update_without_call.diagnostics
     );

@@ -100,6 +100,7 @@ pub(crate) fn diagnostics_with_fixes(
 
             DiagnosticWithFixes {
                 diagnostic: Diagnostic {
+                    code: diagnostic.code,
                     message: diagnostic.message,
                     range,
                     severity: match diagnostic.severity {

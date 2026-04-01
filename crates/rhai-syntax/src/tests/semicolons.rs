@@ -1,4 +1,4 @@
-use crate::parse_text;
+use crate::{SyntaxErrorCode, parse_text};
 
 #[test]
 fn reports_missing_semicolon_between_non_terminal_statements() {
@@ -9,13 +9,13 @@ fn reports_missing_semicolon_between_non_terminal_statements() {
     "#,
     );
 
-    let messages = parse
+    let codes = parse
         .errors()
         .iter()
-        .map(|error| error.message())
+        .map(|error| error.code())
         .collect::<Vec<_>>();
     assert!(
-        messages.contains(&"expected `;` to terminate statement"),
+        codes.contains(&&SyntaxErrorCode::ExpectedSemicolonToTerminateStatement),
         "{}",
         parse.debug_tree()
     );
@@ -30,13 +30,13 @@ fn reports_missing_semicolon_after_let_even_when_initializer_is_block() {
     "#,
     );
 
-    let messages = parse
+    let codes = parse
         .errors()
         .iter()
-        .map(|error| error.message())
+        .map(|error| error.code())
         .collect::<Vec<_>>();
     assert!(
-        messages.contains(&"expected `;` to terminate statement"),
+        codes.contains(&&SyntaxErrorCode::ExpectedSemicolonToTerminateStatement),
         "{}",
         parse.debug_tree()
     );

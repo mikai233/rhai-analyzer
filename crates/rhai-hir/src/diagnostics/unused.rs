@@ -1,6 +1,6 @@
 use crate::model::{
-    FileHir, ReferenceKind, ScopeId, ScopeKind, SemanticDiagnostic, SemanticDiagnosticKind, Symbol,
-    SymbolId, SymbolKind,
+    FileHir, ReferenceKind, ScopeId, ScopeKind, SemanticDiagnostic, SemanticDiagnosticCode,
+    SemanticDiagnosticKind, Symbol, SymbolId, SymbolKind,
 };
 use rhai_syntax::TextSize;
 
@@ -17,6 +17,7 @@ impl FileHir {
             })
             .map(|(_, symbol)| SemanticDiagnostic {
                 kind: SemanticDiagnosticKind::UnusedSymbol,
+                code: SemanticDiagnosticCode::UnusedSymbol,
                 range: symbol.range,
                 message: format!("unused symbol `{}`", symbol.name),
                 related_range: None,

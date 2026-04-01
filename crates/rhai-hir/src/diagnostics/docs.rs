@@ -3,7 +3,10 @@ use std::collections::{HashMap, HashSet};
 use rhai_syntax::TextRange;
 
 use crate::docs::DocTag;
-use crate::model::{FileHir, SemanticDiagnostic, SemanticDiagnosticKind, SymbolId, SymbolKind};
+use crate::model::{
+    FileHir, SemanticDiagnostic, SemanticDiagnosticCode, SemanticDiagnosticKind, SymbolId,
+    SymbolKind,
+};
 use crate::ty::TypeRef;
 
 impl FileHir {
@@ -36,6 +39,9 @@ impl FileHir {
                 if count > 1 {
                     diagnostics.push(SemanticDiagnostic {
                         kind: SemanticDiagnosticKind::InconsistentDocType,
+                        code: SemanticDiagnosticCode::DuplicateDocParamTag {
+                            name: name.to_owned(),
+                        },
                         range: docs.range,
                         message: format!("duplicate `@param` tag for `{name}`"),
                         related_range: Some(symbol.range),
@@ -46,6 +52,7 @@ impl FileHir {
             if return_tag_count > 1 {
                 diagnostics.push(SemanticDiagnostic {
                     kind: SemanticDiagnosticKind::InconsistentDocType,
+                    code: SemanticDiagnosticCode::DuplicateDocReturnTag,
                     range: docs.range,
                     message: "duplicate `@return` tags".to_owned(),
                     related_range: Some(symbol.range),
@@ -64,6 +71,9 @@ impl FileHir {
                     {
                         diagnostics.push(SemanticDiagnostic {
                             kind: SemanticDiagnosticKind::InconsistentDocType,
+                            code: SemanticDiagnosticCode::FunctionDocTagsOnNonFunction {
+                                symbol: symbol.name.clone(),
+                            },
                             range: docs.range,
                             message: format!(
                                 "function doc tags cannot be attached to `{}`",
@@ -92,6 +102,9 @@ impl FileHir {
         {
             diagnostics.push(SemanticDiagnostic {
                 kind: SemanticDiagnosticKind::InconsistentDocType,
+                code: SemanticDiagnosticCode::FunctionHasNonFunctionTypeAnnotation {
+                    function: function.name.clone(),
+                },
                 range: docs_range,
                 message: format!(
                     "function `{}` has a non-function type annotation",
@@ -120,6 +133,10 @@ impl FileHir {
                 {
                     diagnostics.push(SemanticDiagnostic {
                         kind: SemanticDiagnosticKind::InconsistentDocType,
+                        code: SemanticDiagnosticCode::DocParamDoesNotMatchFunction {
+                            name: name.clone(),
+                            function: function.name.clone(),
+                        },
                         range: docs_range,
                         message: format!(
                             "doc tag `@param {name}` does not match any parameter of `{}`",

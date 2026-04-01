@@ -1,4 +1,7 @@
-use crate::model::{FileHir, ScopeKind, SemanticDiagnostic, SemanticDiagnosticKind, SymbolKind};
+use crate::model::{
+    FileHir, ScopeKind, SemanticDiagnostic, SemanticDiagnosticCode, SemanticDiagnosticKind,
+    SymbolKind,
+};
 
 impl FileHir {
     pub(crate) fn unresolved_import_export_diagnostics(&self) -> Vec<SemanticDiagnostic> {
@@ -10,6 +13,7 @@ impl FileHir {
                 if reference.target.is_none() {
                     diagnostics.push(SemanticDiagnostic {
                         kind: SemanticDiagnosticKind::UnresolvedImport,
+                        code: SemanticDiagnosticCode::UnresolvedImportModule,
                         range: reference.range,
                         message: format!("unresolved import module `{}`", reference.name),
                         related_range: Some(import.range),
@@ -27,6 +31,7 @@ impl FileHir {
                 if reference.target.is_none() {
                     diagnostics.push(SemanticDiagnostic {
                         kind: SemanticDiagnosticKind::UnresolvedExport,
+                        code: SemanticDiagnosticCode::UnresolvedExportTarget,
                         range: reference.range,
                         message: format!("unresolved export target `{}`", reference.name),
                         related_range: Some(export.range),
@@ -55,6 +60,7 @@ impl FileHir {
                     || self.scope(symbol.scope).kind != ScopeKind::File)
                     .then(|| SemanticDiagnostic {
                         kind: SemanticDiagnosticKind::InvalidExportTarget,
+                        code: SemanticDiagnosticCode::InvalidExportTarget,
                         range: self.reference(reference_id).range,
                         message: format!(
                             "export target `{}` must refer to a global variable or constant",

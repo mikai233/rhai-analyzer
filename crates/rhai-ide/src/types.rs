@@ -1,3 +1,4 @@
+use rhai_db::ProjectDiagnosticCode;
 use rhai_hir::SymbolKind;
 use rhai_syntax::TextRange;
 use rhai_vfs::FileId;
@@ -10,6 +11,7 @@ pub struct FilePosition {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Diagnostic {
+    pub code: ProjectDiagnosticCode,
     pub message: String,
     pub range: TextRange,
     pub severity: DiagnosticSeverity,

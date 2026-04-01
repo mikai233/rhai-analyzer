@@ -1,7 +1,8 @@
 use std::collections::HashSet;
 
 use crate::model::{
-    FileHir, ReferenceId, ReferenceKind, SemanticDiagnostic, SemanticDiagnosticKind,
+    FileHir, ReferenceId, ReferenceKind, SemanticDiagnostic, SemanticDiagnosticCode,
+    SemanticDiagnosticKind,
 };
 
 impl FileHir {
@@ -30,6 +31,7 @@ impl FileHir {
             })
             .map(|(_, reference)| SemanticDiagnostic {
                 kind: SemanticDiagnosticKind::UnresolvedName,
+                code: SemanticDiagnosticCode::UnresolvedName,
                 range: reference.range,
                 message: format!("unresolved name `{}`", reference.name),
                 related_range: None,
@@ -50,6 +52,7 @@ impl FileHir {
                 let previous = symbol.duplicate_of?;
                 Some(SemanticDiagnostic {
                     kind: SemanticDiagnosticKind::DuplicateDefinition,
+                    code: SemanticDiagnosticCode::DuplicateDefinition,
                     range: symbol.range,
                     message: format!("duplicate definition of `{}`", symbol.name),
                     related_range: Some(self.symbol(previous).range),

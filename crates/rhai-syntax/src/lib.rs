@@ -21,8 +21,8 @@ pub use lexer::{Lexed, lex_text};
 pub use parser::parse_text;
 pub use syntax::{
     GreenNode, GreenToken, LexToken, NodeOrToken, Parse, RawSyntaxKind, RhaiKind, RhaiLanguage,
-    SyntaxElement, SyntaxError, SyntaxKind, SyntaxNode, SyntaxNodeExt, SyntaxToken, TextRange,
-    TextSize, TokenKind,
+    SyntaxElement, SyntaxError, SyntaxErrorCode, SyntaxKind, SyntaxNode, SyntaxNodeExt,
+    SyntaxToken, TextRange, TextSize, TokenKind,
 };
 pub use trivia::{
     AttachedComment, CommentKind, GapTrivia, OwnedTrivia, TriviaBoundary, TriviaSlot, TriviaStore,

@@ -21,9 +21,10 @@ pub use types::{
     LocatedModuleExport, LocatedModuleGraph, LocatedNavigationTarget, LocatedOutgoingCall,
     LocatedProjectReference, LocatedRenamePreflightIssue, LocatedSymbolIdentity,
     LocatedWorkspaceSymbol, ObjectFieldHoverInfo, ParseInputSlot, PerFileQuerySupport,
-    PerformanceStats, ProjectDiagnostic, ProjectDiagnosticKind, ProjectDiagnosticSeverity,
-    ProjectDiagnosticTag, ProjectReferenceKind, ProjectReferences, ProjectRenamePlan,
-    RemovedFileImpact, WorkspaceDependencyEdge, WorkspaceDependencyGraph, WorkspaceFileInfo,
+    PerformanceStats, ProjectDiagnostic, ProjectDiagnosticCode, ProjectDiagnosticKind,
+    ProjectDiagnosticSeverity, ProjectDiagnosticTag, ProjectReferenceKind, ProjectReferences,
+    ProjectRenamePlan, RemovedFileImpact, WorkspaceDependencyEdge, WorkspaceDependencyGraph,
+    WorkspaceFileInfo,
 };
 
 #[cfg(test)]

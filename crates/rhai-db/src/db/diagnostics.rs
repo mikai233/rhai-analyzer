@@ -1,10 +1,12 @@
 use crate::db::DatabaseSnapshot;
 use crate::db::imports::linked_import_targets_for_path_reference;
 use crate::types::{
-    ProjectDiagnostic, ProjectDiagnosticKind, ProjectDiagnosticSeverity, ProjectDiagnosticTag,
+    ProjectDiagnostic, ProjectDiagnosticCode, ProjectDiagnosticKind, ProjectDiagnosticSeverity,
+    ProjectDiagnosticTag,
 };
 use rhai_hir::{
-    FileHir, ReferenceId, ScopeId, SemanticDiagnostic, SemanticDiagnosticKind, SymbolId, SymbolKind,
+    FileHir, ReferenceId, ScopeId, SemanticDiagnostic, SemanticDiagnosticCode,
+    SemanticDiagnosticKind, SymbolId, SymbolKind,
 };
 use rhai_syntax::{TextRange, TextSize};
 use rhai_vfs::FileId;
@@ -23,6 +25,7 @@ impl DatabaseSnapshot {
             .iter()
             .map(|diagnostic| ProjectDiagnostic {
                 kind: ProjectDiagnosticKind::Syntax,
+                code: ProjectDiagnosticCode::Syntax(diagnostic.code().clone()),
                 severity: ProjectDiagnosticSeverity::Error,
                 range: diagnostic.range(),
                 message: diagnostic.message().to_owned(),
@@ -50,6 +53,7 @@ impl DatabaseSnapshot {
         });
         diagnostics.dedup_by(|left, right| {
             left.kind == right.kind
+                && left.code == right.code
                 && left.range == right.range
                 && left.related_range == right.related_range
                 && left.message == right.message
@@ -98,6 +102,7 @@ fn project_semantic_diagnostics(
 
             projected.push(ProjectDiagnostic {
                 kind: ProjectDiagnosticKind::Semantic,
+                code: ProjectDiagnosticCode::Semantic(diagnostic.code.clone()),
                 severity: semantic_diagnostic_severity(diagnostic.kind),
                 range: diagnostic.range,
                 message: diagnostic.message.clone(),
@@ -110,6 +115,7 @@ fn project_semantic_diagnostics(
         if diagnostic.kind != SemanticDiagnosticKind::UnresolvedImport {
             projected.push(ProjectDiagnostic {
                 kind: ProjectDiagnosticKind::Semantic,
+                code: ProjectDiagnosticCode::Semantic(diagnostic.code.clone()),
                 severity: semantic_diagnostic_severity(diagnostic.kind),
                 range: diagnostic.range,
                 message: diagnostic.message.clone(),
@@ -122,6 +128,7 @@ fn project_semantic_diagnostics(
         let Some(import_index) = import_index_for_diagnostic(hir, diagnostic) else {
             projected.push(ProjectDiagnostic {
                 kind: ProjectDiagnosticKind::Semantic,
+                code: ProjectDiagnosticCode::Semantic(diagnostic.code.clone()),
                 severity: semantic_diagnostic_severity(diagnostic.kind),
                 range: diagnostic.range,
                 message: diagnostic.message.clone(),
@@ -136,6 +143,7 @@ fn project_semantic_diagnostics(
             Some(linked_import) => {
                 projected.push(ProjectDiagnostic {
                     kind: ProjectDiagnosticKind::AmbiguousLinkedImport,
+                    code: ProjectDiagnosticCode::AmbiguousLinkedImport,
                     severity: ProjectDiagnosticSeverity::Error,
                     range: diagnostic.range,
                     message: format!(
@@ -158,6 +166,7 @@ fn project_semantic_diagnostics(
             None => {
                 projected.push(ProjectDiagnostic {
                     kind: ProjectDiagnosticKind::Semantic,
+                    code: ProjectDiagnosticCode::Semantic(diagnostic.code.clone()),
                     severity: semantic_diagnostic_severity(diagnostic.kind),
                     range: diagnostic.range,
                     message: diagnostic.message.clone(),
@@ -396,6 +405,7 @@ fn caller_scope_regular_call_diagnostics(
 
             projected.push(ProjectDiagnostic {
                 kind: ProjectDiagnosticKind::Semantic,
+                code: ProjectDiagnosticCode::CallerScopeRequired,
                 severity: ProjectDiagnosticSeverity::Error,
                 range: call_range,
                 message: format!(
@@ -571,6 +581,14 @@ fn static_import_missing_module_diagnostics(
 
             ProjectDiagnostic {
                 kind,
+                code: match kind {
+                    ProjectDiagnosticKind::BrokenLinkedImport => {
+                        ProjectDiagnosticCode::BrokenLinkedImport
+                    }
+                    _ => ProjectDiagnosticCode::Semantic(
+                        SemanticDiagnosticCode::UnresolvedImportModule,
+                    ),
+                },
                 severity: ProjectDiagnosticSeverity::Error,
                 range: hir
                     .import(index)
@@ -623,6 +641,7 @@ fn unresolved_import_member_path_diagnostics(
         })
         .map(|(reference_id, import_index, parts)| ProjectDiagnostic {
             kind: ProjectDiagnosticKind::Semantic,
+            code: ProjectDiagnosticCode::UnresolvedImportMember,
             severity: ProjectDiagnosticSeverity::Error,
             range: hir.reference(reference_id).range,
             message: format!("unresolved import member `{}`", parts.join("::")),
@@ -742,6 +761,20 @@ fn linked_import_usage_diagnostics(
     hir.references_to(alias_symbol)
         .map(|reference_id| ProjectDiagnostic {
             kind,
+            code: match kind {
+                ProjectDiagnosticKind::BrokenLinkedImport => {
+                    ProjectDiagnosticCode::BrokenLinkedImport
+                }
+                ProjectDiagnosticKind::AmbiguousLinkedImport => {
+                    ProjectDiagnosticCode::AmbiguousLinkedImport
+                }
+                ProjectDiagnosticKind::Semantic => {
+                    ProjectDiagnosticCode::Semantic(SemanticDiagnosticCode::UnresolvedImportModule)
+                }
+                ProjectDiagnosticKind::Syntax => {
+                    unreachable!("syntax diagnostics are not emitted here")
+                }
+            },
             severity: ProjectDiagnosticSeverity::Error,
             range: hir.reference(reference_id).range,
             message: message.clone(),

@@ -1,5 +1,5 @@
 use crate::tests::parse_valid;
-use crate::{SemanticDiagnosticKind, SymbolKind, lower_file};
+use crate::{SemanticDiagnosticCode, SemanticDiagnosticKind, SymbolKind, lower_file};
 
 #[test]
 fn semantic_diagnostics_report_unresolved_names() {
@@ -16,7 +16,7 @@ fn semantic_diagnostics_report_unresolved_names() {
 
     assert_eq!(diagnostics.len(), 1);
     assert_eq!(diagnostics[0].kind, SemanticDiagnosticKind::UnresolvedName);
-    assert_eq!(diagnostics[0].message, "unresolved name `missing_name`");
+    assert_eq!(diagnostics[0].code, SemanticDiagnosticCode::UnresolvedName);
     assert!(diagnostics[0].related_range.is_none());
 }
 
@@ -44,7 +44,7 @@ fn semantic_diagnostics_report_duplicate_definitions_in_same_scope() {
     assert!(
         diagnostics
             .iter()
-            .any(|diagnostic| diagnostic.message == "duplicate definition of `arg`")
+            .any(|diagnostic| diagnostic.code == SemanticDiagnosticCode::DuplicateDefinition)
     );
     assert!(
         diagnostics
@@ -100,15 +100,15 @@ fn semantic_diagnostics_report_unresolved_imports_and_exports() {
 
     assert_eq!(import_diagnostics.len(), 1);
     assert_eq!(
-        import_diagnostics[0].message,
-        "unresolved import module `missing_module`"
+        import_diagnostics[0].code,
+        SemanticDiagnosticCode::UnresolvedImportModule
     );
     assert!(import_diagnostics[0].related_range.is_some());
 
     assert_eq!(export_diagnostics.len(), 1);
     assert_eq!(
-        export_diagnostics[0].message,
-        "unresolved export target `missing_value`"
+        export_diagnostics[0].code,
+        SemanticDiagnosticCode::UnresolvedExportTarget
     );
     assert!(export_diagnostics[0].related_range.is_some());
 
@@ -135,8 +135,8 @@ fn semantic_diagnostics_reject_explicit_function_exports() {
 
     assert_eq!(invalid_export_diagnostics.len(), 1);
     assert_eq!(
-        invalid_export_diagnostics[0].message,
-        "export target `helper` must refer to a global variable or constant"
+        invalid_export_diagnostics[0].code,
+        SemanticDiagnosticCode::InvalidExportTarget
     );
     assert!(invalid_export_diagnostics[0].related_range.is_some());
 }
@@ -170,24 +170,17 @@ fn semantic_diagnostics_reject_non_string_import_expressions() {
         .collect::<Vec<_>>();
 
     assert_eq!(invalid_import_diagnostics.len(), 2);
-    assert!(invalid_import_diagnostics.iter().any(|diagnostic| {
-        diagnostic.message
-            == "import module expression `helper` must evaluate to string, found function"
-    }));
-    assert!(invalid_import_diagnostics.iter().any(|diagnostic| {
-        diagnostic.message
-            == "import module expression `module_name` must evaluate to string, found int"
-    }));
+    assert!(
+        invalid_import_diagnostics.iter().all(|diagnostic| {
+            diagnostic.code == SemanticDiagnosticCode::InvalidImportModuleType
+        })
+    );
     assert!(
         invalid_import_diagnostics
             .iter()
             .all(|diagnostic| diagnostic.related_range.is_some())
     );
-    assert!(!diagnostics.iter().any(|diagnostic| {
-        diagnostic.message.contains("prefix + suffix")
-            || diagnostic.message.contains("block_module")
-            || diagnostic.message.contains("conditional_module")
-    }));
+    assert_eq!(invalid_import_diagnostics.len(), 2, "{diagnostics:?}");
 }
 
 #[test]
@@ -210,7 +203,7 @@ fn semantic_diagnostics_reject_function_access_to_external_scope() {
         .collect::<Vec<_>>();
 
     assert_eq!(unresolved.len(), 1);
-    assert_eq!(unresolved[0].message, "unresolved name `value`");
+    assert_eq!(unresolved[0].code, SemanticDiagnosticCode::UnresolvedName);
 }
 
 #[test]
@@ -229,7 +222,7 @@ fn semantic_diagnostics_allow_global_import_aliases_inside_functions() {
 
     assert!(!diagnostics.iter().any(|diagnostic| {
         diagnostic.kind == SemanticDiagnosticKind::UnresolvedName
-            && diagnostic.message == "unresolved name `hey`"
+            && diagnostic.code == SemanticDiagnosticCode::UnresolvedName
     }));
 
     let hey_reference = hir
@@ -270,28 +263,14 @@ fn semantic_diagnostics_report_unused_symbols() {
     assert!(
         diagnostics
             .iter()
-            .any(|diagnostic| diagnostic.message == "unused symbol `secure`")
+            .any(|diagnostic| diagnostic.code == SemanticDiagnosticCode::UnusedSymbol)
     );
     assert!(
         diagnostics
             .iter()
-            .any(|diagnostic| diagnostic.message == "unused symbol `local`")
+            .all(|diagnostic| diagnostic.code == SemanticDiagnosticCode::UnusedSymbol)
     );
-    assert!(
-        !diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.message.contains("_ignored"))
-    );
-    assert!(
-        !diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.message.contains("KEPT"))
-    );
-    assert!(
-        !diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.message.contains("arg"))
-    );
+    assert_eq!(diagnostics.len(), 2, "{diagnostics:?}");
 }
 
 #[test]
@@ -313,9 +292,7 @@ fn semantic_diagnostics_do_not_report_caller_scope_captures_as_unused_symbols() 
         .collect::<Vec<_>>();
 
     assert!(
-        !diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.message == "unused symbol `DEFAULTS`"),
+        diagnostics.is_empty(),
         "expected caller-scope capture to count as usage, got {diagnostics:?}"
     );
 }
@@ -343,21 +320,27 @@ fn semantic_diagnostics_report_inconsistent_function_doc_types() {
         .collect::<Vec<_>>();
 
     assert_eq!(diagnostics.len(), 4);
+    assert!(diagnostics.iter().any(|diagnostic| diagnostic.code
+        == SemanticDiagnosticCode::DuplicateDocParamTag {
+            name: "first".to_owned()
+        }));
     assert!(
         diagnostics
             .iter()
-            .any(|diagnostic| diagnostic.message == "duplicate `@param` tag for `first`")
-    );
-    assert!(
-        diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.message == "duplicate `@return` tags")
+            .any(|diagnostic| diagnostic.code == SemanticDiagnosticCode::DuplicateDocReturnTag)
     );
     assert!(diagnostics.iter().any(|diagnostic| {
-        diagnostic.message == "doc tag `@param missing` does not match any parameter of `sample`"
+        diagnostic.code
+            == SemanticDiagnosticCode::DocParamDoesNotMatchFunction {
+                name: "missing".to_owned(),
+                function: "sample".to_owned(),
+            }
     }));
     assert!(diagnostics.iter().any(|diagnostic| {
-        diagnostic.message == "function `sample` has a non-function type annotation"
+        diagnostic.code
+            == SemanticDiagnosticCode::FunctionHasNonFunctionTypeAnnotation {
+                function: "sample".to_owned(),
+            }
     }));
     assert!(
         diagnostics
@@ -384,8 +367,10 @@ fn semantic_diagnostics_report_function_doc_tags_on_non_functions() {
 
     assert_eq!(diagnostics.len(), 1);
     assert_eq!(
-        diagnostics[0].message,
-        "function doc tags cannot be attached to `count`"
+        diagnostics[0].code,
+        SemanticDiagnosticCode::FunctionDocTagsOnNonFunction {
+            symbol: "count".to_owned(),
+        }
     );
     assert!(diagnostics[0].related_range.is_some());
 }

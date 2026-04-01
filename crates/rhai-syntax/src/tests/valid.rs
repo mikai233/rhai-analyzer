@@ -1,7 +1,7 @@
 use crate::tests::{binary_lhs, binary_operator, binary_rhs, first_stmt_expr, node_kind};
 use crate::{
-    AstNode, CommentKind, RhaiKind, Root, SyntaxKind, TokenKind, TriviaBoundary, lex_text,
-    parse_text,
+    AstNode, CommentKind, RhaiKind, Root, SyntaxErrorCode, SyntaxKind, TokenKind, TriviaBoundary,
+    lex_text, parse_text,
 };
 
 #[test]
@@ -71,7 +71,7 @@ fn interpolation_body_parser_errors_use_absolute_ranges() {
     let error = parse
         .errors()
         .iter()
-        .find(|error| error.message() == "expected expression after operator")
+        .find(|error| error.code() == &SyntaxErrorCode::ExpectedExpressionAfterOperator)
         .expect("expected interpolation body parser error");
 
     let start = u32::from(error.range().start()) as usize;
@@ -230,58 +230,55 @@ fn reports_unterminated_string_like_literals() {
     let string_lexed = lex_text("\"unterminated");
     assert_eq!(string_lexed.errors().len(), 1);
     assert_eq!(
-        string_lexed.errors()[0].message(),
-        "unterminated string literal"
+        string_lexed.errors()[0].code(),
+        &SyntaxErrorCode::UnterminatedStringLiteral
     );
 
     let char_lexed = lex_text("'x");
     assert_eq!(char_lexed.errors().len(), 1);
     assert_eq!(
-        char_lexed.errors()[0].message(),
-        "unterminated character literal"
+        char_lexed.errors()[0].code(),
+        &SyntaxErrorCode::UnterminatedCharacterLiteral
     );
 
     let raw_lexed = lex_text("#\"raw");
     assert_eq!(raw_lexed.errors().len(), 1);
     assert_eq!(
-        raw_lexed.errors()[0].message(),
-        "unterminated raw string literal"
+        raw_lexed.errors()[0].code(),
+        &SyntaxErrorCode::UnterminatedRawStringLiteral
     );
 
     let backtick_lexed = lex_text("`value");
     assert_eq!(backtick_lexed.errors().len(), 1);
     assert_eq!(
-        backtick_lexed.errors()[0].message(),
-        "unterminated back-tick string literal"
+        backtick_lexed.errors()[0].code(),
+        &SyntaxErrorCode::UnterminatedBacktickStringLiteral
     );
 }
 
 #[test]
 fn reports_unterminated_interpolation_and_block_comments() {
     let interpolation_lexed = lex_text("`value = ${foo(1)`");
-    let interpolation_messages: Vec<_> = interpolation_lexed
+    let interpolation_codes: Vec<_> = interpolation_lexed
         .errors()
         .iter()
-        .map(|error| error.message())
+        .map(|error| error.code())
         .collect();
     assert!(
-        interpolation_messages.contains(&"unterminated string interpolation"),
-        "{interpolation_messages:?}"
+        interpolation_codes.contains(&&SyntaxErrorCode::UnterminatedStringInterpolation),
+        "{interpolation_codes:?}"
     );
     assert!(
-        interpolation_messages.contains(&"unterminated back-tick string literal"),
-        "{interpolation_messages:?}"
+        interpolation_codes.contains(&&SyntaxErrorCode::UnterminatedBacktickStringLiteral),
+        "{interpolation_codes:?}"
     );
-    assert!(
-        interpolation_messages.len() >= 2,
-        "{interpolation_messages:?}"
-    );
+    assert!(interpolation_codes.len() >= 2, "{interpolation_codes:?}");
 
     let block_lexed = lex_text("/* outer /* inner */");
     assert_eq!(block_lexed.errors().len(), 1);
     assert_eq!(
-        block_lexed.errors()[0].message(),
-        "unterminated block comment"
+        block_lexed.errors()[0].code(),
+        &SyntaxErrorCode::UnterminatedBlockComment
     );
 }
 

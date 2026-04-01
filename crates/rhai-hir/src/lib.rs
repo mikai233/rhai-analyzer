@@ -25,10 +25,10 @@ pub use model::{
     ObjectFieldInfo, ParameterHint, ParameterHintParameter, PathExprInfo, Reference, ReferenceId,
     ReferenceKind, ReferenceLocation, RenameOccurrence, RenameOccurrenceKind, RenamePlan,
     RenamePreflightIssue, RenamePreflightIssueKind, Scope, ScopeId, ScopeKind, SemanticDiagnostic,
-    SemanticDiagnosticKind, StableSymbolKey, SwitchArmInfo, SwitchExprInfo, Symbol, SymbolId,
-    SymbolKind, SymbolMutation, SymbolMutationKind, SymbolRead, SymbolReadKind, SymbolValueFlow,
-    TypeSlot, TypeSlotAssignments, TypeSlotId, UnaryExprInfo, UnaryOperator, ValueFlowKind,
-    WorkspaceSymbol,
+    SemanticDiagnosticCode, SemanticDiagnosticKind, StableSymbolKey, SwitchArmInfo, SwitchExprInfo,
+    Symbol, SymbolId, SymbolKind, SymbolMutation, SymbolMutationKind, SymbolRead, SymbolReadKind,
+    SymbolValueFlow, TypeSlot, TypeSlotAssignments, TypeSlotId, UnaryExprInfo, UnaryOperator,
+    ValueFlowKind, WorkspaceSymbol,
 };
 pub use ty::{FunctionTypeRef, TypeRef, parse_type_ref};
 

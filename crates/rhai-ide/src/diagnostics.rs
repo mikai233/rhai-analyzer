@@ -13,6 +13,7 @@ pub(crate) fn diagnostics(snapshot: &DatabaseSnapshot, file_id: FileId) -> Vec<D
         .project_diagnostics(file_id)
         .into_iter()
         .map(|diagnostic| Diagnostic {
+            code: diagnostic.code,
             message: diagnostic.message,
             range: diagnostic.range,
             severity: match diagnostic.severity {

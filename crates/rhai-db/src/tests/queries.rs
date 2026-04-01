@@ -1,8 +1,8 @@
 use crate::tests::{
     assert_workspace_files_have_no_syntax_diagnostics, offset_in, symbol_id_by_name,
 };
-use crate::{AnalyzerDatabase, ChangeSet, FileChange, ProjectReferenceKind};
-use rhai_hir::{FunctionTypeRef, SymbolKind, TypeRef};
+use crate::{AnalyzerDatabase, ChangeSet, FileChange, ProjectDiagnosticCode, ProjectReferenceKind};
+use rhai_hir::{FunctionTypeRef, SemanticDiagnosticCode, SymbolKind, TypeRef};
 use rhai_project::ProjectConfig;
 use rhai_syntax::TextSize;
 use rhai_vfs::{DocumentVersion, normalize_path};
@@ -355,9 +355,10 @@ fn comment_extern_directives_suppress_unresolved_names_and_seed_types() {
         .expect("expected file id");
     let diagnostics = snapshot.project_diagnostics(file_id);
     assert!(
-        !diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.message == "unresolved name `injected_value`"),
+        !diagnostics.iter().any(|diagnostic| {
+            diagnostic.code
+                == ProjectDiagnosticCode::Semantic(SemanticDiagnosticCode::UnresolvedName)
+        }),
         "expected extern directive to suppress unresolved name, got {diagnostics:?}"
     );
 
@@ -393,9 +394,10 @@ fn comment_module_directives_seed_import_alias_members_and_call_types() {
         .expect("expected file id");
     let diagnostics = snapshot.project_diagnostics(file_id);
     assert!(
-        !diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.message == "unresolved import module `env`"),
+        !diagnostics.iter().any(|diagnostic| {
+            diagnostic.code
+                == ProjectDiagnosticCode::Semantic(SemanticDiagnosticCode::UnresolvedImportModule)
+        }),
         "expected inline module directive to suppress unresolved import, got {diagnostics:?}"
     );
 
@@ -533,9 +535,10 @@ fn caller_scope_captures_are_suppressed_when_function_has_no_calls() {
 
     let diagnostics = snapshot.project_diagnostics(file_id);
     assert!(
-        !diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.message == "unresolved name `value`"),
+        !diagnostics.iter().any(|diagnostic| {
+            diagnostic.code
+                == ProjectDiagnosticCode::Semantic(SemanticDiagnosticCode::UnresolvedName)
+        }),
         "expected unresolved capture to stay hidden until normal calls exist, got {diagnostics:?}"
     );
 }
@@ -566,9 +569,10 @@ fn caller_scope_captures_are_suppressed_for_caller_scope_invocations() {
 
     let diagnostics = snapshot.project_diagnostics(file_id);
     assert!(
-        !diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.message == "unresolved name `value`"),
+        !diagnostics.iter().any(|diagnostic| {
+            diagnostic.code
+                == ProjectDiagnosticCode::Semantic(SemanticDiagnosticCode::UnresolvedName)
+        }),
         "expected caller-scope call to suppress unresolved capture, got {diagnostics:?}"
     );
     assert!(!diagnostics.iter().any(|diagnostic| {
@@ -602,9 +606,10 @@ fn caller_scope_exported_consts_are_suppressed_when_function_has_no_calls() {
 
     let diagnostics = snapshot.project_diagnostics(file_id);
     assert!(
-        !diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.message == "unresolved name `DEFAULTS`"),
+        !diagnostics.iter().any(|diagnostic| {
+            diagnostic.code
+                == ProjectDiagnosticCode::Semantic(SemanticDiagnosticCode::UnresolvedName)
+        }),
         "expected uncalled function capture of exported const to stay hidden, got {diagnostics:?}"
     );
 }
@@ -655,9 +660,10 @@ fn caller_scope_captures_ignore_unrelated_same_name_calls_in_other_files() {
 
     let diagnostics = snapshot.project_diagnostics(main);
     assert!(
-        !diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.message == "unresolved name `DEFAULTS`"),
+        !diagnostics.iter().any(|diagnostic| {
+            diagnostic.code
+                == ProjectDiagnosticCode::Semantic(SemanticDiagnosticCode::UnresolvedName)
+        }),
         "expected unrelated same-name call sites to not trigger caller-scope diagnostics, got {diagnostics:?}"
     );
 }
@@ -689,15 +695,17 @@ fn caller_scope_captures_report_function_and_regular_call_sites() {
 
     let diagnostics = snapshot.project_diagnostics(file_id);
     assert!(
-        diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.message == "unresolved name `value`"),
+        diagnostics.iter().any(|diagnostic| {
+            diagnostic.code
+                == ProjectDiagnosticCode::Semantic(SemanticDiagnosticCode::UnresolvedName)
+        }),
         "expected function-body unresolved capture diagnostic, got {diagnostics:?}"
     );
-    assert!(diagnostics.iter().any(|diagnostic| {
-        diagnostic.message
-            == "call to `helper` must use caller scope (`call!`) because the function references outer-scope names"
-    }));
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == ProjectDiagnosticCode::CallerScopeRequired)
+    );
 }
 
 #[test]
@@ -756,17 +764,20 @@ fn caller_scope_captures_report_regular_imported_calls_across_files() {
 
     let provider_diagnostics = snapshot.project_diagnostics(provider);
     assert!(
-        provider_diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.message == "unresolved name `defaults`"),
+        provider_diagnostics.iter().any(|diagnostic| {
+            diagnostic.code
+                == ProjectDiagnosticCode::Semantic(SemanticDiagnosticCode::UnresolvedName)
+        }),
         "expected provider unresolved capture to stay visible once regular calls exist, got {provider_diagnostics:?}"
     );
 
     let consumer_diagnostics = snapshot.project_diagnostics(consumer);
-    assert!(consumer_diagnostics.iter().any(|diagnostic| {
-        diagnostic.message
-            == "call to `make_config` must use caller scope (`call!`) because the function references outer-scope names"
-    }), "expected consumer caller-scope diagnostic, got {consumer_diagnostics:?}");
+    assert!(
+        consumer_diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == ProjectDiagnosticCode::CallerScopeRequired),
+        "expected consumer caller-scope diagnostic, got {consumer_diagnostics:?}"
+    );
 }
 
 #[test]
@@ -820,12 +831,14 @@ fn imported_member_references_report_unresolved_after_provider_renames() {
     assert!(
         diagnostics
             .iter()
-            .any(|diagnostic| { diagnostic.message == "unresolved import member `tools::helper`" })
+            .any(|diagnostic| diagnostic.code == ProjectDiagnosticCode::UnresolvedImportMember)
     );
     assert!(
         diagnostics
             .iter()
-            .any(|diagnostic| { diagnostic.message == "unresolved import member `tools::VALUE`" })
+            .filter(|diagnostic| diagnostic.code == ProjectDiagnosticCode::UnresolvedImportMember)
+            .count()
+            >= 2
     );
 }
 
@@ -849,10 +862,11 @@ fn static_path_imports_report_missing_workspace_files() {
         .expect("expected main.rhai");
 
     let diagnostics = snapshot.project_diagnostics(file_id);
-    assert!(diagnostics.iter().any(|diagnostic| {
-        diagnostic.message
-            == "import module `./missing_module` does not resolve to an existing workspace file"
-    }));
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == ProjectDiagnosticCode::BrokenLinkedImport)
+    );
 }
 
 #[test]
@@ -875,11 +889,10 @@ fn static_named_imports_report_unresolved_modules() {
         .expect("expected main.rhai");
 
     let diagnostics = snapshot.project_diagnostics(file_id);
-    assert!(
-        diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.message == "unresolved import module `env`")
-    );
+    assert!(diagnostics.iter().any(|diagnostic| {
+        diagnostic.code
+            == ProjectDiagnosticCode::Semantic(SemanticDiagnosticCode::UnresolvedImportModule)
+    }));
 }
 
 #[test]

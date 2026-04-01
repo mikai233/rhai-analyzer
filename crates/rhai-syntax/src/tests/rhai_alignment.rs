@@ -1,5 +1,5 @@
 use crate::tests::node_kind;
-use crate::{AstNode, Root, parse_text};
+use crate::{AstNode, Root, SyntaxErrorCode, parse_text};
 
 #[test]
 fn parses_function_items_with_private_modifier() {
@@ -53,18 +53,18 @@ fn parses_caller_scope_function_calls() {
 fn caller_scope_calls_reject_method_and_path_forms() {
     let parse = parse_text(r#"object.method!(); mod::func!();"#);
 
-    let messages = parse
+    let codes = parse
         .errors()
         .iter()
-        .map(|error| error.message())
+        .map(|error| error.code())
         .collect::<Vec<_>>();
     assert!(
-        messages.contains(&"caller-scope function calls cannot use method-call style"),
+        codes.contains(&&SyntaxErrorCode::CallerScopeMethodStyle),
         "{}",
         parse.debug_tree()
     );
     assert!(
-        messages.contains(&"caller-scope function calls cannot use namespace-qualified paths"),
+        codes.contains(&&SyntaxErrorCode::CallerScopeNamespacePath),
         "{}",
         parse.debug_tree()
     );
@@ -87,13 +87,13 @@ fn parses_elvis_method_calls_in_function_call_style() {
 fn typed_method_receiver_requires_dot_name_shape() {
     let parse = parse_text(r#"fn "Custom-Type"() { this; }"#);
 
-    let messages = parse
+    let codes = parse
         .errors()
         .iter()
-        .map(|error| error.message())
+        .map(|error| error.code())
         .collect::<Vec<_>>();
     assert!(
-        messages.contains(&"expected `.` after typed method receiver"),
+        codes.contains(&&SyntaxErrorCode::ExpectedDotAfterTypedMethodReceiver),
         "{}",
         parse.debug_tree()
     );
@@ -109,13 +109,13 @@ fn function_definitions_are_restricted_to_global_level() {
     "#,
     );
 
-    let messages = parse
+    let codes = parse
         .errors()
         .iter()
-        .map(|error| error.message())
+        .map(|error| error.code())
         .collect::<Vec<_>>();
     assert!(
-        messages.contains(&"functions can only be defined at global level"),
+        codes.contains(&&SyntaxErrorCode::FunctionsMustBeDefinedAtGlobalLevel),
         "{}",
         parse.debug_tree()
     );
@@ -169,20 +169,18 @@ fn export_rejects_non_global_targets_and_path_expressions() {
     "#,
     );
 
-    let messages = parse
+    let codes = parse
         .errors()
         .iter()
-        .map(|error| error.message())
+        .map(|error| error.code())
         .collect::<Vec<_>>();
     assert!(
-        messages.contains(
-            &"expected exported variable name or `let`/`const` declaration after `export`"
-        ),
+        codes.contains(&&SyntaxErrorCode::InvalidExportTargetShape),
         "{}",
         parse.debug_tree()
     );
     assert!(
-        messages.contains(&"the `export` statement can only be used at global level"),
+        codes.contains(&&SyntaxErrorCode::InvalidExportPlacement),
         "{}",
         parse.debug_tree()
     );

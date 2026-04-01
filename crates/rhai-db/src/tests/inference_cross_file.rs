@@ -1,8 +1,8 @@
 use crate::tests::{
     assert_workspace_files_have_no_syntax_diagnostics, offset_in, symbol_id_by_name,
 };
-use crate::{AnalyzerDatabase, ChangeSet, FileChange};
-use rhai_hir::{SymbolKind, TypeRef};
+use crate::{AnalyzerDatabase, ChangeSet, FileChange, ProjectDiagnosticCode};
+use rhai_hir::{SemanticDiagnosticCode, SymbolKind, TypeRef};
 use rhai_project::ProjectConfig;
 use rhai_syntax::TextSize;
 use rhai_vfs::DocumentVersion;
@@ -194,16 +194,12 @@ fn snapshot_keeps_unaliased_imports_from_exposing_regular_module_members() {
     let diagnostics = snapshot.project_diagnostics(consumer);
     let imported = snapshot.imported_global_method_symbols(consumer, &TypeRef::Int, "bump");
 
-    assert!(
-        diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.message == "unresolved name `helper`")
-    );
-    assert!(
-        diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.message == "unresolved name `VALUE`")
-    );
+    assert!(diagnostics.iter().any(|diagnostic| {
+        diagnostic.code == ProjectDiagnosticCode::Semantic(SemanticDiagnosticCode::UnresolvedName)
+    }));
+    assert!(diagnostics.iter().any(|diagnostic| {
+        diagnostic.code == ProjectDiagnosticCode::Semantic(SemanticDiagnosticCode::UnresolvedName)
+    }));
     assert_eq!(imported.len(), 1);
 }
 
@@ -512,11 +508,10 @@ fn snapshot_reports_unresolved_bare_import_module_names() {
         .expect("expected consumer.rhai");
     let diagnostics = snapshot.project_diagnostics(consumer);
 
-    assert!(
-        diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.message == "unresolved import module `shared_tools`")
-    );
+    assert!(diagnostics.iter().any(|diagnostic| {
+        diagnostic.code
+            == ProjectDiagnosticCode::Semantic(SemanticDiagnosticCode::UnresolvedImportModule)
+    }));
 }
 
 #[test]

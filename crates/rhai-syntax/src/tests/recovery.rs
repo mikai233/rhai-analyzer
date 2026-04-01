@@ -1,12 +1,15 @@
 use crate::tests::node_kind;
-use crate::{AstNode, Root, parse_text};
+use crate::{AstNode, Root, SyntaxErrorCode, parse_text};
 
 #[test]
 fn recovers_from_missing_expression() {
     let parse = parse_text("let value = ;");
 
     assert_eq!(parse.errors().len(), 1);
-    assert_eq!(parse.errors()[0].message(), "expected expression");
+    assert_eq!(
+        parse.errors()[0].code(),
+        &SyntaxErrorCode::ExpectedExpression
+    );
 
     let root = Root::cast(parse.root()).expect("expected root");
     let stmt = root
@@ -27,7 +30,10 @@ fn recovers_from_missing_object_field_value() {
     let parse = parse_text("#{ answer: }");
 
     assert_eq!(parse.errors().len(), 1, "{}", parse.debug_tree());
-    assert_eq!(parse.errors()[0].message(), "expected property value");
+    assert_eq!(
+        parse.errors()[0].code(),
+        &SyntaxErrorCode::ExpectedPropertyValue
+    );
 
     let tree = parse.debug_tree();
     assert!(tree.contains("ExprObject"), "{tree}");
@@ -44,14 +50,14 @@ fn recovers_across_statement_boundary_after_broken_call() {
     "#,
     );
 
-    let messages: Vec<_> = parse.errors().iter().map(|error| error.message()).collect();
+    let codes: Vec<_> = parse.errors().iter().map(|error| error.code()).collect();
     assert!(
-        messages.contains(&"expected `,` between arguments"),
-        "{messages:?}"
+        codes.contains(&&SyntaxErrorCode::ExpectedCommaBetweenArguments),
+        "{codes:?}"
     );
     assert!(
-        messages.contains(&"expected `)` to close argument list"),
-        "{messages:?}"
+        codes.contains(&&SyntaxErrorCode::ExpectedClosingArgumentList),
+        "{codes:?}"
     );
 
     let root = Root::cast(parse.root()).expect("expected root");
@@ -74,10 +80,10 @@ fn recovers_across_statement_boundary_after_missing_binary_rhs() {
     "#,
     );
 
-    let messages: Vec<_> = parse.errors().iter().map(|error| error.message()).collect();
+    let codes: Vec<_> = parse.errors().iter().map(|error| error.code()).collect();
     assert!(
-        messages.contains(&"expected expression after operator"),
-        "{messages:?}"
+        codes.contains(&&SyntaxErrorCode::ExpectedExpressionAfterOperator),
+        "{codes:?}"
     );
 
     let root = Root::cast(parse.root()).expect("expected root");
@@ -96,8 +102,8 @@ fn recovers_when_for_is_missing_in_keyword() {
 
     assert_eq!(parse.errors().len(), 1, "{}", parse.debug_tree());
     assert_eq!(
-        parse.errors()[0].message(),
-        "expected `in` in `for` expression"
+        parse.errors()[0].code(),
+        &SyntaxErrorCode::ExpectedInForExpression
     );
 
     let tree = parse.debug_tree();
@@ -110,7 +116,10 @@ fn recovers_when_switch_arm_is_missing_arrow() {
     let parse = parse_text("switch value { 1 `one`, _ => `other` }");
 
     assert_eq!(parse.errors().len(), 1, "{}", parse.debug_tree());
-    assert_eq!(parse.errors()[0].message(), "expected `=>` in `switch` arm");
+    assert_eq!(
+        parse.errors()[0].code(),
+        &SyntaxErrorCode::ExpectedSwitchArmArrow
+    );
 
     let tree = parse.debug_tree();
     assert!(tree.contains("ExprSwitch"), "{tree}");
@@ -123,7 +132,10 @@ fn recovers_when_const_is_missing_value() {
     let parse = parse_text("const ANSWER = ;");
 
     assert_eq!(parse.errors().len(), 1, "{}", parse.debug_tree());
-    assert_eq!(parse.errors()[0].message(), "expected constant value");
+    assert_eq!(
+        parse.errors()[0].code(),
+        &SyntaxErrorCode::ExpectedConstantValue
+    );
 
     let tree = parse.debug_tree();
     assert!(tree.contains("StmtConst"), "{tree}");
@@ -135,7 +147,10 @@ fn recovers_when_alias_is_missing_after_as() {
     let parse = parse_text(r#"import "crypto" as ;"#);
 
     assert_eq!(parse.errors().len(), 1, "{}", parse.debug_tree());
-    assert_eq!(parse.errors()[0].message(), "expected alias after `as`");
+    assert_eq!(
+        parse.errors()[0].code(),
+        &SyntaxErrorCode::ExpectedAliasAfterAs
+    );
 
     let tree = parse.debug_tree();
     assert!(tree.contains("StmtImport"), "{tree}");
@@ -155,22 +170,22 @@ fn recovers_from_missing_commas_in_delimited_lists() {
     "#,
     );
 
-    let messages: Vec<_> = parse.errors().iter().map(|error| error.message()).collect();
+    let codes: Vec<_> = parse.errors().iter().map(|error| error.code()).collect();
     assert!(
-        messages.contains(&"expected `,` between parameters"),
-        "{messages:?}"
+        codes.contains(&&SyntaxErrorCode::ExpectedCommaBetweenParameters),
+        "{codes:?}"
     );
     assert!(
-        messages.contains(&"expected `,` between array items"),
-        "{messages:?}"
+        codes.contains(&&SyntaxErrorCode::ExpectedCommaBetweenArrayItems),
+        "{codes:?}"
     );
     assert!(
-        messages.contains(&"expected `,` between arguments"),
-        "{messages:?}"
+        codes.contains(&&SyntaxErrorCode::ExpectedCommaBetweenArguments),
+        "{codes:?}"
     );
     assert!(
-        messages.contains(&"expected `,` between object fields"),
-        "{messages:?}"
+        codes.contains(&&SyntaxErrorCode::ExpectedCommaBetweenObjectFields),
+        "{codes:?}"
     );
 
     let tree = parse.debug_tree();
@@ -235,11 +250,11 @@ import "mod" as ;
 fn recovers_when_closure_parameter_list_is_broken() {
     let parse = parse_text("|x y x + y");
 
-    let messages: Vec<_> = parse.errors().iter().map(|error| error.message()).collect();
+    let codes: Vec<_> = parse.errors().iter().map(|error| error.code()).collect();
     assert!(
-        messages.contains(&"expected `,` between closure parameters")
-            || messages.contains(&"expected closing `|` for closure parameters"),
-        "{messages:?}"
+        codes.contains(&&SyntaxErrorCode::ExpectedCommaBetweenClosureParameters)
+            || codes.contains(&&SyntaxErrorCode::ExpectedClosingClosureParameters),
+        "{codes:?}"
     );
 
     let tree = parse.debug_tree();
@@ -256,14 +271,14 @@ fn recovers_when_function_parameter_list_runs_into_body() {
     "#,
     );
 
-    let messages: Vec<_> = parse.errors().iter().map(|error| error.message()).collect();
+    let codes: Vec<_> = parse.errors().iter().map(|error| error.code()).collect();
     assert!(
-        messages.contains(&"expected parameter name"),
-        "{messages:?}"
+        codes.contains(&&SyntaxErrorCode::ExpectedParameterName),
+        "{codes:?}"
     );
     assert!(
-        messages.contains(&"expected `)` after parameters"),
-        "{messages:?}"
+        codes.contains(&&SyntaxErrorCode::ExpectedClosingParameters),
+        "{codes:?}"
     );
 
     let tree = parse.debug_tree();
@@ -284,14 +299,14 @@ fn recovers_when_function_parameter_list_runs_into_body() {
 fn recovers_when_closure_parameter_list_runs_into_block_body() {
     let parse = parse_text("let f = |x, { x + 1 }; let after = 1;");
 
-    let messages: Vec<_> = parse.errors().iter().map(|error| error.message()).collect();
+    let codes: Vec<_> = parse.errors().iter().map(|error| error.code()).collect();
     assert!(
-        messages.contains(&"expected closure parameter"),
-        "{messages:?}"
+        codes.contains(&&SyntaxErrorCode::ExpectedClosureParameter),
+        "{codes:?}"
     );
     assert!(
-        messages.contains(&"expected closing `|` for closure parameters"),
-        "{messages:?}"
+        codes.contains(&&SyntaxErrorCode::ExpectedClosingClosureParameters),
+        "{codes:?}"
     );
 
     let root = Root::cast(parse.root()).expect("expected root");

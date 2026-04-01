@@ -1,6 +1,7 @@
 use crate::model::{
     BinaryExprInfo, BinaryOperator, BodyId, ExprId, ExprKind, FileHir, IfExprInfo,
-    SemanticDiagnostic, SemanticDiagnosticKind, SymbolId, SymbolKind, ValueFlowKind,
+    SemanticDiagnostic, SemanticDiagnosticCode, SemanticDiagnosticKind, SymbolId, SymbolKind,
+    ValueFlowKind,
 };
 use crate::ty::TypeRef;
 
@@ -15,6 +16,7 @@ impl FileHir {
                     StaticImportModuleType::String => None,
                     StaticImportModuleType::NonString(found) => Some(SemanticDiagnostic {
                         kind: SemanticDiagnosticKind::InvalidImportModuleType,
+                        code: SemanticDiagnosticCode::InvalidImportModuleType,
                         range: module_range,
                         message: format!(
                             "import module expression `{}` must evaluate to string, found {found}",
