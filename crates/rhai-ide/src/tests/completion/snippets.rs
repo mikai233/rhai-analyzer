@@ -1,0 +1,235 @@
+use std::path::Path;
+
+use rhai_db::ChangeSet;
+use rhai_vfs::DocumentVersion;
+
+use crate::tests::assert_no_syntax_diagnostics;
+use crate::{AnalysisHost, CompletionInsertFormat, CompletionItemSource, FilePosition};
+
+#[test]
+fn completions_include_builtin_global_functions_with_docs() {
+    let mut host = AnalysisHost::default();
+    host.apply_change(ChangeSet::single_file(
+        "main.rhai",
+        r#"
+            fn run() {
+                pri
+            }
+        "#,
+        DocumentVersion(1),
+    ));
+
+    let analysis = host.snapshot();
+    let file_id = analysis
+        .db
+        .vfs()
+        .file_id(Path::new("main.rhai"))
+        .expect("expected main.rhai");
+    assert_no_syntax_diagnostics(&analysis, file_id);
+    let text = analysis.db.file_text(file_id).expect("expected text");
+    let offset = u32::try_from(text.find("pri").expect("expected builtin prefix") + "pri".len())
+        .expect("offset");
+
+    let completions = analysis.completions(FilePosition { file_id, offset });
+    let print = completions
+        .iter()
+        .find(|item| item.label == "print" && item.source == CompletionItemSource::Builtin)
+        .expect("expected builtin print completion");
+    assert_eq!(print.detail.as_deref(), Some("fun(any) -> ()"));
+    assert_eq!(
+        print.docs.as_deref(),
+        Some("Print a value via the engine's print callback.")
+    );
+    assert_eq!(print.insert_format, CompletionInsertFormat::Snippet);
+    assert_eq!(
+        print.text_edit.as_ref().map(|edit| edit.new_text.as_str()),
+        Some("print(${1:any})$0")
+    );
+}
+#[test]
+fn completion_resolve_populates_visible_symbol_docs() {
+    let mut host = AnalysisHost::default();
+    host.apply_change(ChangeSet::single_file(
+        "main.rhai",
+        r#"
+            /// local helper docs
+            fn helper() {}
+
+            fn run() {
+                hel
+            }
+        "#,
+        DocumentVersion(1),
+    ));
+
+    let analysis = host.snapshot();
+    let file_id = analysis
+        .db
+        .vfs()
+        .file_id(Path::new("main.rhai"))
+        .expect("expected main.rhai");
+    assert_no_syntax_diagnostics(&analysis, file_id);
+    let text = analysis.db.file_text(file_id).expect("expected text");
+    let offset = u32::try_from(text.find("hel").expect("expected completion prefix") + "hel".len())
+        .expect("offset");
+
+    let helper = analysis
+        .completions(FilePosition { file_id, offset })
+        .into_iter()
+        .find(|item| item.label == "helper" && item.source == CompletionItemSource::Visible)
+        .expect("expected helper completion");
+    assert!(helper.docs.is_none());
+
+    let resolved = analysis.resolve_completion(helper);
+    assert_eq!(resolved.docs.as_deref(), Some("local helper docs"));
+}
+#[test]
+fn function_completions_insert_call_snippets_with_tabstops() {
+    let mut host = AnalysisHost::default();
+    host.apply_change(ChangeSet::single_file(
+        "main.rhai",
+        r#"
+            /// @param left int
+            /// @param right int
+            /// @return int
+            fn add(left, right) {
+                left + right
+            }
+
+            fn run() {
+                ad
+            }
+        "#,
+        DocumentVersion(1),
+    ));
+
+    let analysis = host.snapshot();
+    let file_id = analysis
+        .db
+        .vfs()
+        .file_id(Path::new("main.rhai"))
+        .expect("expected main.rhai");
+    assert_no_syntax_diagnostics(&analysis, file_id);
+    let text = analysis.db.file_text(file_id).expect("expected text");
+    let offset = u32::try_from(text.find("ad").expect("expected completion prefix") + "ad".len())
+        .expect("offset");
+
+    let add = analysis
+        .completions(FilePosition { file_id, offset })
+        .into_iter()
+        .find(|item| item.label == "add")
+        .expect("expected add completion");
+
+    assert_eq!(add.insert_format, CompletionInsertFormat::Snippet);
+    assert_eq!(
+        add.text_edit.as_ref().map(|edit| edit.new_text.as_str()),
+        Some("add(${1:left}, ${2:right})$0")
+    );
+}
+#[test]
+fn overload_function_completion_resolve_preserves_selected_signature_snippet() {
+    let mut host = AnalysisHost::default();
+    host.apply_change(ChangeSet::single_file(
+        "main.rhai",
+        r#"
+            /// @return int
+            fn do_something() {
+                1
+            }
+
+            /// @param value int
+            /// @return int
+            fn do_something(value) {
+                value
+            }
+
+            fn run() {
+                do_
+            }
+        "#,
+        DocumentVersion(1),
+    ));
+
+    let analysis = host.snapshot();
+    let file_id = analysis
+        .db
+        .vfs()
+        .file_id(Path::new("main.rhai"))
+        .expect("expected main.rhai");
+    assert_no_syntax_diagnostics(&analysis, file_id);
+    let text = analysis.db.file_text(file_id).expect("expected text");
+    let offset =
+        u32::try_from(text.rfind("do_").expect("expected completion target") + "do_".len())
+            .expect("offset");
+
+    let completions = analysis.completions(FilePosition { file_id, offset });
+    let overload = completions
+        .into_iter()
+        .find(|item| {
+            item.label == "do_something"
+                && item.source == CompletionItemSource::Visible
+                && item.detail.as_deref() == Some("fun(int) -> int")
+        })
+        .expect("expected typed overload completion");
+
+    assert_eq!(
+        overload
+            .text_edit
+            .as_ref()
+            .map(|edit| edit.new_text.as_str()),
+        Some("do_something(${1:value})$0")
+    );
+
+    let resolved = analysis.resolve_completion(overload);
+    assert_eq!(resolved.detail.as_deref(), Some("fun(int) -> int"));
+    assert_eq!(
+        resolved
+            .text_edit
+            .as_ref()
+            .map(|edit| edit.new_text.as_str()),
+        Some("do_something(${1:value})$0")
+    );
+}
+#[test]
+fn member_completions_insert_call_snippets_with_tabstops() {
+    let mut host = AnalysisHost::default();
+    host.apply_change(ChangeSet::single_file(
+        "main.rhai",
+        r#"
+            fn run() {
+                let values = [1, 2, 3];
+                values.
+                next();
+            }
+
+            fn next() {}
+        "#,
+        DocumentVersion(1),
+    ));
+
+    let analysis = host.snapshot();
+    let file_id = analysis
+        .db
+        .vfs()
+        .file_id(Path::new("main.rhai"))
+        .expect("expected main.rhai");
+    let text = analysis.db.file_text(file_id).expect("expected text");
+    let offset = u32::try_from(
+        text.find("values.")
+            .expect("expected member completion target")
+            + "values.".len(),
+    )
+    .expect("offset");
+
+    let push = analysis
+        .completions(FilePosition { file_id, offset })
+        .into_iter()
+        .find(|item| item.label == "push")
+        .expect("expected push completion");
+
+    assert_eq!(push.insert_format, CompletionInsertFormat::Snippet);
+    assert_eq!(
+        push.text_edit.as_ref().map(|edit| edit.new_text.as_str()),
+        Some("push(${1:any})$0")
+    );
+}
