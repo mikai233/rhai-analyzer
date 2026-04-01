@@ -5,7 +5,8 @@ use crate::db::imports::{
 use crate::db::query_support::cached_navigation_target;
 use crate::db::rename::project_reference_kind_rank;
 use crate::infer::{
-    field_value_exprs_from_expr, field_value_exprs_from_symbol, largest_inner_expr,
+    callable_targets_for_call, field_value_exprs_from_expr, field_value_exprs_from_symbol,
+    largest_inner_expr,
 };
 use crate::types::{
     LocatedCallHierarchyItem, LocatedIncomingCall, LocatedNavigationTarget, LocatedOutgoingCall,
@@ -218,6 +219,15 @@ impl DatabaseSnapshot {
         };
 
         if let Some(reference_id) = analysis.hir.reference_at_offset(offset) {
+            let local_overloads = self.local_function_overload_locations_for_reference(
+                file_id,
+                analysis.hir.as_ref(),
+                reference_id,
+            );
+            if !local_overloads.is_empty() {
+                return local_overloads;
+            }
+
             let path_targets = linked_import_targets_for_path_reference(
                 self,
                 file_id,
@@ -274,6 +284,49 @@ impl DatabaseSnapshot {
         };
 
         self.symbol_locations_for_file_symbol(file_id, analysis.hir.as_ref(), symbol)
+    }
+
+    fn local_function_overload_locations_for_reference(
+        &self,
+        file_id: FileId,
+        hir: &FileHir,
+        reference_id: ReferenceId,
+    ) -> Vec<LocatedSymbolIdentity> {
+        let Some(call) = hir
+            .calls
+            .iter()
+            .find(|call| call.callee_reference == Some(reference_id))
+        else {
+            return Vec::new();
+        };
+        let Some(analysis) = self.analysis.get(&file_id) else {
+            return Vec::new();
+        };
+
+        let targets = callable_targets_for_call(
+            hir,
+            &analysis.type_inference,
+            call,
+            &self.effective_external_signatures(file_id),
+            self.global_functions(),
+            self.host_types(),
+            &[],
+            None,
+        );
+
+        let mut locations = targets
+            .into_iter()
+            .filter_map(|target| target.local_symbol)
+            .flat_map(|symbol| self.symbol_locations_for_file_symbol(file_id, hir, symbol))
+            .collect::<Vec<_>>();
+        locations.sort_by(|left, right| {
+            left.file_id
+                .0
+                .cmp(&right.file_id.0)
+                .then_with(|| left.symbol.symbol.0.cmp(&right.symbol.symbol.0))
+        });
+        locations.dedup();
+        locations
     }
 
     fn symbol_locations_for_file_symbol(

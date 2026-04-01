@@ -37,6 +37,23 @@ use rhai_syntax::TextSize;
 pub type LoweredFile = FileHir;
 
 impl FileHir {
+    pub(crate) fn function_param_type_key(&self, function: SymbolId) -> Option<Vec<TypeRef>> {
+        if self.symbol(function).kind != SymbolKind::Function {
+            return None;
+        }
+
+        let signature = match self.declared_symbol_type(function) {
+            Some(TypeRef::Function(signature)) => signature,
+            _ => return None,
+        };
+
+        signature
+            .params
+            .iter()
+            .any(|param| *param != TypeRef::Unknown)
+            .then(|| signature.params.clone())
+    }
+
     pub(crate) fn function_arity(&self, function: SymbolId) -> Option<usize> {
         (self.symbol(function).kind == SymbolKind::Function)
             .then(|| self.function_parameters(function).len())
@@ -50,6 +67,7 @@ impl FileHir {
                 .function_info(symbol)
                 .and_then(|info| info.this_type.clone()),
             function_arity: self.function_arity(symbol),
+            function_param_types: self.function_param_type_key(symbol),
         }
     }
 

@@ -19,20 +19,20 @@ pub(crate) fn signature_help(
     let call = hir.call(call_id);
     let active_parameter = active_parameter_index(hir.as_ref(), call, offset)?;
 
-    if let Some(parameter_hint) = hir.parameter_hint_at(offset) {
-        return Some(signature_help_from_parameter_hint(
-            file_id,
-            hir.as_ref(),
-            parameter_hint,
-        ));
-    }
-
     if let Some(target) = resolved_signature_target(snapshot, file_id, hir.as_ref(), call) {
         return Some(signature_help_from_target(
             target.file_id,
             target.hir.as_ref(),
             target.symbol,
             active_parameter,
+        ));
+    }
+
+    if let Some(parameter_hint) = hir.parameter_hint_at(offset) {
+        return Some(signature_help_from_parameter_hint(
+            file_id,
+            hir.as_ref(),
+            parameter_hint,
         ));
     }
 
@@ -654,6 +654,21 @@ fn resolved_signature_target(
     hir: &FileHir,
     call: &CallSite,
 ) -> Option<SignatureTarget> {
+    if let Some(callee_range) = call.callee_range {
+        let callee_offset = callee_range
+            .end()
+            .checked_sub(TextSize::from(1))
+            .unwrap_or(callee_range.start());
+        if let Some(target) = snapshot
+            .goto_definition(file_id, callee_offset)
+            .into_iter()
+            .next()
+            .and_then(|target| signature_target_from_navigation(snapshot, target))
+        {
+            return Some(target);
+        }
+    }
+
     if let Some(symbol) = call.resolved_callee
         && hir.symbol(symbol).kind == SymbolKind::Function
     {
@@ -664,16 +679,7 @@ fn resolved_signature_target(
         });
     }
 
-    let callee_range = call.callee_range?;
-    let callee_offset = callee_range
-        .end()
-        .checked_sub(TextSize::from(1))
-        .unwrap_or(callee_range.start());
-    let target = snapshot
-        .goto_definition(file_id, callee_offset)
-        .into_iter()
-        .next()?;
-    signature_target_from_navigation(snapshot, target)
+    None
 }
 
 fn signature_target_from_navigation(

@@ -13,7 +13,7 @@ mod objects;
 mod propagation;
 
 pub(crate) use crate::infer::calls::{
-    join_callable_target_signatures, named_callable_targets_at_offset,
+    callable_targets_for_call, join_callable_target_signatures, named_callable_targets_at_offset,
 };
 pub(crate) use crate::infer::helpers::{ReadTargetKey, read_target_key_for_expr};
 pub(crate) use crate::infer::objects::{

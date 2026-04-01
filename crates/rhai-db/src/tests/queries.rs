@@ -1185,6 +1185,50 @@ fn goto_definition_resolves_outer_scope_captures_inside_functions() {
 }
 
 #[test]
+fn goto_definition_prefers_local_overload_matching_argument_types() {
+    let mut db = AnalyzerDatabase::default();
+    db.apply_change(ChangeSet::single_file(
+        "main.rhai",
+        r#"
+            /// @param value int
+            fn do_something(value) {}
+
+            /// @param value string
+            fn do_something(value) {}
+
+            do_something("hello");
+        "#,
+        DocumentVersion(1),
+    ));
+
+    let snapshot = db.snapshot();
+    assert_workspace_files_have_no_syntax_diagnostics(&snapshot);
+    let file_id = snapshot
+        .vfs()
+        .file_id(Path::new("main.rhai"))
+        .expect("expected file id");
+    let text = snapshot.file_text(file_id).expect("expected text");
+    let usage_offset = offset_in(&text, "do_something(\"hello\")") + TextSize::from(1);
+    let string_overload_offset = text
+        .match_indices("fn do_something")
+        .nth(1)
+        .map(|(offset, _)| TextSize::from(offset as u32 + 3))
+        .expect("expected second function declaration");
+
+    let definitions = snapshot.goto_definition(file_id, usage_offset);
+
+    assert_eq!(definitions.len(), 1, "{definitions:?}");
+    assert_eq!(definitions[0].file_id, file_id);
+    assert!(
+        definitions[0]
+            .target
+            .full_range
+            .contains(string_overload_offset),
+        "expected string overload definition, got {definitions:?}"
+    );
+}
+
+#[test]
 fn find_references_on_import_alias_reports_current_file_usages() {
     let mut db = AnalyzerDatabase::default();
     db.apply_change(ChangeSet {

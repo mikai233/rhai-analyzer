@@ -45,6 +45,7 @@ pub(crate) struct SymbolConflictKey {
     pub(crate) name: String,
     pub(crate) function_receiver: Option<TypeRef>,
     pub(crate) function_arity: Option<usize>,
+    pub(crate) function_param_types: Option<Vec<TypeRef>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

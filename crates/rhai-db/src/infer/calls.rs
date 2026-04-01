@@ -80,6 +80,23 @@ pub(crate) fn callable_targets_for_call(
     let mut targets = Vec::new();
     let arg_types = effective_arg_types_for_call(hir, inference, call, arg_types);
 
+    if let Some(reference) = call.callee_reference {
+        let local_targets = local_function_targets_for_reference(
+            hir,
+            inference,
+            reference,
+            call.range.start(),
+            external,
+            globals,
+            host_types,
+            imported_methods,
+            arg_types.as_deref(),
+        );
+        if !local_targets.is_empty() {
+            return local_targets;
+        }
+    }
+
     if caller_scope_dispatches_via_first_arg(hir, call)
         && call.resolved_callee.is_none()
         && let Some(target_expr) = call.arg_exprs.first().copied()
@@ -188,22 +205,17 @@ pub(crate) fn callable_targets_for_expr(
             };
 
             if hir.symbol(symbol).kind == SymbolKind::Function {
-                let mut targets = Vec::new();
-                for overload in hir.visible_function_overloads_for_reference(reference) {
-                    targets.extend(callable_targets_for_symbol_use(
-                        hir,
-                        inference,
-                        overload,
-                        use_offset,
-                        external,
-                        globals,
-                        host_types,
-                        imported_methods,
-                        arg_types,
-                        visited_symbols,
-                    ));
-                }
-                dedup_callable_targets(targets)
+                local_function_targets_for_reference(
+                    hir,
+                    inference,
+                    reference,
+                    use_offset,
+                    external,
+                    globals,
+                    host_types,
+                    imported_methods,
+                    arg_types,
+                )
             } else {
                 callable_targets_for_symbol_use(
                     hir,
@@ -348,6 +360,53 @@ pub(crate) fn callable_targets_for_symbol_use(
         targets.extend(flow_targets);
     }
     dedup_callable_targets(targets)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn local_function_targets_for_reference(
+    hir: &FileHir,
+    inference: &FileTypeInference,
+    reference: rhai_hir::ReferenceId,
+    use_offset: rhai_syntax::TextSize,
+    external: &ExternalSignatureIndex,
+    globals: &[HostFunction],
+    host_types: &[HostType],
+    imported_methods: &[ImportedMethodSignature],
+    arg_types: Option<&[Option<TypeRef>]>,
+) -> Vec<CallableTarget> {
+    if hir.reference(reference).kind != rhai_hir::ReferenceKind::Name {
+        return Vec::new();
+    }
+    let Some(symbol) = hir.definition_of(reference) else {
+        return Vec::new();
+    };
+    if hir.symbol(symbol).kind != SymbolKind::Function {
+        return Vec::new();
+    }
+
+    let overloads = hir.visible_function_overloads_for_reference(reference);
+    if overloads.is_empty() {
+        return Vec::new();
+    }
+
+    let mut targets = Vec::new();
+    let mut visited_symbols = Vec::new();
+    for overload in overloads {
+        targets.extend(callable_targets_for_symbol_use(
+            hir,
+            inference,
+            overload,
+            use_offset,
+            external,
+            globals,
+            host_types,
+            imported_methods,
+            arg_types,
+            &mut visited_symbols,
+        ));
+    }
+
+    select_best_callable_targets(dedup_callable_targets(targets), arg_types)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -606,7 +665,7 @@ pub(crate) fn named_callable_targets_at_offset(
                 visited_symbols,
             ));
         }
-        return dedup_callable_targets(targets);
+        return select_best_callable_targets(dedup_callable_targets(targets), arg_types);
     }
 
     let mut targets = Vec::new();
@@ -635,6 +694,47 @@ pub(crate) fn named_callable_targets_at_offset(
     }
 
     dedup_callable_targets(targets)
+}
+
+fn select_best_callable_targets(
+    targets: Vec<CallableTarget>,
+    arg_types: Option<&[Option<TypeRef>]>,
+) -> Vec<CallableTarget> {
+    let Some(arg_types) = arg_types else {
+        return targets;
+    };
+
+    let arity_matched = targets
+        .iter()
+        .enumerate()
+        .filter(|(_, target)| target.signature.params.len() == arg_types.len())
+        .collect::<Vec<_>>();
+    if arity_matched.is_empty() {
+        return Vec::new();
+    }
+
+    if has_informative_arg_types(arg_types) {
+        let indexes = best_matching_signature_indexes(
+            arity_matched.iter().map(|(_, target)| &target.signature),
+            arg_types,
+        );
+        if !indexes.is_empty() {
+            return indexes
+                .into_iter()
+                .filter_map(|index| {
+                    arity_matched
+                        .get(index)
+                        .map(|(target_index, _)| *target_index)
+                })
+                .filter_map(|target_index| targets.get(target_index).cloned())
+                .collect();
+        }
+    }
+
+    arity_matched
+        .into_iter()
+        .filter_map(|(index, _)| targets.get(index).cloned())
+        .collect()
 }
 
 pub(crate) fn global_signature_for_pointer(

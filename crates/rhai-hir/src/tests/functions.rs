@@ -203,6 +203,48 @@ fn functions_with_distinct_arities_do_not_conflict() {
 }
 
 #[test]
+fn functions_with_same_arity_and_distinct_param_types_do_not_conflict() {
+    let parse = parse_valid(
+        r#"
+            /// @param value int
+            fn do_something(value) {}
+
+            /// @param value string
+            fn do_something(value) {}
+        "#,
+    );
+
+    let hir = lower_file(&parse);
+    let duplicates = hir
+        .diagnostics()
+        .into_iter()
+        .filter(|diagnostic| diagnostic.kind == SemanticDiagnosticKind::DuplicateDefinition)
+        .collect::<Vec<_>>();
+    assert!(duplicates.is_empty(), "{duplicates:?}");
+}
+
+#[test]
+fn functions_with_same_arity_and_same_param_types_still_conflict() {
+    let parse = parse_valid(
+        r#"
+            /// @param value int
+            fn do_something(value) {}
+
+            /// @param value int
+            fn do_something(value) {}
+        "#,
+    );
+
+    let hir = lower_file(&parse);
+    let duplicates = hir
+        .diagnostics()
+        .into_iter()
+        .filter(|diagnostic| diagnostic.kind == SemanticDiagnosticKind::DuplicateDefinition)
+        .collect::<Vec<_>>();
+    assert_eq!(duplicates.len(), 1, "{duplicates:?}");
+}
+
+#[test]
 fn local_calls_resolve_to_matching_function_overloads_by_arity() {
     let parse = parse_valid(
         r#"
