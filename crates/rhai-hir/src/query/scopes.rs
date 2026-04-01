@@ -98,7 +98,7 @@ impl FileHir {
 
     pub fn visible_symbols_at(&self, offset: TextSize) -> Vec<SymbolId> {
         let mut visible = Vec::new();
-        let mut hidden_names = HashSet::new();
+        let mut hidden_symbols = HashSet::new();
         let mut scope = match self.find_scope_at(offset) {
             Some(scope) => scope,
             None => return visible,
@@ -108,12 +108,12 @@ impl FileHir {
         loop {
             let scope_data = self.scope(scope);
             for symbol_id in scope_data.symbols.iter().rev().copied() {
-                let symbol = self.symbol(symbol_id);
-                if hidden_names.contains(symbol.name.as_str()) {
+                let key = self.symbol_conflict_key(symbol_id);
+                if hidden_symbols.contains(&key) {
                     continue;
                 }
                 if self.symbol_is_visible_at(symbol_id, offset, crossed_function_boundary) {
-                    hidden_names.insert(symbol.name.clone());
+                    hidden_symbols.insert(key);
                     visible.push(symbol_id);
                 }
             }

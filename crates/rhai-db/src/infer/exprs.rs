@@ -233,6 +233,23 @@ pub(crate) fn infer_name_expr_type(
     }
 
     if let Some(target) = hir.definition_of(reference) {
+        if hir.symbol(target).kind == SymbolKind::Function {
+            let overloads = hir
+                .visible_function_overloads_for_reference(reference)
+                .into_iter()
+                .filter_map(|symbol| {
+                    inference
+                        .symbol_types
+                        .get(&symbol)
+                        .cloned()
+                        .or_else(|| hir.declared_symbol_type(symbol).cloned())
+                })
+                .collect::<Vec<_>>();
+            if !overloads.is_empty() {
+                return Some(make_ambiguous_type(overloads));
+            }
+        }
+
         return refined_symbol_type_at_offset(hir, inference, target, hir.expr(expr).range.start())
             .or_else(|| inference.symbol_types.get(&target).cloned())
             .or_else(|| hir.declared_symbol_type(target).cloned());

@@ -242,9 +242,9 @@ fn call_argument_types(
 }
 
 #[derive(Clone)]
-struct HostMethodCandidate {
-    signature: FunctionTypeRef,
-    docs: Option<String>,
+pub(crate) struct HostMethodCandidate {
+    pub(crate) signature: FunctionTypeRef,
+    pub(crate) docs: Option<String>,
 }
 
 #[derive(Clone)]
@@ -424,7 +424,7 @@ fn signature_help_from_builtin_universal_method(
     })
 }
 
-fn host_method_candidates_for_type(
+pub(crate) fn host_method_candidates_for_type(
     host_types: &[rhai_db::HostType],
     ty: &TypeRef,
     method_name: &str,

@@ -29,6 +29,7 @@ pub use crate::model::module::{
 pub use crate::model::scope::{
     Body, BodyId, BodyKind, Reference, ReferenceId, ReferenceKind, Scope, ScopeId, ScopeKind,
 };
+pub(crate) use crate::model::symbol::SymbolConflictKey;
 pub use crate::model::symbol::{
     CompletionSymbol, DocumentedField, FileHir, FindReferencesResult, ParameterHint,
     ParameterHintParameter, ReferenceLocation, Symbol, SymbolId, SymbolKind,

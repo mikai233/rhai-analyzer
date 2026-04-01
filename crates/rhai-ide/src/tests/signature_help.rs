@@ -63,6 +63,52 @@ fn signature_help_returns_local_function_signature() {
 }
 
 #[test]
+fn signature_help_selects_local_function_overload_by_arity() {
+    let mut host = AnalysisHost::default();
+    host.apply_change(ChangeSet::single_file(
+        "main.rhai",
+        r#"
+            /// @return int
+            fn do_something() {
+                1
+            }
+
+            /// @param value int
+            /// @return string
+            fn do_something(value) {
+                value.to_string()
+            }
+
+            fn run() {
+                do_something(arg);
+            }
+        "#,
+        DocumentVersion(1),
+    ));
+
+    let analysis = host.snapshot();
+    let file_id = analysis
+        .db
+        .vfs()
+        .file_id(Path::new("main.rhai"))
+        .expect("expected main.rhai");
+    assert_no_syntax_diagnostics(&analysis, file_id);
+    let text = analysis.db.file_text(file_id).expect("expected text");
+    let offset = u32::try_from(text.find("arg").expect("expected argument")).expect("offset");
+
+    let help = analysis
+        .signature_help(FilePosition { file_id, offset })
+        .expect("expected signature help");
+
+    assert_eq!(help.active_signature, 0);
+    assert_eq!(help.signatures.len(), 1);
+    assert_eq!(
+        help.signatures[0].label,
+        "fn do_something(value: int) -> string"
+    );
+}
+
+#[test]
 fn signature_help_prefers_typed_script_method_signatures() {
     let mut host = AnalysisHost::default();
     host.apply_change(ChangeSet::single_file(

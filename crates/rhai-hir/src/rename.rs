@@ -105,8 +105,9 @@ impl FileHir {
         }
 
         let scope = self.symbol(symbol).scope;
+        let renamed_key = self.renamed_symbol_conflict_key(symbol, new_name);
         for other in self.scope(scope).symbols.iter().copied() {
-            if other != symbol && self.symbol(other).name == new_name {
+            if other != symbol && self.symbol_conflict_key(other) == renamed_key {
                 issues.push(RenamePreflightIssue {
                     kind: RenamePreflightIssueKind::DuplicateDefinition,
                     message: format!(
@@ -148,10 +149,11 @@ impl FileHir {
     ) -> Option<SymbolId> {
         let visible = self.visible_symbols_at(offset);
         let target_position = visible.iter().position(|symbol| *symbol == target)?;
+        let renamed_key = self.renamed_symbol_conflict_key(target, new_name);
 
         visible[..target_position]
             .iter()
             .copied()
-            .find(|symbol| self.symbol(*symbol).name == new_name)
+            .find(|symbol| self.symbol_conflict_key(*symbol) == renamed_key)
     }
 }

@@ -5,7 +5,7 @@ use crate::infer::generics::specialize_signature_with_arg_types;
 use crate::infer::helpers::{join_types, make_ambiguous_type};
 use crate::infer::objects::{
     host_method_signature_for_expr, largest_inner_expr, receiver_dispatch_is_precise,
-    receiver_matches_method_type, string_literal_value, symbol_for_expr,
+    receiver_matches_method_type, string_literal_value,
 };
 use crate::{FileTypeInference, HostFunction, HostType, best_matching_signature_indexes};
 use rhai_hir::{
@@ -81,6 +81,7 @@ pub(crate) fn callable_targets_for_call(
     let arg_types = effective_arg_types_for_call(hir, inference, call, arg_types);
 
     if caller_scope_dispatches_via_first_arg(hir, call)
+        && call.resolved_callee.is_none()
         && let Some(target_expr) = call.arg_exprs.first().copied()
     {
         targets.extend(callable_targets_for_expr(
@@ -113,7 +114,9 @@ pub(crate) fn callable_targets_for_call(
         ));
     }
 
-    if let Some(callee_expr) = call.callee_range.and_then(|range| hir.expr_at(range)) {
+    if targets.is_empty()
+        && let Some(callee_expr) = call.callee_range.and_then(|range| hir.expr_at(range))
+    {
         if let Some(signature) = host_method_signature_for_expr(
             hir,
             inference,
@@ -176,8 +179,32 @@ pub(crate) fn callable_targets_for_expr(
     visited_symbols: &mut Vec<SymbolId>,
 ) -> Vec<CallableTarget> {
     match hir.expr(expr).kind {
-        ExprKind::Name => symbol_for_expr(hir, expr)
-            .map(|symbol| {
+        ExprKind::Name => {
+            let Some(reference) = hir.reference_at(hir.expr(expr).range) else {
+                return Vec::new();
+            };
+            let Some(symbol) = hir.definition_of(reference) else {
+                return Vec::new();
+            };
+
+            if hir.symbol(symbol).kind == SymbolKind::Function {
+                let mut targets = Vec::new();
+                for overload in hir.visible_function_overloads_for_reference(reference) {
+                    targets.extend(callable_targets_for_symbol_use(
+                        hir,
+                        inference,
+                        overload,
+                        use_offset,
+                        external,
+                        globals,
+                        host_types,
+                        imported_methods,
+                        arg_types,
+                        visited_symbols,
+                    ));
+                }
+                dedup_callable_targets(targets)
+            } else {
                 callable_targets_for_symbol_use(
                     hir,
                     inference,
@@ -190,8 +217,8 @@ pub(crate) fn callable_targets_for_expr(
                     arg_types,
                     visited_symbols,
                 )
-            })
-            .unwrap_or_default(),
+            }
+        }
         ExprKind::Field => local_method_targets_for_expr(
             hir,
             inference,
@@ -728,9 +755,14 @@ pub(crate) fn signature_from_type(
     host_types: &[HostType],
 ) -> Option<FunctionTypeRef> {
     match ty {
-        TypeRef::Function(signature) => Some(specialize_signature_with_arg_types(
-            signature, arg_types, host_types,
-        )),
+        TypeRef::Function(signature) => {
+            if arg_types.is_some_and(|arg_types| signature.params.len() != arg_types.len()) {
+                return None;
+            }
+            Some(specialize_signature_with_arg_types(
+                signature, arg_types, host_types,
+            ))
+        }
         TypeRef::Ambiguous(items) => merge_function_candidate_signatures(
             items
                 .iter()
@@ -799,7 +831,11 @@ pub(crate) fn effective_arg_types_for_call(
     arg_types
         .map(|arg_types| {
             let arg_offset = usize::from(caller_scope_dispatches_via_first_arg(hir, call));
-            arg_types[arg_offset.min(arg_types.len())..].to_vec()
+            if arg_types.len() == call.arg_exprs.len() {
+                arg_types[arg_offset.min(arg_types.len())..].to_vec()
+            } else {
+                arg_types.to_vec()
+            }
         })
         .or_else(|| Some(effective_call_argument_types(hir, inference, call)))
 }

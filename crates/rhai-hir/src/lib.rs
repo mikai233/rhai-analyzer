@@ -37,6 +37,32 @@ use rhai_syntax::TextSize;
 pub type LoweredFile = FileHir;
 
 impl FileHir {
+    pub(crate) fn function_arity(&self, function: SymbolId) -> Option<usize> {
+        (self.symbol(function).kind == SymbolKind::Function)
+            .then(|| self.function_parameters(function).len())
+    }
+
+    pub(crate) fn symbol_conflict_key(&self, symbol: SymbolId) -> crate::model::SymbolConflictKey {
+        let symbol_data = self.symbol(symbol);
+        crate::model::SymbolConflictKey {
+            name: symbol_data.name.clone(),
+            function_receiver: self
+                .function_info(symbol)
+                .and_then(|info| info.this_type.clone()),
+            function_arity: self.function_arity(symbol),
+        }
+    }
+
+    pub(crate) fn renamed_symbol_conflict_key(
+        &self,
+        symbol: SymbolId,
+        new_name: impl Into<String>,
+    ) -> crate::model::SymbolConflictKey {
+        let mut key = self.symbol_conflict_key(symbol);
+        key.name = new_name.into();
+        key
+    }
+
     pub fn scope(&self, id: ScopeId) -> &Scope {
         &self.scopes[id.0 as usize]
     }
@@ -116,6 +142,24 @@ impl FileHir {
         self.declared_symbol_type(symbol).cloned().or_else(|| {
             external.and_then(|index| index.get(self.symbol(symbol).name.as_str()).cloned())
         })
+    }
+
+    pub fn visible_function_overloads_for_reference(
+        &self,
+        reference: ReferenceId,
+    ) -> Vec<SymbolId> {
+        let reference = self.reference(reference);
+        if reference.kind != ReferenceKind::Name {
+            return Vec::new();
+        }
+
+        self.visible_symbols_at(reference.range.start())
+            .into_iter()
+            .filter(|symbol| {
+                let symbol_data = self.symbol(*symbol);
+                symbol_data.kind == SymbolKind::Function && symbol_data.name == reference.name
+            })
+            .collect()
     }
 
     pub fn value_flows_into(

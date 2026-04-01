@@ -558,6 +558,109 @@ fn snapshot_tracks_ambiguous_local_callable_results() {
 }
 
 #[test]
+fn snapshot_resolves_local_function_overloads_by_arity() {
+    let mut db = AnalyzerDatabase::default();
+    db.apply_change(ChangeSet::single_file(
+        "main.rhai",
+        r#"
+            /// @return int
+            fn do_something() {
+                1
+            }
+
+            /// @param value int
+            /// @return string
+            fn do_something(value) {
+                value.to_string()
+            }
+
+            let first = do_something();
+            let second = do_something(1);
+        "#,
+        DocumentVersion(1),
+    ));
+
+    let snapshot = db.snapshot();
+    assert_workspace_files_have_no_syntax_diagnostics(&snapshot);
+    let file_id = snapshot
+        .vfs()
+        .file_id(Path::new("main.rhai"))
+        .expect("expected file id");
+    let hir = snapshot.hir(file_id).expect("expected hir");
+
+    let first = symbol_id_by_name(&hir, "first", SymbolKind::Variable);
+    let second = symbol_id_by_name(&hir, "second", SymbolKind::Variable);
+
+    assert_eq!(
+        snapshot.inferred_symbol_type(file_id, first),
+        Some(&TypeRef::Int)
+    );
+    assert_eq!(
+        snapshot.inferred_symbol_type(file_id, second),
+        Some(&TypeRef::String)
+    );
+}
+
+#[test]
+fn snapshot_infers_overloaded_local_function_pointers_as_ambiguous_callables() {
+    let mut db = AnalyzerDatabase::default();
+    db.apply_change(ChangeSet::single_file(
+        "main.rhai",
+        r#"
+            /// @return int
+            fn do_something() {
+                1
+            }
+
+            /// @param value int
+            /// @return string
+            fn do_something(value) {
+                value.to_string()
+            }
+
+            let ptr = do_something;
+            let first = ptr();
+            let second = ptr(1);
+        "#,
+        DocumentVersion(1),
+    ));
+
+    let snapshot = db.snapshot();
+    assert_workspace_files_have_no_syntax_diagnostics(&snapshot);
+    let file_id = snapshot
+        .vfs()
+        .file_id(Path::new("main.rhai"))
+        .expect("expected file id");
+    let hir = snapshot.hir(file_id).expect("expected hir");
+
+    let ptr = symbol_id_by_name(&hir, "ptr", SymbolKind::Variable);
+    let first = symbol_id_by_name(&hir, "first", SymbolKind::Variable);
+    let second = symbol_id_by_name(&hir, "second", SymbolKind::Variable);
+
+    assert!(matches!(
+        snapshot.inferred_symbol_type(file_id, ptr),
+        Some(TypeRef::Ambiguous(items))
+            if items.len() == 2
+                && items.contains(&TypeRef::Function(FunctionTypeRef {
+                    params: Vec::new(),
+                    ret: Box::new(TypeRef::Int),
+                }))
+                && items.contains(&TypeRef::Function(FunctionTypeRef {
+                    params: vec![TypeRef::Int],
+                    ret: Box::new(TypeRef::String),
+                }))
+    ));
+    assert_eq!(
+        snapshot.inferred_symbol_type(file_id, first),
+        Some(&TypeRef::Int)
+    );
+    assert_eq!(
+        snapshot.inferred_symbol_type(file_id, second),
+        Some(&TypeRef::String)
+    );
+}
+
+#[test]
 fn snapshot_infers_builtin_function_pointers_from_fn_calls() {
     let mut db = AnalyzerDatabase::default();
     db.apply_change(ChangeSet::single_file(

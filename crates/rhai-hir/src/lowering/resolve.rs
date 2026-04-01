@@ -1,9 +1,10 @@
+use std::collections::HashMap;
+
 use crate::lowering::ctx::{LoweringContext, PendingMutationKind};
 use crate::model::{
     CallSiteId, ExpectedTypeSite, ExpectedTypeSource, FileHir, ReferenceKind, ScopeId, ScopeKind,
     Symbol, SymbolId, SymbolKind, SymbolMutation, SymbolMutationKind, SymbolRead, SymbolReadKind,
 };
-use crate::ty::TypeRef;
 use rhai_syntax::TextSize;
 
 impl<'a> LoweringContext<'a> {
@@ -185,90 +186,30 @@ impl<'a> LoweringContext<'a> {
 
         for scope_index in 0..self.file.scopes.len() {
             let symbols = self.file.scopes[scope_index].symbols.clone();
-            let mut seen = std::collections::HashMap::<String, SymbolId>::new();
+            let mut seen = HashMap::<crate::model::SymbolConflictKey, SymbolId>::new();
 
             for symbol_id in symbols {
-                let (name, start) = {
+                let (key, name, start) = {
                     let symbol = &self.file.symbols[symbol_id.0 as usize];
                     (
-                        self.symbol_relationship_key(symbol_id),
+                        self.file.symbol_conflict_key(symbol_id),
+                        symbol.name.clone(),
                         symbol.range.start(),
                     )
                 };
 
-                if let Some(previous) = seen.get(&name).copied() {
+                if let Some(previous) = seen.get(&key).copied() {
                     self.file.symbols[symbol_id.0 as usize].duplicate_of = Some(previous);
                     continue;
                 }
 
-                seen.insert(name.clone(), symbol_id);
+                seen.insert(key, symbol_id);
 
                 let shadowed = self.file.scopes[scope_index]
                     .parent
                     .and_then(|parent| self.resolve_name_at(parent, &name, start));
                 self.file.symbols[symbol_id.0 as usize].shadowed = shadowed;
             }
-        }
-    }
-
-    pub(crate) fn symbol_relationship_key(&self, symbol: SymbolId) -> String {
-        let symbol_data = &self.file.symbols[symbol.0 as usize];
-        if symbol_data.kind != SymbolKind::Function {
-            return symbol_data.name.clone();
-        }
-
-        match self
-            .file
-            .function_infos
-            .iter()
-            .find(|info| info.symbol == symbol)
-            .and_then(|info| info.this_type.as_ref())
-        {
-            Some(this_type) => {
-                format!("{}#{}", symbol_data.name, self.function_type_key(this_type))
-            }
-            None => symbol_data.name.clone(),
-        }
-    }
-
-    pub(crate) fn function_type_key(&self, this_type: &TypeRef) -> String {
-        match this_type {
-            TypeRef::Unknown => "unknown".to_owned(),
-            TypeRef::Any => "any".to_owned(),
-            TypeRef::Never => "never".to_owned(),
-            TypeRef::Dynamic => "Dynamic".to_owned(),
-            TypeRef::Bool => "bool".to_owned(),
-            TypeRef::Int => "int".to_owned(),
-            TypeRef::Float => "float".to_owned(),
-            TypeRef::Decimal => "decimal".to_owned(),
-            TypeRef::String => "string".to_owned(),
-            TypeRef::Char => "char".to_owned(),
-            TypeRef::Blob => "blob".to_owned(),
-            TypeRef::Timestamp => "timestamp".to_owned(),
-            TypeRef::FnPtr => "Fn".to_owned(),
-            TypeRef::Unit => "()".to_owned(),
-            TypeRef::Range => "range".to_owned(),
-            TypeRef::RangeInclusive => "range=".to_owned(),
-            TypeRef::Named(name) => name.clone(),
-            TypeRef::Applied { name, .. } => name.clone(),
-            TypeRef::Object(_) => "object".to_owned(),
-            TypeRef::Array(_) => "array".to_owned(),
-            TypeRef::Map(_, _) => "map".to_owned(),
-            TypeRef::Nullable(inner) => format!("{}?", self.function_type_key(inner)),
-            TypeRef::Union(items) => items
-                .iter()
-                .map(|item| self.function_type_key(item))
-                .collect::<Vec<_>>()
-                .join("|"),
-            TypeRef::Ambiguous(items) => format!(
-                "ambiguous<{}>",
-                items
-                    .iter()
-                    .map(|item| self.function_type_key(item))
-                    .collect::<Vec<_>>()
-                    .join("|")
-            ),
-            TypeRef::Function(_) => "fun".to_owned(),
         }
     }
 

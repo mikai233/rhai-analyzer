@@ -3,9 +3,10 @@ use rhai_syntax::TextRange;
 use crate::docs::DocBlock;
 use crate::docs::DocBlockId;
 use crate::model::expr::{
-    ArrayExprInfo, AssignExprInfo, BinaryExprInfo, BlockExprInfo, CallSite, ClosureExprInfo,
-    ExpectedTypeSite, ExprNode, ForExprInfo, FunctionInfo, IfExprInfo, IndexExprInfo, LiteralInfo,
-    ObjectFieldInfo, PathExprInfo, SwitchExprInfo, TypeSlot, UnaryExprInfo,
+    ArrayExprInfo, AssignExprInfo, BinaryExprInfo, BlockExprInfo, CallSite, CallSiteId,
+    ClosureExprInfo, ExpectedTypeSite, ExprNode, ForExprInfo, FunctionInfo, IfExprInfo,
+    IndexExprInfo, LiteralInfo, MemberAccess, ObjectFieldInfo, PathExprInfo, SwitchArmInfo,
+    SwitchExprInfo, TypeSlot, UnaryExprInfo,
 };
 use crate::model::flow::{SymbolMutation, SymbolRead, SymbolValueFlow};
 use crate::model::module::{ExportDirective, ImportDirective, NavigationTarget};
@@ -39,6 +40,13 @@ pub struct Symbol {
     pub duplicate_of: Option<SymbolId>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct SymbolConflictKey {
+    pub(crate) name: String,
+    pub(crate) function_receiver: Option<TypeRef>,
+    pub(crate) function_arity: Option<usize>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileHir {
     pub root_range: TextRange,
@@ -52,7 +60,7 @@ pub struct FileHir {
     pub block_exprs: Vec<BlockExprInfo>,
     pub if_exprs: Vec<IfExprInfo>,
     pub switch_exprs: Vec<SwitchExprInfo>,
-    pub switch_arms: Vec<crate::model::expr::SwitchArmInfo>,
+    pub switch_arms: Vec<SwitchArmInfo>,
     pub closure_exprs: Vec<ClosureExprInfo>,
     pub path_exprs: Vec<PathExprInfo>,
     pub for_exprs: Vec<ForExprInfo>,
@@ -68,7 +76,7 @@ pub struct FileHir {
     pub calls: Vec<CallSite>,
     pub expected_type_sites: Vec<ExpectedTypeSite>,
     pub object_fields: Vec<ObjectFieldInfo>,
-    pub member_accesses: Vec<crate::model::expr::MemberAccess>,
+    pub member_accesses: Vec<MemberAccess>,
     pub imports: Vec<ImportDirective>,
     pub exports: Vec<ExportDirective>,
     pub docs: Vec<DocBlock>,
@@ -78,6 +86,7 @@ pub struct FileHir {
 pub struct DocumentedField {
     pub name: String,
     pub annotation: TypeRef,
+    pub docs: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -107,7 +116,7 @@ pub struct ParameterHintParameter {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParameterHint {
-    pub call: crate::model::expr::CallSiteId,
+    pub call: CallSiteId,
     pub callee: NavigationTarget,
     pub callee_name: String,
     pub active_parameter: usize,

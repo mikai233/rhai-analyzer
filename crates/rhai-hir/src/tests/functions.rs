@@ -185,6 +185,83 @@ fn typed_methods_with_same_receiver_still_conflict() {
 }
 
 #[test]
+fn functions_with_distinct_arities_do_not_conflict() {
+    let parse = parse_valid(
+        r#"
+            fn do_something() {}
+            fn do_something(value) {}
+        "#,
+    );
+
+    let hir = lower_file(&parse);
+    let duplicates = hir
+        .diagnostics()
+        .into_iter()
+        .filter(|diagnostic| diagnostic.kind == SemanticDiagnosticKind::DuplicateDefinition)
+        .collect::<Vec<_>>();
+    assert!(duplicates.is_empty(), "{duplicates:?}");
+}
+
+#[test]
+fn local_calls_resolve_to_matching_function_overloads_by_arity() {
+    let parse = parse_valid(
+        r#"
+            fn do_something() {}
+            fn do_something(value) {}
+
+            do_something();
+            do_something(1);
+        "#,
+    );
+
+    let hir = lower_file(&parse);
+    let functions = hir
+        .symbols
+        .iter()
+        .enumerate()
+        .filter_map(|(index, symbol)| {
+            (symbol.kind == SymbolKind::Function && symbol.name == "do_something")
+                .then_some(crate::SymbolId(index as u32))
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(functions.len(), 2);
+
+    let zero_arg = functions
+        .iter()
+        .copied()
+        .find(|symbol| hir.function_parameters(*symbol).is_empty())
+        .expect("expected zero-arg overload");
+    let one_arg = functions
+        .iter()
+        .copied()
+        .find(|symbol| hir.function_parameters(*symbol).len() == 1)
+        .expect("expected one-arg overload");
+
+    assert_eq!(hir.calls.len(), 2);
+    assert_eq!(hir.calls[0].resolved_callee, Some(zero_arg));
+    assert_eq!(hir.calls[1].resolved_callee, Some(one_arg));
+    assert!(hir.calls[0].parameter_bindings.is_empty());
+    assert_eq!(hir.calls[1].parameter_bindings.len(), 1);
+
+    let call_refs = hir
+        .references
+        .iter()
+        .filter(|reference| reference.name == "do_something")
+        .collect::<Vec<_>>();
+    assert_eq!(call_refs.len(), 2);
+    assert!(
+        call_refs
+            .iter()
+            .any(|reference| reference.target == Some(zero_arg))
+    );
+    assert!(
+        call_refs
+            .iter()
+            .any(|reference| reference.target == Some(one_arg))
+    );
+}
+
+#[test]
 fn resolves_forward_functions_without_resolving_future_variables() {
     let parse = parse_valid(
         r#"
@@ -305,6 +382,40 @@ fn caller_scope_parameter_hints_skip_the_dispatch_argument() {
     assert_eq!(hint.active_parameter, 0);
     assert_eq!(hint.parameters.len(), 1);
     assert_eq!(hint.parameters[0].name, "value");
+}
+
+#[test]
+fn caller_scope_fn_pointer_dispatch_resolves_local_function_target() {
+    let parse = parse_valid(
+        r#"
+            fn echo(value) {
+                value
+            }
+
+            call!(Fn("echo"), 1);
+        "#,
+    );
+    let hir = lower_file(&parse);
+
+    let echo = hir
+        .symbols
+        .iter()
+        .enumerate()
+        .find_map(|(index, symbol)| {
+            (symbol.kind == SymbolKind::Function && symbol.name == "echo")
+                .then_some(crate::SymbolId(index as u32))
+        })
+        .expect("expected echo symbol");
+
+    assert_eq!(hir.calls.len(), 2);
+    let outer = hir
+        .calls
+        .iter()
+        .max_by_key(|call| call.range.len())
+        .expect("expected outer caller-scope call");
+    assert_eq!(outer.resolved_callee, Some(echo));
+    assert_eq!(outer.parameter_bindings.len(), 2);
+    assert_eq!(outer.parameter_bindings[0], None);
 }
 
 #[test]

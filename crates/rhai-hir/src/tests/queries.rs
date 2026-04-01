@@ -408,6 +408,37 @@ fn navigation_helpers_return_single_file_definition_and_reference_results() {
 }
 
 #[test]
+fn goto_definition_distinguishes_local_function_overloads_by_arity() {
+    let source = r#"
+            fn do_something() {}
+            fn do_something(value) {}
+
+            do_something();
+            do_something(1);
+        "#;
+    let parse = parse_valid(source);
+    let hir = lower_file(&parse);
+
+    let decl_offsets = source
+        .match_indices("do_something")
+        .map(|(index, _)| TextSize::from(index as u32))
+        .collect::<Vec<_>>();
+    let zero_decl = decl_offsets[0];
+    let one_decl = decl_offsets[1];
+    let zero_call = decl_offsets[2];
+    let one_call = decl_offsets[3];
+
+    assert_eq!(
+        hir.definition_at_offset(zero_call),
+        hir.symbol_at_offset(zero_decl)
+    );
+    assert_eq!(
+        hir.definition_at_offset(one_call),
+        hir.symbol_at_offset(one_decl)
+    );
+}
+
+#[test]
 fn completion_symbols_follow_visible_scope_and_preserve_metadata() {
     let source = r#"
             /// helper docs
@@ -459,7 +490,7 @@ fn completion_symbols_follow_visible_scope_and_preserve_metadata() {
 #[test]
 fn member_completion_uses_doc_fields_and_object_literal_shapes() {
     let source = r#"
-            /// @field name string
+            /// @field name string Primary display name
             /// @field age int
             let user = #{ name: "Ada", age: 42 };
 
@@ -484,8 +515,13 @@ fn member_completion_uses_doc_fields_and_object_literal_shapes() {
     assert_eq!(documented_fields.len(), 2);
     assert_eq!(documented_fields[0].name, "name");
     assert_eq!(documented_fields[0].annotation, TypeRef::String);
+    assert_eq!(
+        documented_fields[0].docs.as_deref(),
+        Some("Primary display name")
+    );
     assert_eq!(documented_fields[1].name, "age");
     assert_eq!(documented_fields[1].annotation, TypeRef::Int);
+    assert_eq!(documented_fields[1].docs, None);
 
     let user_member_offset = TextSize::from(u32::try_from(source.rfind("name;").unwrap()).unwrap());
     let user_members = hir.member_completion_at(user_member_offset);
@@ -499,6 +535,11 @@ fn member_completion_uses_doc_fields_and_object_literal_shapes() {
     assert!(user_members.iter().all(|member| {
         member.source == MemberCompletionSource::DocumentedField && member.annotation.is_some()
     }));
+    let name_member = user_members
+        .iter()
+        .find(|member| member.name == "name")
+        .expect("expected documented name member");
+    assert_eq!(name_member.docs.as_deref(), Some("Primary display name"));
 
     let temp_member_offset =
         TextSize::from(u32::try_from(source.rfind("enabled;").unwrap()).unwrap());
