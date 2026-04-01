@@ -3,7 +3,9 @@ use crate::infer::calls::{
     callable_targets_for_call, effective_call_argument_types, expected_call_signature,
     for_binding_types_from_iterable, inferred_expr_type,
 };
-use crate::infer::helpers::{can_refine_with_expected, join_types, nested_mutation_container_type};
+use crate::infer::helpers::{
+    can_refine_with_expected, informative_expected_type, join_types, nested_mutation_container_type,
+};
 use crate::infer::loops::function_like_body_result_type;
 use crate::infer::objects::{largest_inner_expr, symbol_for_expr};
 use crate::{FileTypeInference, HostFunction, HostType};
@@ -104,7 +106,7 @@ pub(crate) fn propagate_expected_types(
             }
         };
 
-        if let Some(expected) = expected {
+        if let Some(expected) = expected.and_then(|expected| informative_expected_type(&expected)) {
             changed |= propagate_expected_type_to_expr(hir, inference, site.expr, &expected);
         }
     }

@@ -67,6 +67,43 @@ pub(crate) fn can_refine_with_expected(current: &TypeRef, expected: &TypeRef) ->
     }
 }
 
+pub(crate) fn informative_expected_type(ty: &TypeRef) -> Option<TypeRef> {
+    match ty {
+        TypeRef::Unknown | TypeRef::Never | TypeRef::Any | TypeRef::Dynamic => None,
+        TypeRef::Union(items) => {
+            let mut members = Vec::new();
+            for item in items {
+                let Some(item) = informative_expected_type(item) else {
+                    continue;
+                };
+                push_union_member(&mut members, &item);
+            }
+
+            match members.len() {
+                0 => None,
+                1 => members.pop(),
+                _ => Some(TypeRef::Union(members)),
+            }
+        }
+        TypeRef::Ambiguous(items) => {
+            let mut members = Vec::new();
+            for item in items {
+                let Some(item) = informative_expected_type(item) else {
+                    continue;
+                };
+                push_ambiguous_member(&mut members, item);
+            }
+
+            match members.len() {
+                0 => None,
+                1 => members.pop(),
+                _ => Some(TypeRef::Ambiguous(members)),
+            }
+        }
+        _ => Some(ty.clone()),
+    }
+}
+
 pub(crate) fn type_has_vague_parts(ty: &TypeRef) -> bool {
     match ty {
         TypeRef::Unknown | TypeRef::Never | TypeRef::FnPtr | TypeRef::Ambiguous(_) => true,

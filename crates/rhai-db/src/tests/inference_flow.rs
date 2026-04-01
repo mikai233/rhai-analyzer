@@ -39,6 +39,42 @@ fn snapshot_tracks_flow_sensitive_reads_after_sequential_reassignments() {
 }
 
 #[test]
+fn snapshot_does_not_add_any_when_passing_known_values_to_any_parameters() {
+    let mut db = AnalyzerDatabase::default();
+    db.apply_change(ChangeSet::single_file(
+        "main.rhai",
+        r#"
+            let text = "hello";
+            print(text);
+
+            let mixed = if true { "hello" } else { 1 };
+            print(mixed);
+        "#,
+        DocumentVersion(1),
+    ));
+
+    let snapshot = db.snapshot();
+    assert_workspace_files_have_no_syntax_diagnostics(&snapshot);
+    let file_id = snapshot
+        .vfs()
+        .file_id(Path::new("main.rhai"))
+        .expect("expected file id");
+    let hir = snapshot.hir(file_id).expect("expected hir");
+
+    let text = symbol_id_by_name(&hir, "text", SymbolKind::Variable);
+    let mixed = symbol_id_by_name(&hir, "mixed", SymbolKind::Variable);
+
+    assert_eq!(
+        snapshot.inferred_symbol_type(file_id, text),
+        Some(&TypeRef::String)
+    );
+    assert_eq!(
+        snapshot.inferred_symbol_type(file_id, mixed),
+        Some(&TypeRef::Union(vec![TypeRef::String, TypeRef::Int]))
+    );
+}
+
+#[test]
 fn snapshot_prefers_specific_array_types_over_array_unknown_in_variable_unions() {
     let mut db = AnalyzerDatabase::default();
     db.apply_change(ChangeSet::single_file(
