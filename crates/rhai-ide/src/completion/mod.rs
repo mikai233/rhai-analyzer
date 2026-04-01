@@ -1,10 +1,24 @@
-use rhai_db::DatabaseSnapshot;
-use rhai_hir::{FunctionTypeRef, SymbolId, SymbolKind, TypeRef};
-use rhai_syntax::{TextRange, TextSize};
-use rhai_vfs::FileId;
+mod context;
+mod docs;
+mod postfix;
+mod ranking;
+mod snippets;
+mod workspace;
 
+use rhai_db::DatabaseSnapshot;
+use rhai_hir::{SymbolKind, TypeRef};
+use rhai_syntax::{TextRange, TextSize};
+
+use crate::completion::context::completion_context;
+use crate::completion::docs::doc_completion_items;
+use crate::completion::postfix::postfix_completion_items;
+use crate::completion::ranking::rank_completion_items;
+use crate::completion::snippets::{callable_completion_text_edit, callable_parameter_names};
+use crate::completion::workspace::{
+    builtin_function_annotation, builtin_function_detail, builtin_function_docs,
+    inferred_completion_type, workspace_completion_metadata,
+};
 use crate::support::convert::format_type_ref;
-use crate::types::CompletionTextEdit;
 use crate::{
     CompletionInsertFormat, CompletionItem, CompletionItemKind, CompletionItemSource,
     CompletionResolveData, FilePosition,
@@ -39,13 +53,13 @@ pub(crate) fn resolve_completion(
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum CompletionDetailLevel {
+pub(super) enum CompletionDetailLevel {
     Basic,
     Full,
 }
 
 #[derive(Debug, Clone)]
-struct CompletionContext {
+pub(super) struct CompletionContext {
     prefix: String,
     replace_range: TextRange,
     query_offset: usize,
@@ -58,13 +72,13 @@ struct CompletionContext {
 }
 
 #[derive(Debug, Clone)]
-struct PostfixCompletionContext {
+pub(super) struct PostfixCompletionContext {
     receiver_text: String,
     replace_range: TextRange,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum DocCompletionContext {
+pub(super) enum DocCompletionContext {
     Tag {
         prefix: String,
         replace_range: TextRange,
@@ -347,705 +361,19 @@ fn same_completion_item(left: &CompletionItem, right: &CompletionItem) -> bool {
         && left.exported == right.exported
 }
 
-fn callable_completion_text_edit(
-    context: &CompletionContext,
-    label: &str,
-    annotation: Option<&TypeRef>,
-    kind: CompletionItemKind,
-    parameter_names: Option<&[String]>,
-) -> Option<CompletionTextEdit> {
-    if context.next_char_is_open_paren {
-        return None;
-    }
-
-    let snippet = completion_call_snippet(label, annotation, kind, parameter_names)?;
-    Some(CompletionTextEdit {
-        range: context.replace_range,
-        new_text: snippet,
-    })
-}
-
-fn completion_call_snippet(
-    label: &str,
-    annotation: Option<&TypeRef>,
-    kind: CompletionItemKind,
-    parameter_names: Option<&[String]>,
-) -> Option<String> {
-    match annotation {
-        Some(TypeRef::Function(signature)) => {
-            Some(function_call_snippet(label, signature, parameter_names))
-        }
-        _ if matches!(kind, CompletionItemKind::Symbol(SymbolKind::Function)) => {
-            Some(format!("{label}()$0"))
-        }
-        _ => None,
-    }
-}
-
-fn function_call_snippet(
-    label: &str,
-    signature: &FunctionTypeRef,
-    parameter_names: Option<&[String]>,
-) -> String {
-    if signature.params.is_empty() {
-        return format!("{label}()$0");
-    }
-
-    let placeholders = signature
-        .params
-        .iter()
-        .enumerate()
-        .map(|(index, parameter)| {
-            let tabstop = index + 1;
-            let placeholder = snippet_placeholder(
-                parameter,
-                parameter_names.and_then(|names| names.get(index).map(String::as_str)),
-                tabstop,
-            );
-            format!("${{{tabstop}:{placeholder}}}")
-        })
-        .collect::<Vec<_>>()
-        .join(", ");
-
-    format!("{label}({placeholders})$0")
-}
-
-fn snippet_placeholder(parameter: &TypeRef, parameter_name: Option<&str>, index: usize) -> String {
-    if let Some(name) = parameter_name
-        && !name.is_empty()
-    {
-        return name.to_owned();
-    }
-
-    let label = format_type_ref(parameter);
-    if label.is_empty() || label == "unknown" {
-        format!("arg{index}")
-    } else {
-        label
-    }
-}
-
-fn callable_parameter_names(
-    snapshot: &DatabaseSnapshot,
-    file_id: FileId,
-    symbol: SymbolId,
-    annotation: Option<&TypeRef>,
-) -> Option<Vec<String>> {
-    let TypeRef::Function(signature) = annotation? else {
-        return None;
-    };
-    let hir = snapshot.hir(file_id)?;
-    let symbol_data = hir.symbol(symbol);
-    if symbol_data.kind != SymbolKind::Function {
-        return None;
-    }
-
-    let names = hir
-        .function_parameters(symbol)
-        .into_iter()
-        .map(|parameter| hir.symbol(parameter).name.clone())
-        .collect::<Vec<_>>();
-    (names.len() == signature.params.len()).then_some(names)
-}
-
-fn completion_context(snapshot: &DatabaseSnapshot, position: FilePosition) -> CompletionContext {
-    let Some(text) = snapshot.file_text(position.file_id) else {
-        return CompletionContext {
-            prefix: String::new(),
-            replace_range: text_range(0, 0),
-            query_offset: 0,
-            member_access: false,
-            module_path: None,
-            postfix_completion: None,
-            suppress_completion: false,
-            doc_completion: None,
-            next_char_is_open_paren: false,
-        };
-    };
-    let offset = clamp_to_char_boundary(
-        text.as_ref(),
-        usize::try_from(position.offset)
-            .unwrap_or(usize::MAX)
-            .min(text.len()),
-    );
-    let bytes = text.as_bytes();
-    if bytes.get(offset).copied() == Some(b'.') {
-        let postfix_completion = postfix_completion_context_at_dot(text.as_ref(), offset);
-        return CompletionContext {
-            prefix: String::new(),
-            replace_range: text_range(offset + 1, offset + 1),
-            query_offset: offset + 1,
-            member_access: true,
-            module_path: None,
-            postfix_completion,
-            suppress_completion: false,
-            doc_completion: None,
-            next_char_is_open_paren: bytes.get(offset + 1).copied() == Some(b'('),
-        };
-    }
-
-    let mut start = offset;
-
-    while start > 0 && is_identifier_byte(bytes[start - 1]) {
-        start -= 1;
-    }
-
-    let prefix = text[start..offset].to_owned();
-    let replace_range = text_range(start, offset);
-    let member_access = start > 0 && bytes[start - 1] == b'.';
-    let module_path = module_path_before_offset(text.as_ref(), start);
-    let postfix_completion = postfix_completion_context(text.as_ref(), start, offset);
-    let suppress_completion = single_colon_path_context_before_offset(text.as_ref(), start);
-    let doc_completion = doc_completion_context(text.as_ref(), offset);
-    let next_char_is_open_paren = bytes.get(offset).copied() == Some(b'(');
-
-    CompletionContext {
-        prefix,
-        replace_range,
-        query_offset: offset,
-        member_access,
-        module_path,
-        postfix_completion,
-        suppress_completion,
-        doc_completion,
-        next_char_is_open_paren,
-    }
-}
-
-fn is_identifier_byte(byte: u8) -> bool {
-    byte.is_ascii_alphanumeric() || byte == b'_'
-}
-
-fn module_path_before_offset(text: &str, prefix_start: usize) -> Option<Vec<String>> {
-    if !has_double_colon_before(text.as_bytes(), prefix_start) {
-        return None;
-    }
-
-    let bytes = text.as_bytes();
-    let mut end = prefix_start - 2;
-    let mut parts = Vec::<String>::new();
-
-    loop {
-        let mut start = end;
-        while start > 0 && is_identifier_byte(bytes[start - 1]) {
-            start -= 1;
-        }
-        if start == end {
-            return None;
-        }
-        parts.push(text.get(start..end)?.to_owned());
-        if !has_double_colon_before(bytes, start) {
-            break;
-        }
-        end = start - 2;
-    }
-
-    parts.reverse();
-    Some(parts)
-}
-
-fn single_colon_path_context_before_offset(text: &str, prefix_start: usize) -> bool {
-    let bytes = text.as_bytes();
-    if prefix_start == 0 || bytes[prefix_start - 1] != b':' {
-        return false;
-    }
-    if has_double_colon_before(bytes, prefix_start) {
-        return false;
-    }
-
-    let mut segment_start = prefix_start - 1;
-    while segment_start > 0 && is_identifier_byte(bytes[segment_start - 1]) {
-        segment_start -= 1;
-    }
-
-    segment_start < prefix_start - 1
-}
-
-fn doc_completion_context(text: &str, offset: usize) -> Option<DocCompletionContext> {
-    let offset = offset.min(text.len());
-    let line_start = text[..offset].rfind('\n').map_or(0, |index| index + 1);
-    let line = &text[line_start..offset];
-    let trimmed = line.trim_start();
-    let marker = if trimmed.starts_with("///") {
-        "///"
-    } else if trimmed.starts_with("//!") {
-        "//!"
-    } else {
-        return None;
-    };
-    let leading_ws = line.len() - trimmed.len();
-    let marker_start = line_start + leading_ws;
-    let after_marker_start = marker_start + marker.len();
-    let after_marker = &text[after_marker_start..offset];
-    let content = after_marker.trim_start();
-    let content_start = after_marker_start + (after_marker.len() - content.len());
-
-    if let Some(tag) = content.strip_prefix('@')
-        && !tag.contains(char::is_whitespace)
-    {
-        let prefix_start = content_start + 1;
-        return Some(DocCompletionContext::Tag {
-            prefix: tag.to_owned(),
-            replace_range: text_range(prefix_start, offset),
-        });
-    }
-
-    let parts = content.split_whitespace().collect::<Vec<_>>();
-    let trailing_space = content.chars().last().is_some_and(char::is_whitespace);
-
-    match parts.first().copied() {
-        Some("@type") | Some("@return") => {
-            let replace_start = if trailing_space {
-                offset
-            } else {
-                offset.saturating_sub(parts.get(1).copied().unwrap_or_default().len())
-            };
-            let prefix = if trailing_space {
-                String::new()
-            } else {
-                parts.get(1).copied().unwrap_or_default().to_owned()
-            };
-            Some(DocCompletionContext::Type {
-                prefix,
-                replace_range: text_range(replace_start, offset),
-            })
-        }
-        Some("@param") | Some("@field") => {
-            let replace_start = if trailing_space {
-                match parts.len() {
-                    0..=2 => return None,
-                    _ => offset,
-                }
-            } else if parts.len() >= 3 {
-                offset.saturating_sub(parts.last().copied().unwrap_or_default().len())
-            } else {
-                return None;
-            };
-            let prefix = if trailing_space {
-                match parts.len() {
-                    0..=2 => return None,
-                    _ => String::new(),
-                }
-            } else if parts.len() >= 3 {
-                parts.last().copied().unwrap_or_default().to_owned()
-            } else {
-                return None;
-            };
-            Some(DocCompletionContext::Type {
-                prefix,
-                replace_range: text_range(replace_start, offset),
-            })
-        }
-        _ => None,
-    }
-}
-
-fn doc_completion_items(context: &DocCompletionContext) -> Vec<CompletionItem> {
-    match context {
-        DocCompletionContext::Tag { replace_range, .. } => doc_tag_completion_items(*replace_range),
-        DocCompletionContext::Type { replace_range, .. } => {
-            doc_type_completion_items(*replace_range)
-        }
-    }
-}
-
-fn postfix_completion_context(
-    text: &str,
-    prefix_start: usize,
-    offset: usize,
-) -> Option<PostfixCompletionContext> {
-    if prefix_start == 0 || text.as_bytes().get(prefix_start - 1).copied() != Some(b'.') {
-        return None;
-    }
-
-    let bytes = text.as_bytes();
-    let mut receiver_start = prefix_start - 1;
-    while receiver_start > 0 && is_identifier_byte(bytes[receiver_start - 1]) {
-        receiver_start -= 1;
-    }
-
-    if receiver_start == prefix_start - 1 {
-        return None;
-    }
-
-    Some(PostfixCompletionContext {
-        receiver_text: text.get(receiver_start..prefix_start - 1)?.to_owned(),
-        replace_range: text_range(receiver_start, offset),
-    })
-}
-
-fn postfix_completion_context_at_dot(
-    text: &str,
-    dot_offset: usize,
-) -> Option<PostfixCompletionContext> {
-    if text.as_bytes().get(dot_offset).copied() != Some(b'.') || dot_offset == 0 {
-        return None;
-    }
-
-    let bytes = text.as_bytes();
-    let mut receiver_start = dot_offset;
-    while receiver_start > 0 && is_identifier_byte(bytes[receiver_start - 1]) {
-        receiver_start -= 1;
-    }
-
-    if receiver_start == dot_offset {
-        return None;
-    }
-
-    Some(PostfixCompletionContext {
-        receiver_text: text.get(receiver_start..dot_offset)?.to_owned(),
-        replace_range: text_range(receiver_start, dot_offset + 1),
-    })
-}
-
-fn clamp_to_char_boundary(text: &str, mut offset: usize) -> usize {
-    offset = offset.min(text.len());
-    while offset > 0 && !text.is_char_boundary(offset) {
-        offset -= 1;
-    }
-    offset
-}
-
-fn has_double_colon_before(bytes: &[u8], offset: usize) -> bool {
-    offset >= 2 && bytes[offset - 2] == b':' && bytes[offset - 1] == b':'
-}
-
-fn postfix_completion_items(context: &CompletionContext) -> Vec<CompletionItem> {
-    let Some(postfix) = &context.postfix_completion else {
-        return Vec::new();
-    };
-    if context.prefix.is_empty() {
-        return Vec::new();
-    }
-
-    [
-        (
-            "if",
-            "Expand into an `if` statement using the receiver as the condition.",
-            format!("if {} {{\n    $0\n}}", postfix.receiver_text),
-        ),
-        (
-            "while",
-            "Expand into a `while` loop using the receiver as the condition.",
-            format!("while {} {{\n    $0\n}}", postfix.receiver_text),
-        ),
-        (
-            "for",
-            "Expand into a `for ... in ...` loop.",
-            format!(
-                "for ${{1:item}} in {} {{\n    $0\n}}",
-                postfix.receiver_text
-            ),
-        ),
-        (
-            "switch",
-            "Expand into a `switch` expression using the receiver.",
-            format!(
-                "switch {} {{\n    ${{1:_}} => {{\n        $0\n    }}\n}}",
-                postfix.receiver_text
-            ),
-        ),
-        (
-            "return",
-            "Expand into a `return` statement using the receiver.",
-            format!("return {};$0", postfix.receiver_text),
-        ),
-        (
-            "print",
-            "Expand into a `print(...)` call using the receiver.",
-            format!("print({})$0", postfix.receiver_text),
-        ),
-        (
-            "debug",
-            "Expand into a `debug(...)` call using the receiver.",
-            format!("debug({})$0", postfix.receiver_text),
-        ),
-    ]
-    .into_iter()
-    .map(|(label, docs, new_text)| CompletionItem {
-        label: label.to_owned(),
-        kind: CompletionItemKind::Keyword,
-        source: CompletionItemSource::Postfix,
-        origin: None,
-        sort_text: String::new(),
-        detail: Some("postfix template".to_owned()),
-        docs: Some(docs.to_owned()),
-        filter_text: Some(format!("{}.{}", postfix.receiver_text, label)),
-        text_edit: Some(CompletionTextEdit {
-            range: postfix.replace_range,
-            new_text,
-        }),
-        insert_format: CompletionInsertFormat::Snippet,
-        file_id: None,
-        exported: false,
-        resolve_data: None,
-    })
-    .collect()
-}
-
-fn doc_tag_completion_items(replace_range: TextRange) -> Vec<CompletionItem> {
-    [
-        ("type", "Attach a type annotation to the next declaration."),
-        (
-            "param",
-            "Attach a parameter type annotation for the next function.",
-        ),
-        (
-            "return",
-            "Attach a return type annotation for the next function.",
-        ),
-        (
-            "field",
-            "Attach an object field type annotation in documentation.",
-        ),
-    ]
-    .into_iter()
-    .map(|(label, docs)| CompletionItem {
-        label: label.to_owned(),
-        kind: CompletionItemKind::Keyword,
-        source: CompletionItemSource::Builtin,
-        origin: None,
-        sort_text: String::new(),
-        detail: Some("doc tag".to_owned()),
-        docs: Some(docs.to_owned()),
-        filter_text: Some(label.to_owned()),
-        text_edit: Some(CompletionTextEdit {
-            range: replace_range,
-            new_text: label.to_owned(),
-        }),
-        insert_format: CompletionInsertFormat::PlainText,
-        file_id: None,
-        exported: false,
-        resolve_data: None,
-    })
-    .collect()
-}
-
-fn doc_type_completion_items(replace_range: TextRange) -> Vec<CompletionItem> {
-    [
-        ("any", "The widest type."),
-        ("unknown", "An unknown type."),
-        ("never", "A type that should not produce a value."),
-        ("Dynamic", "The Rhai dynamic value type."),
-        ("bool", "Boolean values."),
-        ("int", "Integer values."),
-        ("float", "Floating-point values."),
-        ("decimal", "Decimal values."),
-        ("string", "String values."),
-        ("char", "Character values."),
-        ("blob", "Binary blob values."),
-        ("timestamp", "Timestamp values."),
-        ("Fn", "Function pointer values."),
-        ("()", "The unit type."),
-        ("range", "An exclusive range."),
-        ("range=", "An inclusive range."),
-        ("array<int>", "An array with integer items."),
-        (
-            "map<string, int>",
-            "A map from string keys to integer values.",
-        ),
-        ("fun(int) -> bool", "A function type."),
-    ]
-    .into_iter()
-    .map(|(label, docs)| CompletionItem {
-        label: label.to_owned(),
-        kind: CompletionItemKind::Type,
-        source: CompletionItemSource::Builtin,
-        origin: None,
-        sort_text: String::new(),
-        detail: Some("type".to_owned()),
-        docs: Some(docs.to_owned()),
-        filter_text: Some(label.to_owned()),
-        text_edit: Some(CompletionTextEdit {
-            range: replace_range,
-            new_text: label.to_owned(),
-        }),
-        insert_format: CompletionInsertFormat::PlainText,
-        file_id: None,
-        exported: false,
-        resolve_data: None,
-    })
-    .collect()
-}
-
-fn text_range(start: usize, end: usize) -> TextRange {
+pub(super) fn text_range(start: usize, end: usize) -> TextRange {
     TextRange::new(TextSize::from(start as u32), TextSize::from(end as u32))
-}
-
-fn rank_completion_items(items: &mut [CompletionItem], context: &CompletionContext) {
-    for item in items.iter_mut() {
-        item.sort_text = completion_sort_text(item, context);
-    }
-
-    items.sort_by(|left, right| {
-        left.sort_text
-            .cmp(&right.sort_text)
-            .then_with(|| left.label.cmp(&right.label))
-            .then_with(|| {
-                source_rank(left.source, context.member_access)
-                    .cmp(&source_rank(right.source, context.member_access))
-            })
-    });
-}
-
-fn completion_sort_text(item: &CompletionItem, context: &CompletionContext) -> String {
-    let prefix_rank = prefix_match_rank(item.label.as_str(), context.prefix.as_str());
-    let source_rank = source_rank(item.source, context.member_access);
-    let kind_rank = kind_rank(item.kind);
-
-    format!(
-        "{prefix_rank}:{source_rank}:{kind_rank}:{}",
-        item.label.to_ascii_lowercase()
-    )
-}
-
-fn prefix_match_rank(label: &str, prefix: &str) -> u8 {
-    if prefix.is_empty() {
-        return 1;
-    }
-
-    let label_lower = label.to_ascii_lowercase();
-    let prefix_lower = prefix.to_ascii_lowercase();
-
-    if label_lower == prefix_lower {
-        0
-    } else if label_lower.starts_with(prefix_lower.as_str()) {
-        1
-    } else if label_lower.contains(prefix_lower.as_str()) {
-        2
-    } else {
-        3
-    }
-}
-
-fn source_rank(source: CompletionItemSource, member_access: bool) -> u8 {
-    match (member_access, source) {
-        (true, CompletionItemSource::Member) => 0,
-        (true, CompletionItemSource::Builtin) => 1,
-        (true, CompletionItemSource::Postfix) => 2,
-        (true, CompletionItemSource::Visible) => 3,
-        (true, CompletionItemSource::Module) => 4,
-        (true, CompletionItemSource::Project) => 5,
-        (false, CompletionItemSource::Visible) => 0,
-        (false, CompletionItemSource::Module) => 1,
-        (false, CompletionItemSource::Project) => 2,
-        (false, CompletionItemSource::Builtin) => 3,
-        (false, CompletionItemSource::Postfix) => 4,
-        (false, CompletionItemSource::Member) => 5,
-    }
-}
-
-fn kind_rank(kind: CompletionItemKind) -> u8 {
-    match kind {
-        CompletionItemKind::Member => 0,
-        CompletionItemKind::Symbol(SymbolKind::Variable | SymbolKind::Parameter) => 0,
-        CompletionItemKind::Symbol(SymbolKind::Constant) => 1,
-        CompletionItemKind::Symbol(SymbolKind::Function) => 2,
-        CompletionItemKind::Symbol(SymbolKind::ImportAlias | SymbolKind::ExportAlias) => 3,
-        CompletionItemKind::Type => 4,
-        CompletionItemKind::Keyword => 5,
-    }
-}
-
-fn inferred_completion_type(
-    snapshot: &DatabaseSnapshot,
-    file_id: rhai_vfs::FileId,
-    symbol: rhai_hir::SymbolId,
-) -> Option<&TypeRef> {
-    snapshot
-        .inferred_symbol_type(file_id, symbol)
-        .filter(|ty| !matches!(ty, TypeRef::Unknown))
-}
-
-fn workspace_completion_metadata(
-    snapshot: &DatabaseSnapshot,
-    symbol: &rhai_db::LocatedWorkspaceSymbol,
-    detail_level: CompletionDetailLevel,
-) -> (
-    Option<String>,
-    Option<String>,
-    Option<TypeRef>,
-    Option<String>,
-) {
-    let Some(hir) = snapshot.hir(symbol.file_id) else {
-        return (None, None, None, None);
-    };
-    let Some(symbol_id) = hir.symbol_at(symbol.symbol.full_range) else {
-        return (None, None, None, None);
-    };
-    let resolved_symbol = hir.symbol(symbol_id);
-    let annotation = resolved_symbol
-        .annotation
-        .as_ref()
-        .filter(|ty| !matches!(ty, TypeRef::Unknown))
-        .cloned()
-        .or_else(|| {
-            snapshot
-                .inferred_symbol_type(symbol.file_id, symbol_id)
-                .cloned()
-                .filter(|ty| !matches!(ty, TypeRef::Unknown))
-        });
-    let detail = annotation.as_ref().map(format_type_ref);
-    let docs = match (detail_level, resolved_symbol.docs) {
-        (CompletionDetailLevel::Full, Some(docs)) => Some(hir.doc_block(docs).text.clone()),
-        _ => None,
-    };
-
-    let origin = snapshot
-        .normalized_path(symbol.file_id)
-        .and_then(|path| path.file_stem())
-        .and_then(|stem| stem.to_str())
-        .map(str::trim)
-        .filter(|stem| !stem.is_empty())
-        .map(ToOwned::to_owned);
-
-    (detail, docs, annotation, origin)
-}
-
-fn builtin_function_annotation(function: &rhai_db::HostFunction) -> Option<TypeRef> {
-    if function.overloads.len() != 1 {
-        return None;
-    }
-
-    function
-        .overloads
-        .first()
-        .and_then(|overload| overload.signature.clone())
-        .map(TypeRef::Function)
-}
-
-fn builtin_function_detail(
-    function: &rhai_db::HostFunction,
-    annotation: Option<&TypeRef>,
-) -> Option<String> {
-    if let Some(annotation) = annotation {
-        return Some(format_type_ref(annotation));
-    }
-
-    (!function.overloads.is_empty()).then(|| match function.overloads.len() {
-        1 => "builtin function".to_owned(),
-        count => format!("{count} overloads"),
-    })
-}
-
-fn builtin_function_docs(function: &rhai_db::HostFunction) -> Option<String> {
-    let mut docs = function
-        .overloads
-        .iter()
-        .filter_map(|overload| overload.docs.as_deref())
-        .map(str::trim)
-        .filter(|docs| !docs.is_empty())
-        .collect::<Vec<_>>();
-    docs.sort_unstable();
-    docs.dedup();
-
-    (!docs.is_empty()).then(|| docs.join("\n\n"))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::CompletionInsertFormat;
+    use crate::completion::ranking::source_rank;
+    use crate::{CompletionItem, CompletionItemKind, CompletionItemSource};
+    use rhai_hir::SymbolKind;
+    use rhai_syntax::{TextRange, TextSize};
+
+    use crate::completion::CompletionContext;
 
     fn test_context(member_access: bool) -> CompletionContext {
         CompletionContext {
@@ -1081,12 +409,18 @@ mod tests {
 
     #[test]
     fn module_candidates_rank_ahead_of_project_candidates() {
+        assert!(
+            source_rank(CompletionItemSource::Module, false)
+                < source_rank(CompletionItemSource::Project, false)
+        );
+
+        let context = test_context(false);
         let mut items = vec![
             test_item(CompletionItemSource::Project),
             test_item(CompletionItemSource::Module),
         ];
 
-        rank_completion_items(&mut items, &test_context(false));
+        crate::completion::ranking::rank_completion_items(&mut items, &context);
 
         assert_eq!(items[0].source, CompletionItemSource::Module);
         assert_eq!(items[1].source, CompletionItemSource::Project);
