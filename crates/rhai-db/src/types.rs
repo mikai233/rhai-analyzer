@@ -198,6 +198,15 @@ pub struct ImportedModuleCompletion {
     pub docs: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ObjectFieldHoverInfo {
+    pub name: String,
+    pub declaration_range: TextRange,
+    pub declared_annotation: Option<TypeRef>,
+    pub inferred_annotation: Option<TypeRef>,
+    pub docs: Option<String>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ProjectDiagnosticKind {
     Syntax,

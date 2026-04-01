@@ -132,6 +132,7 @@ pub enum MemberCompletionSource {
 pub struct MemberCompletion {
     pub name: String,
     pub annotation: Option<TypeRef>,
+    pub docs: Option<String>,
     pub range: Option<TextRange>,
     pub source: MemberCompletionSource,
 }

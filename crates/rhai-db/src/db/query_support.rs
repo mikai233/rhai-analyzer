@@ -324,6 +324,7 @@ fn member_completion_support_for_symbol(
             .or_insert(MemberCompletion {
                 name: field.name,
                 annotation: Some(field.annotation),
+                docs: field.docs,
                 range: None,
                 source: MemberCompletionSource::DocumentedField,
             });
@@ -350,6 +351,7 @@ pub(crate) fn object_field_member_completions(
             annotation: field
                 .value
                 .and_then(|value| object_field_annotation_from_expr(hir, value)),
+            docs: None,
             range: Some(field.range),
             source: MemberCompletionSource::ObjectLiteralField,
         })

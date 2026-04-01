@@ -142,9 +142,10 @@ impl FileHir {
             .tags
             .iter()
             .filter_map(|tag| match tag {
-                DocTag::Field { name, ty } => Some(DocumentedField {
+                DocTag::Field { name, ty, docs } => Some(DocumentedField {
                     name: name.clone(),
                     annotation: ty.clone(),
+                    docs: docs.clone(),
                 }),
                 _ => None,
             })

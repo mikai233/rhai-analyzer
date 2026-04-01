@@ -115,6 +115,13 @@ pub(crate) fn format_symbol_signature(
     }
 }
 
+pub(crate) fn format_field_signature(name: &str, annotation: Option<&TypeRef>) -> String {
+    match annotation {
+        Some(annotation) => format!("field {name}: {}", format_type_ref(annotation)),
+        None => format!("field {name}"),
+    }
+}
+
 pub(crate) fn format_type_ref(ty: &TypeRef) -> String {
     match ty {
         TypeRef::Unknown => "unknown".to_owned(),

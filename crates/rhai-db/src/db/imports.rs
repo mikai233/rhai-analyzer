@@ -250,12 +250,104 @@ impl DatabaseSnapshot {
             }
         }
 
+        collect_host_module_completions(self, file_id, module_path, &mut completions);
         collect_inline_module_completions(self, file_id, module_path, &mut completions);
 
         let mut values = completions.into_values().collect::<Vec<_>>();
         values.sort_by(|left, right| left.name.cmp(&right.name));
         values
     }
+}
+
+fn collect_host_module_completions(
+    snapshot: &DatabaseSnapshot,
+    file_id: FileId,
+    module_path: &[String],
+    completions: &mut HashMap<String, ImportedModuleCompletion>,
+) {
+    let Some(hir) = snapshot.hir(file_id) else {
+        return;
+    };
+    let [alias_name, rest @ ..] = module_path else {
+        return;
+    };
+    if !rest.is_empty() {
+        return;
+    }
+
+    let Some(import) = hir.imports.iter().find(|import| {
+        import
+            .alias
+            .is_some_and(|alias| hir.symbol(alias).name == *alias_name)
+    }) else {
+        return;
+    };
+    let Some(module_name) = import
+        .module_text
+        .as_deref()
+        .and_then(parse_static_import_module_name)
+    else {
+        return;
+    };
+    let Some(module) = snapshot
+        .host_modules()
+        .iter()
+        .find(|module| module.name == module_name)
+    else {
+        return;
+    };
+
+    for function in &module.functions {
+        completions
+            .entry(function.name.clone())
+            .or_insert_with(|| ImportedModuleCompletion {
+                name: function.name.clone(),
+                kind: rhai_hir::SymbolKind::Function,
+                file_id: None,
+                symbol: None,
+                annotation: host_function_annotation(function),
+                docs: host_function_docs(function),
+            });
+    }
+
+    for constant in &module.constants {
+        completions
+            .entry(constant.name.clone())
+            .or_insert_with(|| ImportedModuleCompletion {
+                name: constant.name.clone(),
+                kind: rhai_hir::SymbolKind::Constant,
+                file_id: None,
+                symbol: None,
+                annotation: constant.ty.clone(),
+                docs: constant.docs.clone(),
+            });
+    }
+}
+
+fn host_function_annotation(function: &crate::HostFunction) -> Option<TypeRef> {
+    let mut signatures = function
+        .overloads
+        .iter()
+        .filter_map(|overload| overload.signature.clone());
+    let first = signatures.next()?;
+    if signatures.next().is_some() {
+        None
+    } else {
+        Some(TypeRef::Function(first))
+    }
+}
+
+fn host_function_docs(function: &crate::HostFunction) -> Option<String> {
+    let mut docs = function
+        .overloads
+        .iter()
+        .filter_map(|overload| overload.docs.as_deref())
+        .map(str::trim)
+        .filter(|docs| !docs.is_empty())
+        .collect::<Vec<_>>();
+    docs.sort_unstable();
+    docs.dedup();
+    (!docs.is_empty()).then(|| docs.join("\n\n"))
 }
 
 pub(crate) fn project_identity_for_export(

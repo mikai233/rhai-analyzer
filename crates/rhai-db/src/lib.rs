@@ -20,10 +20,10 @@ pub use types::{
     InvalidationReason, LinkedModuleImport, LocatedCallHierarchyItem, LocatedIncomingCall,
     LocatedModuleExport, LocatedModuleGraph, LocatedNavigationTarget, LocatedOutgoingCall,
     LocatedProjectReference, LocatedRenamePreflightIssue, LocatedSymbolIdentity,
-    LocatedWorkspaceSymbol, ParseInputSlot, PerFileQuerySupport, PerformanceStats,
-    ProjectDiagnostic, ProjectDiagnosticKind, ProjectDiagnosticSeverity, ProjectDiagnosticTag,
-    ProjectReferenceKind, ProjectReferences, ProjectRenamePlan, RemovedFileImpact,
-    WorkspaceDependencyEdge, WorkspaceDependencyGraph, WorkspaceFileInfo,
+    LocatedWorkspaceSymbol, ObjectFieldHoverInfo, ParseInputSlot, PerFileQuerySupport,
+    PerformanceStats, ProjectDiagnostic, ProjectDiagnosticKind, ProjectDiagnosticSeverity,
+    ProjectDiagnosticTag, ProjectReferenceKind, ProjectReferences, ProjectRenamePlan,
+    RemovedFileImpact, WorkspaceDependencyEdge, WorkspaceDependencyGraph, WorkspaceFileInfo,
 };
 
 #[cfg(test)]

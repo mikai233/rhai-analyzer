@@ -79,6 +79,7 @@ impl FileHir {
                     annotation: field
                         .value
                         .and_then(|value| self.object_field_annotation_from_expr(value)),
+                    docs: None,
                     range: Some(field.range),
                     source: MemberCompletionSource::ObjectLiteralField,
                 });
@@ -91,6 +92,7 @@ impl FileHir {
                     .or_insert(MemberCompletion {
                         name: field.name,
                         annotation: Some(field.annotation),
+                        docs: field.docs,
                         range: None,
                         source: MemberCompletionSource::DocumentedField,
                     });
@@ -109,6 +111,7 @@ impl FileHir {
                             annotation: field
                                 .value
                                 .and_then(|value| self.object_field_annotation_from_expr(value)),
+                            docs: None,
                             range: Some(field.range),
                             source: MemberCompletionSource::ObjectLiteralField,
                         });

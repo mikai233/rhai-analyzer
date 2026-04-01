@@ -9,9 +9,10 @@ use crate::infer::{
 };
 use crate::types::{
     LocatedCallHierarchyItem, LocatedIncomingCall, LocatedNavigationTarget, LocatedOutgoingCall,
-    LocatedProjectReference, LocatedSymbolIdentity, LocatedWorkspaceSymbol, ProjectReferenceKind,
-    ProjectReferences,
+    LocatedProjectReference, LocatedSymbolIdentity, LocatedWorkspaceSymbol, ObjectFieldHoverInfo,
+    ProjectReferenceKind, ProjectReferences,
 };
+use rhai_hir::TypeRef;
 use rhai_hir::{FileBackedSymbolIdentity, FileHir, ReferenceId, ScopeId, SymbolId, SymbolKind};
 use rhai_syntax::{TextRange, TextSize};
 use rhai_vfs::FileId;
@@ -25,15 +26,17 @@ struct ObjectFieldDeclKey {
     end: TextSize,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct ObjectFieldDecl {
     key: ObjectFieldDeclKey,
+    name: String,
     owner_symbol: Option<SymbolId>,
     owner_kind: Option<SymbolKind>,
+    value_expr: Option<rhai_hir::ExprId>,
 }
 
 impl ObjectFieldDecl {
-    fn range(self) -> TextRange {
+    fn range(&self) -> TextRange {
         TextRange::new(self.key.start, self.key.end)
     }
 }
@@ -111,6 +114,71 @@ impl DatabaseSnapshot {
         Some(ProjectReferences {
             references: self.collect_project_references(&targets),
             targets,
+        })
+    }
+
+    pub fn object_field_hover(
+        &self,
+        file_id: FileId,
+        offset: TextSize,
+    ) -> Option<ObjectFieldHoverInfo> {
+        let declarations = self.object_field_declarations_at(file_id, offset)?;
+        if declarations.is_empty() {
+            return None;
+        }
+
+        let mut declared_annotation = None::<TypeRef>;
+        let mut inferred_annotation = None::<TypeRef>;
+        let mut docs = Vec::new();
+
+        for declaration in &declarations {
+            let Some(provider_analysis) = self.analysis.get(&declaration.key.file_id) else {
+                continue;
+            };
+            let provider_hir = provider_analysis.hir.as_ref();
+
+            if let Some(symbol) = declaration.owner_symbol
+                && let Some(field) = provider_hir
+                    .documented_fields(symbol)
+                    .into_iter()
+                    .find(|field| field.name == declaration.name)
+            {
+                declared_annotation = Some(match declared_annotation {
+                    Some(ref current) => join_hover_types(current, &field.annotation),
+                    None => field.annotation,
+                });
+                if let Some(field_docs) = field.docs.filter(|docs| !docs.trim().is_empty()) {
+                    docs.push(field_docs);
+                }
+            }
+
+            if let Some(value_expr) = declaration.value_expr
+                && let Some(value_ty) = provider_analysis
+                    .hir
+                    .expr_type(value_expr, &provider_analysis.type_inference.expr_types)
+            {
+                inferred_annotation = Some(match inferred_annotation {
+                    Some(ref current) => join_hover_types(current, value_ty),
+                    None => value_ty.clone(),
+                });
+            }
+        }
+
+        if inferred_annotation.is_none()
+            && let Some(usage_ty) = self.inferred_expr_type_at(file_id, offset)
+        {
+            inferred_annotation = Some(usage_ty.clone());
+        }
+
+        let declaration = declarations.first()?;
+        docs.sort_unstable();
+        docs.dedup();
+        Some(ObjectFieldHoverInfo {
+            name: declaration.name.clone(),
+            declaration_range: declaration.range(),
+            declared_annotation,
+            inferred_annotation,
+            docs: (!docs.is_empty()).then(|| docs.join("\n\n")),
         })
     }
 
@@ -405,8 +473,10 @@ impl DatabaseSnapshot {
         let owner_symbol = self.owner_symbol_for_object_field(file_id, hir, field.range);
         Some(vec![ObjectFieldDecl {
             key,
+            name: field.name.clone(),
             owner_symbol,
             owner_kind: owner_symbol.map(|symbol| hir.symbol(symbol).kind),
+            value_expr: field.value,
         }])
     }
 
@@ -527,8 +597,10 @@ impl DatabaseSnapshot {
                     .or_else(|| self.owner_symbol_for_object_field(file_id, hir, field.range));
                 declarations.push(ObjectFieldDecl {
                     key,
+                    name: field.name.clone(),
                     owner_symbol,
                     owner_kind: owner_symbol.map(|symbol| hir.symbol(symbol).kind),
+                    value_expr: field.value,
                 });
             }
         }
@@ -1090,6 +1162,78 @@ fn documented_type_target(
             focus_range: docs.range,
         },
     })
+}
+
+fn join_hover_types(left: &TypeRef, right: &TypeRef) -> TypeRef {
+    if left == right {
+        return left.clone();
+    }
+
+    match (left, right) {
+        (TypeRef::Unknown | TypeRef::Never, other) => other.clone(),
+        (other, TypeRef::Unknown | TypeRef::Never) => other.clone(),
+        (TypeRef::Object(left_fields), TypeRef::Object(right_fields)) => {
+            let mut merged = left_fields.clone();
+            for (name, right_ty) in right_fields {
+                let next = match merged.get(name.as_str()) {
+                    Some(left_ty) => join_hover_types(left_ty, right_ty),
+                    None => right_ty.clone(),
+                };
+                merged.insert(name.clone(), next);
+            }
+            TypeRef::Object(merged)
+        }
+        (TypeRef::Array(left_inner), TypeRef::Array(right_inner)) => {
+            TypeRef::Array(Box::new(join_hover_types(left_inner, right_inner)))
+        }
+        (TypeRef::Nullable(left_inner), TypeRef::Nullable(right_inner)) => {
+            TypeRef::Nullable(Box::new(join_hover_types(left_inner, right_inner)))
+        }
+        (TypeRef::Function(left_sig), TypeRef::Function(right_sig))
+            if left_sig.params.len() == right_sig.params.len() =>
+        {
+            TypeRef::Function(rhai_hir::FunctionTypeRef {
+                params: left_sig
+                    .params
+                    .iter()
+                    .zip(right_sig.params.iter())
+                    .map(|(left, right)| join_hover_types(left, right))
+                    .collect(),
+                ret: Box::new(join_hover_types(
+                    left_sig.ret.as_ref(),
+                    right_sig.ret.as_ref(),
+                )),
+            })
+        }
+        _ => merge_hover_union(left, right),
+    }
+}
+
+fn merge_hover_union(left: &TypeRef, right: &TypeRef) -> TypeRef {
+    let mut members = Vec::<TypeRef>::new();
+    push_hover_union_member(&mut members, left);
+    push_hover_union_member(&mut members, right);
+    if members.len() == 1 {
+        members.pop().expect("expected one hover union member")
+    } else {
+        TypeRef::Union(members)
+    }
+}
+
+fn push_hover_union_member(members: &mut Vec<TypeRef>, ty: &TypeRef) {
+    match ty {
+        TypeRef::Union(items) | TypeRef::Ambiguous(items) => {
+            for item in items {
+                push_hover_union_member(members, item);
+            }
+        }
+        other => {
+            if members.iter().any(|existing| existing == other) {
+                return;
+            }
+            members.push(other.clone());
+        }
+    }
 }
 
 fn call_targets_symbol(

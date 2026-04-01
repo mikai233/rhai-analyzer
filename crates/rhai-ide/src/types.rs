@@ -34,6 +34,7 @@ pub struct HoverResult {
     pub source: HoverSignatureSource,
     pub declared_signature: Option<String>,
     pub inferred_signature: Option<String>,
+    pub overload_signatures: Vec<String>,
     pub notes: Vec<String>,
 }
 

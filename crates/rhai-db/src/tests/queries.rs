@@ -413,6 +413,95 @@ fn comment_module_directives_seed_import_alias_members_and_call_types() {
 }
 
 #[test]
+fn project_host_modules_seed_import_alias_member_completions() {
+    let mut db = AnalyzerDatabase::default();
+    db.apply_change(ChangeSet {
+        files: vec![FileChange {
+            path: "main.rhai".into(),
+            text: r#"
+                import "env" as env;
+
+                let result = env::test(1);
+                let defaults = env::DEFAULTS;
+            "#
+            .to_owned(),
+            version: DocumentVersion(1),
+        }],
+        removed_files: Vec::new(),
+        project: Some(ProjectConfig {
+            modules: [(
+                "env".to_owned(),
+                rhai_project::ModuleSpec {
+                    docs: Some("Environment helpers".to_owned()),
+                    functions: [(
+                        "test".to_owned(),
+                        vec![rhai_project::FunctionSpec {
+                            signature: "fun(int) -> int".to_owned(),
+                            return_type: None,
+                            docs: Some("Run the environment test".to_owned()),
+                        }],
+                    )]
+                    .into_iter()
+                    .collect(),
+                    constants: [(
+                        "DEFAULTS".to_owned(),
+                        rhai_project::ConstantSpec {
+                            type_name: "map<string, int>".to_owned(),
+                            docs: Some("Default environment values".to_owned()),
+                        },
+                    )]
+                    .into_iter()
+                    .collect(),
+                },
+            )]
+            .into_iter()
+            .collect(),
+            ..ProjectConfig::default()
+        }),
+    });
+
+    let snapshot = db.snapshot();
+    assert_workspace_files_have_no_syntax_diagnostics(&snapshot);
+    let file_id = snapshot
+        .vfs()
+        .file_id(Path::new("main.rhai"))
+        .expect("expected file id");
+
+    let completions = snapshot.imported_module_completions(file_id, &[String::from("env")]);
+    let test_completion = completions
+        .iter()
+        .find(|completion| completion.name == "test")
+        .expect("expected host module function completion");
+    assert_eq!(
+        test_completion.annotation,
+        Some(TypeRef::Function(FunctionTypeRef {
+            params: vec![TypeRef::Int],
+            ret: Box::new(TypeRef::Int),
+        }))
+    );
+    assert_eq!(
+        test_completion.docs.as_deref(),
+        Some("Run the environment test")
+    );
+
+    let defaults_completion = completions
+        .iter()
+        .find(|completion| completion.name == "DEFAULTS")
+        .expect("expected host module constant completion");
+    assert_eq!(
+        defaults_completion.annotation,
+        Some(TypeRef::Map(
+            Box::new(TypeRef::String),
+            Box::new(TypeRef::Int)
+        ))
+    );
+    assert_eq!(
+        defaults_completion.docs.as_deref(),
+        Some("Default environment values")
+    );
+}
+
+#[test]
 fn caller_scope_captures_are_suppressed_when_function_has_no_calls() {
     let mut db = AnalyzerDatabase::default();
     db.apply_change(ChangeSet::single_file(

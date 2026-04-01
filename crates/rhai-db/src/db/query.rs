@@ -333,6 +333,7 @@ fn add_host_type_members(
             .or_insert(MemberCompletion {
                 name: method.name.clone(),
                 annotation: method_signature_annotation(receiver_ty, host_type, method, host_types),
+                docs: method_docs(method),
                 range: None,
                 source: MemberCompletionSource::HostTypeMember,
             });
@@ -369,8 +370,22 @@ fn add_universal_method_members(members: &mut BTreeMap<String, MemberCompletion>
             .or_insert(MemberCompletion {
                 name: (*method_name).to_owned(),
                 annotation: builtin_universal_method_signature(method_name).map(TypeRef::Function),
+                docs: None,
                 range: None,
                 source: MemberCompletionSource::HostTypeMember,
             });
     }
+}
+
+fn method_docs(method: &crate::HostFunction) -> Option<String> {
+    let mut docs = method
+        .overloads
+        .iter()
+        .filter_map(|overload| overload.docs.as_deref())
+        .map(str::trim)
+        .filter(|docs| !docs.is_empty())
+        .collect::<Vec<_>>();
+    docs.sort_unstable();
+    docs.dedup();
+    (!docs.is_empty()).then(|| docs.join("\n\n"))
 }

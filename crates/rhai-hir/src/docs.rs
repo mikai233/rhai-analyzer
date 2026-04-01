@@ -16,10 +16,20 @@ pub struct DocBlock {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DocTag {
     Type(TypeRef),
-    Param { name: String, ty: TypeRef },
+    Param {
+        name: String,
+        ty: TypeRef,
+    },
     Return(TypeRef),
-    Field { name: String, ty: TypeRef },
-    Unknown { name: String, value: String },
+    Field {
+        name: String,
+        ty: TypeRef,
+        docs: Option<String>,
+    },
+    Unknown {
+        name: String,
+        value: String,
+    },
 }
 
 pub fn collect_doc_block(root: &SyntaxNode, item_start: TextSize) -> Option<DocBlock> {
@@ -127,10 +137,11 @@ fn parse_doc_tag(line: &str) -> Option<DocTag> {
     }
 
     if let Some(rest) = tag.strip_prefix("field ") {
-        let (name, ty) = split_name_and_type(rest)?;
-        return parse_type_ref(ty).map(|ty| DocTag::Field {
+        let (name, ty, docs) = split_name_type_and_optional_docs(rest)?;
+        return Some(DocTag::Field {
             name: name.to_owned(),
             ty,
+            docs,
         });
     }
 
@@ -145,6 +156,24 @@ fn split_name_and_type(input: &str) -> Option<(&str, &str)> {
     let split = input.find(char::is_whitespace)?;
     let (name, rest) = input.split_at(split);
     Some((name.trim(), rest.trim()))
+}
+
+fn split_name_type_and_optional_docs(input: &str) -> Option<(&str, TypeRef, Option<String>)> {
+    let input = input.trim();
+    let split = input.find(char::is_whitespace)?;
+    let (name, rest) = input.split_at(split);
+    let name = name.trim();
+    let rest = rest.trim();
+    let parts = rest.split_whitespace().collect::<Vec<_>>();
+    for end in (1..=parts.len()).rev() {
+        let ty_text = parts[..end].join(" ");
+        let Some(ty) = parse_type_ref(ty_text.as_str()) else {
+            continue;
+        };
+        let docs = (!parts[end..].is_empty()).then(|| parts[end..].join(" "));
+        return Some((name, ty, docs));
+    }
+    None
 }
 
 #[cfg(test)]
@@ -192,6 +221,28 @@ fn add(x, y) { x + y }
                 },
                 DocTag::Return(TypeRef::Int),
             ]
+        );
+    }
+
+    #[test]
+    fn parses_field_tags_with_optional_docs() {
+        let source = r#"
+/// User docs.
+/// @field name string Primary display name
+let user = #{ name: "Ada" };
+"#;
+        assert_valid_rhai_syntax(source);
+        let parse = parse_text(source);
+        let let_offset = TextSize::from(u32::try_from(source.find("let").unwrap()).unwrap());
+        let docs = collect_doc_block(&parse.root(), let_offset).expect("expected docs");
+
+        assert_eq!(
+            docs.tags,
+            vec![DocTag::Field {
+                name: "name".to_owned(),
+                ty: TypeRef::String,
+                docs: Some("Primary display name".to_owned()),
+            }]
         );
     }
 
