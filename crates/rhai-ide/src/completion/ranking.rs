@@ -13,21 +13,37 @@ pub(super) fn rank_completion_items(items: &mut [CompletionItem], context: &Comp
             .cmp(&right.sort_text)
             .then_with(|| left.label.cmp(&right.label))
             .then_with(|| {
-                source_rank(left.source, context.member_access)
-                    .cmp(&source_rank(right.source, context.member_access))
+                source_rank(left.source, context).cmp(&source_rank(right.source, context))
             })
     });
 }
 
 fn completion_sort_text(item: &CompletionItem, context: &CompletionContext) -> String {
+    let relevance_rank = relevance_rank(item, context);
     let prefix_rank = prefix_match_rank(item.label.as_str(), context.prefix.as_str());
-    let source_rank = source_rank(item.source, context.member_access);
+    let source_rank = source_rank(item.source, context);
     let kind_rank = kind_rank(item.kind);
 
     format!(
-        "{prefix_rank}:{source_rank}:{kind_rank}:{}",
+        "{relevance_rank}:{prefix_rank}:{source_rank}:{kind_rank}:{}",
         item.label.to_ascii_lowercase()
     )
+}
+
+fn relevance_rank(item: &CompletionItem, context: &CompletionContext) -> u8 {
+    if item.source != CompletionItemSource::Postfix {
+        return 1;
+    }
+
+    if context.prefix.is_empty() {
+        return 1;
+    }
+
+    if item.label.eq_ignore_ascii_case(context.prefix.as_str()) {
+        0
+    } else {
+        2
+    }
 }
 
 fn prefix_match_rank(label: &str, prefix: &str) -> u8 {
@@ -49,8 +65,8 @@ fn prefix_match_rank(label: &str, prefix: &str) -> u8 {
     }
 }
 
-pub(super) fn source_rank(source: CompletionItemSource, member_access: bool) -> u8 {
-    match (member_access, source) {
+pub(super) fn source_rank(source: CompletionItemSource, context: &CompletionContext) -> u8 {
+    match (context.member_access, source) {
         (true, CompletionItemSource::Member) => 0,
         (true, CompletionItemSource::Builtin) => 1,
         (true, CompletionItemSource::Postfix) => 2,
@@ -74,6 +90,7 @@ fn kind_rank(kind: CompletionItemKind) -> u8 {
         CompletionItemKind::Symbol(SymbolKind::Function) => 2,
         CompletionItemKind::Symbol(SymbolKind::ImportAlias | SymbolKind::ExportAlias) => 3,
         CompletionItemKind::Type => 4,
-        CompletionItemKind::Keyword => 5,
+        CompletionItemKind::Snippet => 5,
+        CompletionItemKind::Keyword => 6,
     }
 }

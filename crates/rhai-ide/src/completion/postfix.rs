@@ -6,14 +6,16 @@ pub(super) fn postfix_completion_items(context: &CompletionContext) -> Vec<Compl
     let Some(postfix) = &context.postfix_completion else {
         return Vec::new();
     };
-    if context.prefix.is_empty() {
-        return Vec::new();
-    }
 
-    postfix_templates(postfix)
+    postfix_templates(postfix, context.prefix.as_str(), context.replace_range)
 }
 
-fn postfix_templates(postfix: &PostfixCompletionContext) -> Vec<CompletionItem> {
+fn postfix_templates(
+    postfix: &PostfixCompletionContext,
+    prefix: &str,
+    insert_range: rhai_syntax::TextRange,
+) -> Vec<CompletionItem> {
+    let prefix = prefix.to_ascii_lowercase();
     [
         (
             "if",
@@ -42,6 +44,16 @@ fn postfix_templates(postfix: &PostfixCompletionContext) -> Vec<CompletionItem> 
             ),
         ),
         (
+            "not",
+            "Negate the receiver with the unary `!` operator.",
+            format!("!{}$0", postfix.receiver_text),
+        ),
+        (
+            "let",
+            "Bind the receiver to a new local variable.",
+            format!("let ${{1:value}} = {};$0", postfix.receiver_text),
+        ),
+        (
             "return",
             "Expand into a `return` statement using the receiver.",
             format!("return {};$0", postfix.receiver_text),
@@ -58,17 +70,19 @@ fn postfix_templates(postfix: &PostfixCompletionContext) -> Vec<CompletionItem> 
         ),
     ]
     .into_iter()
+    .filter(|(label, _, _)| prefix.is_empty() || label.starts_with(prefix.as_str()))
     .map(|(label, docs, new_text)| CompletionItem {
         label: label.to_owned(),
-        kind: CompletionItemKind::Keyword,
+        kind: CompletionItemKind::Snippet,
         source: CompletionItemSource::Postfix,
         origin: None,
         sort_text: String::new(),
         detail: Some("postfix template".to_owned()),
         docs: Some(docs.to_owned()),
-        filter_text: Some(format!("{}.{}", postfix.receiver_text, label)),
+        filter_text: Some(label.to_owned()),
         text_edit: Some(CompletionTextEdit {
-            range: postfix.replace_range,
+            replace_range: postfix.replace_range,
+            insert_range: Some(insert_range),
             new_text,
         }),
         insert_format: CompletionInsertFormat::Snippet,

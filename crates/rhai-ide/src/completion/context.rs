@@ -209,14 +209,7 @@ fn postfix_completion_context(
     }
 
     let bytes = text.as_bytes();
-    let mut receiver_start = prefix_start - 1;
-    while receiver_start > 0 && is_identifier_byte(bytes[receiver_start - 1]) {
-        receiver_start -= 1;
-    }
-
-    if receiver_start == prefix_start - 1 {
-        return None;
-    }
+    let receiver_start = member_chain_receiver_start(bytes, prefix_start - 1)?;
 
     Some(PostfixCompletionContext {
         receiver_text: text.get(receiver_start..prefix_start - 1)?.to_owned(),
@@ -233,19 +226,41 @@ fn postfix_completion_context_at_dot(
     }
 
     let bytes = text.as_bytes();
-    let mut receiver_start = dot_offset;
-    while receiver_start > 0 && is_identifier_byte(bytes[receiver_start - 1]) {
-        receiver_start -= 1;
-    }
-
-    if receiver_start == dot_offset {
-        return None;
-    }
+    let receiver_start = member_chain_receiver_start(bytes, dot_offset)?;
 
     Some(PostfixCompletionContext {
         receiver_text: text.get(receiver_start..dot_offset)?.to_owned(),
         replace_range: text_range(receiver_start, dot_offset + 1),
     })
+}
+
+fn member_chain_receiver_start(bytes: &[u8], end: usize) -> Option<usize> {
+    let mut segment_end = end;
+    let mut start = segment_end;
+    while start > 0 && is_identifier_byte(bytes[start - 1]) {
+        start -= 1;
+    }
+    if start == segment_end {
+        return None;
+    }
+
+    loop {
+        if start == 0 || bytes[start - 1] != b'.' {
+            break;
+        }
+
+        segment_end = start - 1;
+        let mut previous_start = segment_end;
+        while previous_start > 0 && is_identifier_byte(bytes[previous_start - 1]) {
+            previous_start -= 1;
+        }
+        if previous_start == segment_end {
+            break;
+        }
+        start = previous_start;
+    }
+
+    Some(start)
 }
 
 fn clamp_to_char_boundary(text: &str, mut offset: usize) -> usize {

@@ -20,7 +20,8 @@ pub(super) fn callable_completion_text_edit(
 
     let snippet = completion_call_snippet(label, annotation, kind, parameter_names)?;
     Some(CompletionTextEdit {
-        range: context.replace_range,
+        replace_range: context.replace_range,
+        insert_range: None,
         new_text: snippet,
     })
 }

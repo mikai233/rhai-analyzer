@@ -194,6 +194,7 @@ fn completion_conversion_surfaces_source_descriptions() {
             .and_then(|details| details.description.as_deref()),
         None
     );
+    assert_eq!(item.filter_text.as_deref(), Some("shared_helper"));
 }
 
 #[test]
@@ -268,6 +269,48 @@ fn completion_conversion_includes_module_origin_name() {
             .and_then(|details| details.detail.as_deref()),
         Some(" fun() -> ()")
     );
+    assert_eq!(item.filter_text.as_deref(), Some("shared_helper"));
+}
+
+#[test]
+fn completion_conversion_uses_label_filter_text_for_postfix_items() {
+    let server = ServerState::new();
+    let item = completion_item_to_lsp(
+        &server,
+        Some("let branch = student.name.s"),
+        CompletionItem {
+            label: "switch".to_owned(),
+            kind: CompletionItemKind::Snippet,
+            source: CompletionItemSource::Postfix,
+            origin: None,
+            sort_text: "0".to_owned(),
+            detail: Some("postfix template".to_owned()),
+            docs: None,
+            filter_text: Some("student.name.switch".to_owned()),
+            text_edit: Some(rhai_ide::CompletionTextEdit {
+                replace_range: TextRange::new(TextSize::from(13), TextSize::from(27)),
+                insert_range: Some(TextRange::new(TextSize::from(26), TextSize::from(27))),
+                new_text: "switch student.name {\n    ${1:_} => {\n        $0\n    }\n}".to_owned(),
+            }),
+            insert_format: CompletionInsertFormat::Snippet,
+            file_id: None,
+            exported: false,
+            resolve_data: None,
+        },
+    );
+
+    assert_eq!(item.filter_text.as_deref(), Some("switch"));
+    assert_eq!(item.kind, Some(lsp_types::CompletionItemKind::SNIPPET));
+    match item.text_edit.as_ref().expect("expected text edit") {
+        lsp_types::CompletionTextEdit::Edit(edit) => {
+            assert_eq!(
+                edit.new_text,
+                "switch student.name {\n    ${1:_} => {\n        $0\n    }\n}"
+            );
+        }
+        other => panic!("expected simple edit, got {other:?}"),
+    }
+    assert_eq!(item.additional_text_edits.as_ref().map(Vec::len), Some(1));
 }
 
 #[test]

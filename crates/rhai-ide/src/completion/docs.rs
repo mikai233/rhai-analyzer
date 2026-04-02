@@ -40,7 +40,8 @@ fn doc_tag_completion_items(replace_range: TextRange) -> Vec<CompletionItem> {
         docs: Some(docs.to_owned()),
         filter_text: Some(label.to_owned()),
         text_edit: Some(CompletionTextEdit {
-            range: replace_range,
+            replace_range,
+            insert_range: None,
             new_text: label.to_owned(),
         }),
         insert_format: CompletionInsertFormat::PlainText,
@@ -87,7 +88,8 @@ fn doc_type_completion_items(replace_range: TextRange) -> Vec<CompletionItem> {
         docs: Some(docs.to_owned()),
         filter_text: Some(label.to_owned()),
         text_edit: Some(CompletionTextEdit {
-            range: replace_range,
+            replace_range,
+            insert_range: None,
             new_text: label.to_owned(),
         }),
         insert_format: CompletionInsertFormat::PlainText,

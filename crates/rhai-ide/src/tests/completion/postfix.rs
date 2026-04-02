@@ -6,160 +6,14 @@ use rhai_vfs::DocumentVersion;
 use crate::{AnalysisHost, CompletionInsertFormat, CompletionItemSource, FilePosition};
 
 #[test]
-fn postfix_for_completion_rewrites_receiver_expression_into_loop_snippet() {
-    let mut host = AnalysisHost::default();
-    host.apply_change(ChangeSet::single_file(
-        "main.rhai",
-        r#"
-            fn run() {
-                let values = [1, 2, 3];
-                values.for
-            }
-        "#,
-        DocumentVersion(1),
-    ));
-
-    let analysis = host.snapshot();
-    let file_id = analysis
-        .db
-        .vfs()
-        .file_id(Path::new("main.rhai"))
-        .expect("expected main.rhai");
-    let text = analysis.db.file_text(file_id).expect("expected text");
-    let offset = u32::try_from(
-        text.find("values.for")
-            .expect("expected postfix completion target")
-            + "values.for".len(),
-    )
-    .expect("offset");
-
-    let item = analysis
-        .completions(FilePosition { file_id, offset })
-        .into_iter()
-        .find(|item| item.label == "for" && item.source == CompletionItemSource::Postfix)
-        .expect("expected postfix for completion");
-
-    assert_eq!(item.insert_format, CompletionInsertFormat::Snippet);
-    assert_eq!(item.filter_text.as_deref(), Some("values.for"));
-    assert_eq!(
-        item.text_edit.as_ref().map(|edit| edit.new_text.as_str()),
-        Some("for ${1:item} in values {\n    $0\n}")
-    );
-}
-#[test]
-fn postfix_for_completion_appears_when_typing_a_suffix_prefix() {
-    let mut host = AnalysisHost::default();
-    host.apply_change(ChangeSet::single_file(
-        "main.rhai",
-        r#"
-            fn run() {
-                let values = [1, 2, 3];
-                values.f
-            }
-        "#,
-        DocumentVersion(1),
-    ));
-
-    let analysis = host.snapshot();
-    let file_id = analysis
-        .db
-        .vfs()
-        .file_id(Path::new("main.rhai"))
-        .expect("expected main.rhai");
-    let text = analysis.db.file_text(file_id).expect("expected text");
-    let offset = u32::try_from(
-        text.find("values.f")
-            .expect("expected postfix completion target")
-            + "values.f".len(),
-    )
-    .expect("offset");
-
-    let completions = analysis.completions(FilePosition { file_id, offset });
-    let item = completions
-        .iter()
-        .find(|item| item.label == "for" && item.source == CompletionItemSource::Postfix)
-        .expect("expected postfix for completion while typing a suffix prefix");
-    assert_eq!(item.filter_text.as_deref(), Some("values.for"));
-}
-#[test]
-fn postfix_templates_do_not_appear_before_typing_a_suffix_prefix() {
-    let mut host = AnalysisHost::default();
-    host.apply_change(ChangeSet::single_file(
-        "main.rhai",
-        r#"
-            fn run() {
-                let values = [1, 2, 3];
-                values.
-            }
-        "#,
-        DocumentVersion(1),
-    ));
-
-    let analysis = host.snapshot();
-    let file_id = analysis
-        .db
-        .vfs()
-        .file_id(Path::new("main.rhai"))
-        .expect("expected main.rhai");
-    let text = analysis.db.file_text(file_id).expect("expected text");
-    let offset = u32::try_from(
-        text.find("values.")
-            .expect("expected postfix completion target")
-            + "values.".len(),
-    )
-    .expect("offset");
-
-    let completions = analysis.completions(FilePosition { file_id, offset });
-    assert!(
-        completions
-            .iter()
-            .all(|item| item.source != CompletionItemSource::Postfix),
-        "expected postfix templates to stay hidden until a suffix prefix is typed, got {completions:?}"
-    );
-}
-#[test]
-fn dot_trigger_positions_still_hide_postfix_templates() {
-    let mut host = AnalysisHost::default();
-    host.apply_change(ChangeSet::single_file(
-        "main.rhai",
-        r#"
-            fn run() {
-                let values = [1, 2, 3];
-                values.
-            }
-        "#,
-        DocumentVersion(1),
-    ));
-
-    let analysis = host.snapshot();
-    let file_id = analysis
-        .db
-        .vfs()
-        .file_id(Path::new("main.rhai"))
-        .expect("expected main.rhai");
-    let text = analysis.db.file_text(file_id).expect("expected text");
-    let offset = u32::try_from(
-        text.find("values.").expect("expected dot trigger position") + "values".len(),
-    )
-    .expect("offset");
-
-    let completions = analysis.completions(FilePosition { file_id, offset });
-    assert!(
-        completions
-            .iter()
-            .all(|item| item.source != CompletionItemSource::Postfix),
-        "expected dot-trigger completions to hide postfix templates until a suffix prefix is typed, got {completions:?}"
-    );
-}
-#[test]
-fn postfix_switch_completion_rewrites_receiver_expression_into_switch_snippet() {
+fn postfix_templates_appear_after_dot_trigger() {
     let mut host = AnalysisHost::default();
     host.apply_change(ChangeSet::single_file(
         "main.rhai",
         r#"
             fn run() {
                 let value = 42;
-                value.switch
+                value.
             }
         "#,
         DocumentVersion(1),
@@ -173,35 +27,30 @@ fn postfix_switch_completion_rewrites_receiver_expression_into_switch_snippet() 
         .expect("expected main.rhai");
     let text = analysis.db.file_text(file_id).expect("expected text");
     let offset = u32::try_from(
-        text.find("value.switch")
+        text.find("value.")
             .expect("expected postfix completion target")
-            + "value.switch".len(),
+            + "value.".len(),
     )
     .expect("offset");
 
-    let item = analysis
-        .completions(FilePosition { file_id, offset })
-        .into_iter()
-        .find(|item| item.label == "switch" && item.source == CompletionItemSource::Postfix)
-        .expect("expected postfix switch completion");
-
-    assert_eq!(item.insert_format, CompletionInsertFormat::Snippet);
-    assert_eq!(item.filter_text.as_deref(), Some("value.switch"));
-    assert_eq!(
-        item.text_edit.as_ref().map(|edit| edit.new_text.as_str()),
-        Some("switch value {\n    ${1:_} => {\n        $0\n    }\n}")
+    let completions = analysis.completions(FilePosition { file_id, offset });
+    assert!(
+        completions
+            .iter()
+            .any(|item| item.label == "switch" && item.source == CompletionItemSource::Postfix),
+        "expected switch postfix completion, got {completions:?}"
     );
 }
+
 #[test]
-fn postfix_if_and_return_completions_expand_to_expected_snippets() {
+fn postfix_completion_uses_insert_replace_ranges_for_member_receiver_prefixes() {
     let mut host = AnalysisHost::default();
     host.apply_change(ChangeSet::single_file(
         "main.rhai",
         r#"
             fn run() {
-                let value = ready;
-                value.if
-                value.return
+                let student = #{ name: "mikai233" };
+                let branch = student.name.s
             }
         "#,
         DocumentVersion(1),
@@ -214,48 +63,102 @@ fn postfix_if_and_return_completions_expand_to_expected_snippets() {
         .file_id(Path::new("main.rhai"))
         .expect("expected main.rhai");
     let text = analysis.db.file_text(file_id).expect("expected text");
-
-    let if_offset = u32::try_from(
-        text.find("value.if")
+    let offset = u32::try_from(
+        text.find("student.name.s")
             .expect("expected postfix completion target")
-            + "value.if".len(),
+            + "student.name.s".len(),
     )
     .expect("offset");
-    let if_item = analysis
-        .completions(FilePosition {
-            file_id,
-            offset: if_offset,
-        })
+
+    let switch = analysis
+        .completions(FilePosition { file_id, offset })
         .into_iter()
-        .find(|item| item.label == "if" && item.source == CompletionItemSource::Postfix)
-        .expect("expected postfix if completion");
+        .find(|item| item.label == "switch" && item.source == CompletionItemSource::Postfix)
+        .expect("expected switch postfix completion");
+
+    assert_eq!(switch.insert_format, CompletionInsertFormat::Snippet);
+    assert_eq!(switch.filter_text.as_deref(), Some("switch"));
     assert_eq!(
-        if_item
-            .text_edit
-            .as_ref()
-            .map(|edit| edit.new_text.as_str()),
-        Some("if value {\n    $0\n}")
+        switch.text_edit.as_ref().map(|edit| edit.new_text.as_str()),
+        Some("switch student.name {\n    ${1:_} => {\n        $0\n    }\n}")
     );
 
-    let return_offset = u32::try_from(
-        text.find("value.return")
+    let text_edit = switch.text_edit.expect("expected text edit");
+    let prefix_start = text
+        .find("student.name.s")
+        .expect("expected completion prefix start")
+        + "student.name.".len();
+    let receiver_start = text
+        .find("student.name.s")
+        .expect("expected receiver start");
+
+    assert_eq!(
+        text_edit.insert_range,
+        Some(rhai_syntax::TextRange::new(
+            rhai_syntax::TextSize::from(prefix_start as u32),
+            rhai_syntax::TextSize::from(offset),
+        ))
+    );
+    assert_eq!(
+        text_edit.replace_range,
+        rhai_syntax::TextRange::new(
+            rhai_syntax::TextSize::from(receiver_start as u32),
+            rhai_syntax::TextSize::from(offset),
+        )
+    );
+}
+
+#[test]
+fn postfix_templates_include_not_and_let_expansions() {
+    let mut host = AnalysisHost::default();
+    host.apply_change(ChangeSet::single_file(
+        "main.rhai",
+        r#"
+            fn run() {
+                let value = flag_value();
+                value.n
+            }
+        "#,
+        DocumentVersion(1),
+    ));
+
+    let analysis = host.snapshot();
+    let file_id = analysis
+        .db
+        .vfs()
+        .file_id(Path::new("main.rhai"))
+        .expect("expected main.rhai");
+    let text = analysis.db.file_text(file_id).expect("expected text");
+    let offset = u32::try_from(
+        text.find("value.n")
             .expect("expected postfix completion target")
-            + "value.return".len(),
+            + "value.n".len(),
     )
     .expect("offset");
-    let return_item = analysis
+
+    let completions = analysis.completions(FilePosition { file_id, offset });
+    let not = completions
+        .iter()
+        .find(|item| item.label == "not" && item.source == CompletionItemSource::Postfix)
+        .expect("expected not postfix completion");
+    assert_eq!(
+        not.text_edit.as_ref().map(|edit| edit.new_text.as_str()),
+        Some("!value$0")
+    );
+
+    let let_item = analysis
         .completions(FilePosition {
             file_id,
-            offset: return_offset,
+            offset: offset - 1,
         })
         .into_iter()
-        .find(|item| item.label == "return" && item.source == CompletionItemSource::Postfix)
-        .expect("expected postfix return completion");
+        .find(|item| item.label == "let" && item.source == CompletionItemSource::Postfix)
+        .expect("expected let postfix completion");
     assert_eq!(
-        return_item
+        let_item
             .text_edit
             .as_ref()
             .map(|edit| edit.new_text.as_str()),
-        Some("return value;$0")
+        Some("let ${1:value} = value;$0")
     );
 }

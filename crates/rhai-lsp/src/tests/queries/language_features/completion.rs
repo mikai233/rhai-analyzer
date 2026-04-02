@@ -37,6 +37,41 @@ fn completion_queries_and_resolve_flow_through_server() {
     assert_eq!(resolved.docs.as_deref(), Some("shared helper docs"));
 }
 #[test]
+fn completion_queries_include_postfix_templates_for_member_receiver_prefixes() {
+    let mut server = Server::new();
+    let uri = file_url("main.rhai");
+    let text = r#"
+        fn run() {
+            let student = #{ name: "mikai233" };
+            let branch = student.name.s
+        }
+    "#;
+
+    assert_valid_rhai_syntax(text);
+    server
+        .open_document(uri.clone(), 1, text)
+        .expect("expected open_document to succeed");
+
+    let completions = server
+        .completions(
+            &uri,
+            offset_in(text, "student.name.s") + "student.name.s".len() as u32,
+        )
+        .expect("expected completions query to succeed");
+    let switch = completions
+        .iter()
+        .find(|item| item.label == "switch")
+        .expect("expected switch postfix completion");
+
+    let edit = switch.text_edit.as_ref().expect("expected text edit");
+    assert_eq!(
+        edit.new_text,
+        "switch student.name {\n    ${1:_} => {\n        $0\n    }\n}"
+    );
+    assert!(edit.insert_range.is_some());
+}
+
+#[test]
 fn signature_help_queries_flow_through_server() {
     let mut server = Server::new();
     let uri = file_url("main.rhai");

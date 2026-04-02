@@ -233,6 +233,7 @@ pub enum CompletionItemKind {
     Symbol(SymbolKind),
     Member,
     Keyword,
+    Snippet,
     Type,
 }
 
@@ -271,7 +272,8 @@ pub enum CompletionInsertFormat {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompletionTextEdit {
-    pub range: TextRange,
+    pub replace_range: TextRange,
+    pub insert_range: Option<TextRange>,
     pub new_text: String,
 }
 

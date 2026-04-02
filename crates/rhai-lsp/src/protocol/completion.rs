@@ -1,4 +1,7 @@
-use lsp_types::{self, CompletionItem, CompletionItemKind, CompletionItemLabelDetails, TextEdit};
+use lsp_types::{
+    self, CompletionItem, CompletionItemKind, CompletionItemLabelDetails, InsertReplaceEdit,
+    TextEdit,
+};
 use rhai_hir::SymbolKind as HirSymbolKind;
 use rhai_ide::{
     CompletionInsertFormat as IdeCompletionInsertFormat, CompletionItem as IdeCompletionItem,
@@ -43,6 +46,7 @@ pub(crate) enum CompletionKindPayload {
     Member,
     Symbol(SymbolKindPayload),
     Keyword,
+    Snippet,
     Type,
 }
 
@@ -51,13 +55,53 @@ pub(crate) fn completion_item_to_lsp(
     text: Option<&str>,
     item: IdeCompletionItem,
 ) -> CompletionItem {
+    let fallback_filter_text = item.label.clone();
+    let filter_text = match item.source {
+        IdeCompletionItemSource::Postfix => Some(fallback_filter_text.clone()),
+        _ => item
+            .filter_text
+            .clone()
+            .or(Some(fallback_filter_text.clone())),
+    };
     let label_details = completion_label_details(&item);
     let source_detail = completion_source_description(server, &item);
     let documentation = item.docs.map(crate::protocol::markdown_documentation);
+    let mut additional_text_edits = None;
     let text_edit = text.zip(item.text_edit.as_ref()).and_then(|(text, edit)| {
-        Some(TextEdit {
-            range: text_range_to_lsp_range(text, edit.range)?,
-            new_text: edit.new_text.clone(),
+        if matches!(item.source, IdeCompletionItemSource::Postfix)
+            && let Some(insert_range) = edit.insert_range
+        {
+            let source_range = text_range_to_lsp_range(text, insert_range)?;
+            if edit.replace_range.start() < insert_range.start() {
+                let delete_prefix = text_range_to_lsp_range(
+                    text,
+                    rhai_syntax::TextRange::new(edit.replace_range.start(), insert_range.start()),
+                )?;
+                additional_text_edits = Some(vec![TextEdit {
+                    range: delete_prefix,
+                    new_text: String::new(),
+                }]);
+            }
+            return Some(lsp_types::CompletionTextEdit::Edit(TextEdit {
+                range: source_range,
+                new_text: edit.new_text.clone(),
+            }));
+        }
+
+        let replace = text_range_to_lsp_range(text, edit.replace_range)?;
+        Some(match edit.insert_range {
+            Some(insert_range) => {
+                let insert = text_range_to_lsp_range(text, insert_range)?;
+                lsp_types::CompletionTextEdit::InsertAndReplace(InsertReplaceEdit {
+                    new_text: edit.new_text.clone(),
+                    insert,
+                    replace,
+                })
+            }
+            None => lsp_types::CompletionTextEdit::Edit(TextEdit {
+                range: replace,
+                new_text: edit.new_text.clone(),
+            }),
         })
     });
     let data = item.resolve_data.as_ref().map(|resolve_data| {
@@ -88,14 +132,14 @@ pub(crate) fn completion_item_to_lsp(
             IdeCompletionInsertFormat::Snippet => lsp_types::InsertTextFormat::SNIPPET,
         }),
         insert_text_mode: None,
-        text_edit: text_edit.map(lsp_types::CompletionTextEdit::Edit),
-        additional_text_edits: None,
+        text_edit,
+        additional_text_edits,
         command: None,
         commit_characters: None,
         data,
         deprecated: None,
         preselect: None,
-        filter_text: item.filter_text,
+        filter_text,
         label_details,
         tags: None,
     }
@@ -191,6 +235,7 @@ fn completion_item_kind(kind: IdeCompletionItemKind) -> CompletionItemKind {
     match kind {
         IdeCompletionItemKind::Member => CompletionItemKind::METHOD,
         IdeCompletionItemKind::Keyword => CompletionItemKind::KEYWORD,
+        IdeCompletionItemKind::Snippet => CompletionItemKind::SNIPPET,
         IdeCompletionItemKind::Type => CompletionItemKind::CLASS,
         IdeCompletionItemKind::Symbol(HirSymbolKind::Variable | HirSymbolKind::Parameter) => {
             CompletionItemKind::VARIABLE
@@ -207,6 +252,7 @@ fn completion_kind_payload(kind: IdeCompletionItemKind) -> CompletionKindPayload
     match kind {
         IdeCompletionItemKind::Member => CompletionKindPayload::Member,
         IdeCompletionItemKind::Keyword => CompletionKindPayload::Keyword,
+        IdeCompletionItemKind::Snippet => CompletionKindPayload::Snippet,
         IdeCompletionItemKind::Type => CompletionKindPayload::Type,
         IdeCompletionItemKind::Symbol(kind) => {
             CompletionKindPayload::Symbol(symbol_kind_payload(kind))
@@ -218,6 +264,7 @@ fn completion_kind_from_payload(kind: CompletionKindPayload) -> IdeCompletionIte
     match kind {
         CompletionKindPayload::Member => IdeCompletionItemKind::Member,
         CompletionKindPayload::Keyword => IdeCompletionItemKind::Keyword,
+        CompletionKindPayload::Snippet => IdeCompletionItemKind::Snippet,
         CompletionKindPayload::Type => IdeCompletionItemKind::Type,
         CompletionKindPayload::Symbol(SymbolKindPayload::Variable) => {
             IdeCompletionItemKind::Symbol(HirSymbolKind::Variable)
