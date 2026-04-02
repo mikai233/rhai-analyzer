@@ -1,12 +1,9 @@
 [package]
-name = "rhai-fmt"
+name = "rhai-icon"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [dependencies]
-anyhow.workspace = true
 clap.workspace = true
-serde.workspace = true
-toml.workspace = true
-rhai-syntax.workspace = true
+skia-safe.workspace = true
