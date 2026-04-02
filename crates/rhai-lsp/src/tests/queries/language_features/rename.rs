@@ -44,3 +44,44 @@ fn prepare_rename_queries_flow_through_server() {
             .any(|range| range.contains(query_offset))
     );
 }
+
+#[test]
+fn prepare_rename_supports_static_import_module_paths() {
+    let mut server = Server::new();
+    let provider_uri = file_url("net/tcp.rhai");
+    let consumer_uri = file_url("nested/consumer.rhai");
+    let provider_text = "fn hello() {}\n";
+    let consumer_text = r#"
+        import "../net/tcp" as tcp;
+
+        fn run() {
+            tcp::hello();
+        }
+    "#;
+
+    assert_valid_rhai_syntax(provider_text);
+    assert_valid_rhai_syntax(consumer_text);
+    server
+        .open_document(provider_uri.clone(), 1, provider_text)
+        .expect("expected provider open to succeed");
+    server
+        .open_document(consumer_uri.clone(), 1, consumer_text)
+        .expect("expected consumer open to succeed");
+
+    let offset = offset_in(consumer_text, "../net/tcp") + 4;
+    let prepared = server
+        .prepare_rename(&consumer_uri, offset)
+        .expect("expected prepare rename query to succeed")
+        .expect("expected prepared rename");
+    let query_offset = TextSize::from(offset);
+
+    assert!(
+        prepared
+            .plan
+            .occurrences
+            .iter()
+            .map(|occurrence| occurrence.range)
+            .any(|range| range.contains(query_offset)),
+        "expected module string occurrence to cover the rename position: {prepared:?}"
+    );
+}

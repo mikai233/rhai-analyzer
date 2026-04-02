@@ -20,7 +20,7 @@ use crate::imports::{organize_imports, remove_unused_imports};
 use crate::navigation::call_hierarchy::{incoming_calls, outgoing_calls, prepare_call_hierarchy};
 use crate::navigation::folding_ranges::folding_ranges;
 use crate::navigation::highlights::document_highlights;
-use crate::navigation::rename::{PreparedRename, prepare_rename, rename_plan_from_db};
+use crate::navigation::rename::{PreparedRename, prepare_rename, rename, rename_plan_from_db};
 use crate::navigation::semantic_tokens::semantic_tokens;
 use crate::support::convert::{
     navigation_target_from_db, navigation_target_from_identity, reference_location_from_db,
@@ -198,7 +198,11 @@ impl Analysis {
         position: FilePosition,
         new_name: impl Into<String>,
     ) -> Option<PreparedRename> {
-        prepare_rename(&self.db, position, new_name)
+        rename(&self.db, position, new_name)
+    }
+
+    pub fn prepare_rename(&self, position: FilePosition) -> Option<PreparedRename> {
+        prepare_rename(&self.db, position)
     }
 
     pub fn completions(&self, position: FilePosition) -> Vec<CompletionItem> {

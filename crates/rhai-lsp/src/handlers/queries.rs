@@ -59,7 +59,7 @@ impl ServerState {
 
     pub fn prepare_rename(&self, uri: &Uri, offset: u32) -> Result<Option<PreparedRename>> {
         let (analysis, file_id) = self.analysis_for_open_document(uri)?;
-        Ok(analysis.rename(FilePosition { file_id, offset }, String::new()))
+        Ok(analysis.prepare_rename(FilePosition { file_id, offset }))
     }
 
     pub fn linked_editing_ranges(

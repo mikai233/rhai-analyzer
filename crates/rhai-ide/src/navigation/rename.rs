@@ -11,6 +11,12 @@ use crate::{
     FilePosition, FileRename, FileTextEdit, RenameIssue, RenamePlan, SourceChange, TextEdit,
 };
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ModuleResolutionMode {
+    Relative,
+    Direct,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PreparedRename {
     pub plan: RenamePlan,
@@ -20,10 +26,28 @@ pub struct PreparedRename {
 pub(crate) fn prepare_rename(
     snapshot: &DatabaseSnapshot,
     position: FilePosition,
+) -> Option<PreparedRename> {
+    prepare_rename_impl(snapshot, position, None)
+}
+
+pub(crate) fn rename(
+    snapshot: &DatabaseSnapshot,
+    position: FilePosition,
     new_name: impl Into<String>,
 ) -> Option<PreparedRename> {
-    let new_name = new_name.into();
-    if let Some(prepared) = prepare_static_import_module_rename(snapshot, position, &new_name) {
+    prepare_rename_impl(snapshot, position, Some(new_name.into()))
+}
+
+fn prepare_rename_impl(
+    snapshot: &DatabaseSnapshot,
+    position: FilePosition,
+    new_name: Option<String>,
+) -> Option<PreparedRename> {
+    let is_prepare = new_name.is_none();
+    let new_name = new_name.unwrap_or_default();
+    if let Some(prepared) =
+        prepare_static_import_module_rename(snapshot, position, &new_name, is_prepare)
+    {
         return Some(prepared);
     }
     if let Some(prepared) = prepare_object_field_rename(snapshot, position, &new_name) {
@@ -150,6 +174,7 @@ fn prepare_static_import_module_rename(
     snapshot: &DatabaseSnapshot,
     position: FilePosition,
     new_name: &str,
+    is_prepare: bool,
 ) -> Option<PreparedRename> {
     let offset = text_size(position.offset);
     let hir = snapshot.hir(position.file_id)?;
@@ -160,22 +185,45 @@ fn prepare_static_import_module_rename(
             && import.linkage == rhai_hir::ImportLinkageKind::StaticText
     })?;
     let linked_import = snapshot.linked_import(position.file_id, import_index)?;
+    let importer_path = snapshot.normalized_path(position.file_id)?;
     let provider_path = snapshot.normalized_path(linked_import.provider_file_id)?;
-    let new_path = renamed_module_path(provider_path, new_name);
+    let occurrences = collect_static_import_module_occurrences(
+        snapshot,
+        linked_import.provider_file_id,
+        provider_path,
+    );
+
+    if is_prepare {
+        return Some(PreparedRename {
+            plan: RenamePlan {
+                new_name: String::new(),
+                targets: Vec::new(),
+                occurrences: occurrences
+                    .iter()
+                    .map(|occurrence| crate::ReferenceLocation {
+                        file_id: occurrence.file_id,
+                        range: occurrence.range,
+                        kind: crate::ReferenceKind::Reference,
+                    })
+                    .collect(),
+                issues: Vec::new(),
+            },
+            source_change: None,
+        });
+    }
+
+    let new_path = renamed_module_path(
+        importer_path,
+        provider_path,
+        linked_import.module_name.as_str(),
+        new_name,
+    );
 
     let mut issues = Vec::new();
     if new_name.trim().is_empty() {
         issues.push(RenameIssue {
             file_id: position.file_id,
             message: "module name cannot be empty".to_owned(),
-            range: import.module_range?,
-        });
-    }
-    if new_name.contains(['/', '\\']) {
-        issues.push(RenameIssue {
-            file_id: position.file_id,
-            message: "module rename only supports changing the file name, not path segments"
-                .to_owned(),
             range: import.module_range?,
         });
     }
@@ -196,7 +244,7 @@ fn prepare_static_import_module_rename(
     let occurrences = collect_static_import_module_occurrences(
         snapshot,
         linked_import.provider_file_id,
-        new_name,
+        &new_path,
     );
     let source_change = issues.is_empty().then(|| {
         SourceChange::new(group_occurrence_text_edits(&occurrences)).with_file_renames(vec![
@@ -232,13 +280,15 @@ struct StaticImportOccurrence {
 fn collect_static_import_module_occurrences(
     snapshot: &DatabaseSnapshot,
     provider_file_id: rhai_vfs::FileId,
-    new_name: &str,
+    new_provider_path: &Path,
 ) -> Vec<StaticImportOccurrence> {
+    let current_provider_path = snapshot.normalized_path(provider_file_id);
     let mut occurrences = snapshot
         .workspace_files()
         .into_iter()
         .filter_map(|file| {
             let hir = snapshot.hir(file.file_id)?;
+            let importer_path = snapshot.normalized_path(file.file_id)?;
             Some(
                 snapshot
                     .linked_imports(file.file_id)
@@ -249,8 +299,12 @@ fn collect_static_import_module_occurrences(
                         let range = import.module_range?;
                         let replacement = renamed_module_literal(
                             import.module_text.as_deref()?,
-                            linked_import.module_name.as_str(),
-                            new_name,
+                            renamed_module_specifier(
+                                importer_path,
+                                current_provider_path?,
+                                new_provider_path,
+                                linked_import.module_name.as_str(),
+                            )?,
                         )?;
                         Some(StaticImportOccurrence {
                             file_id: file.file_id,
@@ -304,58 +358,117 @@ fn group_occurrence_text_edits(occurrences: &[StaticImportOccurrence]) -> Vec<Fi
         .collect()
 }
 
-fn renamed_module_literal(
-    original_literal: &str,
-    module_name: &str,
-    new_name: &str,
-) -> Option<String> {
+fn renamed_module_literal(original_literal: &str, new_module_name: String) -> Option<String> {
     let quote = original_literal.chars().next()?;
     let suffix = original_literal.chars().last()?;
     if quote != suffix {
         return None;
     }
-    let renamed = rename_module_specifier(module_name, new_name)?;
-    Some(format!("{quote}{renamed}{quote}"))
+    Some(format!("{quote}{new_module_name}{quote}"))
 }
 
-fn rename_module_specifier(module_name: &str, new_name: &str) -> Option<String> {
-    let (prefix, leaf) = module_name
-        .rsplit_once(['/', '\\'])
-        .map_or(("", module_name), |(prefix, leaf)| (prefix, leaf));
-    if leaf.is_empty() {
+fn renamed_module_specifier(
+    importer_path: &Path,
+    current_provider_path: &Path,
+    new_provider_path: &Path,
+    original_module_name: &str,
+) -> Option<String> {
+    let mode = module_resolution_mode(importer_path, current_provider_path, original_module_name);
+    let importer_dir = importer_path.parent().unwrap_or_else(|| Path::new(""));
+    let mut module_path = match mode {
+        ModuleResolutionMode::Relative => lexical_relative_path(importer_dir, new_provider_path)?,
+        ModuleResolutionMode::Direct => new_provider_path.to_path_buf(),
+    };
+
+    if Path::new(original_module_name).extension().is_none()
+        && current_provider_path.extension() == module_path.extension()
+    {
+        module_path.set_extension("");
+    }
+
+    let renamed = module_path.to_string_lossy().replace('\\', "/");
+    (!renamed.is_empty()).then_some(renamed)
+}
+
+fn renamed_module_path(
+    importer_path: &Path,
+    provider_path: &Path,
+    original_module_name: &str,
+    new_name: &str,
+) -> PathBuf {
+    let mode = module_resolution_mode(importer_path, provider_path, original_module_name);
+    match mode {
+        ModuleResolutionMode::Relative => {
+            let importer_dir = importer_path.parent().unwrap_or_else(|| Path::new(""));
+            normalize_module_path(&importer_dir.join(module_path_with_extension(new_name)))
+        }
+        ModuleResolutionMode::Direct => {
+            normalize_module_path(&module_path_with_extension(new_name))
+        }
+    }
+}
+
+fn module_resolution_mode(
+    importer_path: &Path,
+    provider_path: &Path,
+    module_name: &str,
+) -> ModuleResolutionMode {
+    let importer_dir = importer_path.parent().unwrap_or_else(|| Path::new(""));
+    let relative =
+        normalize_module_path(&importer_dir.join(module_path_with_extension(module_name)));
+    if relative == provider_path {
+        ModuleResolutionMode::Relative
+    } else {
+        ModuleResolutionMode::Direct
+    }
+}
+
+fn module_path_with_extension(module_name: &str) -> PathBuf {
+    let mut path = PathBuf::from(module_name);
+    if path.extension().is_none() {
+        path.set_extension("rhai");
+    }
+    path
+}
+
+fn normalize_module_path(path: &Path) -> PathBuf {
+    rhai_vfs::normalize_path(path)
+}
+
+fn lexical_relative_path(base: &Path, target: &Path) -> Option<PathBuf> {
+    let base_components = base.components().collect::<Vec<_>>();
+    let target_components = target.components().collect::<Vec<_>>();
+
+    if path_prefix(base) != path_prefix(target) || base.has_root() != target.has_root() {
         return None;
     }
 
-    let extension = Path::new(leaf)
-        .extension()
-        .and_then(|ext| ext.to_str())
-        .map(|ext| format!(".{ext}"))
-        .unwrap_or_default();
-    let renamed_leaf = if extension.is_empty() {
-        new_name.to_owned()
-    } else {
-        format!("{new_name}{extension}")
-    };
+    let mut shared = 0;
+    while shared < base_components.len()
+        && shared < target_components.len()
+        && base_components[shared] == target_components[shared]
+    {
+        shared += 1;
+    }
 
-    Some(if prefix.is_empty() {
-        renamed_leaf
-    } else {
-        format!("{prefix}/{renamed_leaf}")
-    })
+    let mut relative = PathBuf::new();
+    for _ in shared..base_components.len() {
+        relative.push("..");
+    }
+    for component in &target_components[shared..] {
+        relative.push(component.as_os_str());
+    }
+
+    Some(relative)
 }
 
-fn renamed_module_path(provider_path: &Path, new_name: &str) -> PathBuf {
-    let extension = provider_path
-        .extension()
-        .and_then(|ext| ext.to_str())
-        .map(|ext| format!(".{ext}"))
-        .unwrap_or_default();
-    let new_file_name = if Path::new(new_name).extension().is_some() {
-        new_name.to_owned()
-    } else {
-        format!("{new_name}{extension}")
-    };
-    provider_path.with_file_name(new_file_name)
+fn path_prefix(path: &Path) -> Option<std::ffi::OsString> {
+    path.components()
+        .next()
+        .and_then(|component| match component {
+            std::path::Component::Prefix(prefix) => Some(prefix.as_os_str().to_owned()),
+            _ => None,
+        })
 }
 
 pub(crate) fn rename_plan_from_db(plan: &ProjectRenamePlan) -> RenamePlan {

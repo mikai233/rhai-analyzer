@@ -158,14 +158,16 @@ pub(crate) fn publish_diagnostics_updates(
         let diagnostics = if update.diagnostics.is_empty() {
             Vec::new()
         } else {
-            let text = open_document_text_by_uri(server, &update.uri)
+            match open_document_text_by_uri(server, &update.uri)
                 .or_else(|| file_text_by_uri(server, &update.uri))
-                .ok_or_else(|| anyhow!("document `{}` is not loaded", update.uri.as_str()))?;
-            update
-                .diagnostics
-                .iter()
-                .filter_map(|diagnostic| diagnostic_to_lsp(text.as_ref(), diagnostic))
-                .collect()
+            {
+                Some(text) => update
+                    .diagnostics
+                    .iter()
+                    .filter_map(|diagnostic| diagnostic_to_lsp(text.as_ref(), diagnostic))
+                    .collect(),
+                None => Vec::new(),
+            }
         };
 
         send_notification(
@@ -192,12 +194,15 @@ mod tests {
         DidChangeConfigurationParams, DidChangeWorkspaceFoldersParams, Position, Range,
         TextDocumentContentChangeEvent, WorkspaceFolder, WorkspaceFoldersChangeEvent,
     };
+    use rhai_db::ProjectDiagnosticCode;
     use rhai_fmt::{ContainerLayoutStyle, ImportSortOrder};
     use serde_json::json;
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    use crate::runtime::notifications::{apply_content_changes, handle_notification};
+    use crate::runtime::notifications::{
+        apply_content_changes, handle_notification, publish_diagnostics_updates,
+    };
     use crate::state::{ServerSettings, ServerState, uri_from_path};
 
     #[test]
@@ -334,5 +339,29 @@ mod tests {
         assert_eq!(server.workspace_roots, vec![second]);
 
         let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn publish_diagnostics_updates_tolerates_missing_loaded_text() {
+        let (connection, _client) = Connection::memory();
+        let server = ServerState::new();
+        let uri = crate::tests::file_url("missing.rhai");
+
+        publish_diagnostics_updates(
+            &connection,
+            &server,
+            vec![crate::state::DiagnosticUpdate {
+                uri,
+                version: None,
+                diagnostics: vec![rhai_ide::Diagnostic {
+                    range: rhai_syntax::TextRange::new(0.into(), 1.into()),
+                    severity: rhai_ide::DiagnosticSeverity::Error,
+                    message: "broken".to_owned(),
+                    code: ProjectDiagnosticCode::BrokenLinkedImport,
+                    tags: Vec::new(),
+                }],
+            }],
+        )
+        .expect("expected diagnostics publish to succeed even without file text");
     }
 }

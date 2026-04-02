@@ -336,6 +336,23 @@ impl ServerState {
 
         let mut updates = self.diagnostic_updates_for_impact(&impact);
         updates.extend(self.refresh_preloaded_files()?.updates);
+        let new_version = self
+            .open_documents
+            .get(new_uri)
+            .map(|document| document.version);
+        for update in &mut updates {
+            if update.uri == *old_uri {
+                update.uri = new_uri.clone();
+                if new_version.is_some() {
+                    update.version = new_version;
+                }
+            }
+        }
+        updates.push(DiagnosticUpdate {
+            uri: old_uri.clone(),
+            version: None,
+            diagnostics: Vec::new(),
+        });
         Ok(dedupe_diagnostic_updates(updates))
     }
 
