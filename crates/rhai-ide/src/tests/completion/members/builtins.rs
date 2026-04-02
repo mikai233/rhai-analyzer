@@ -423,3 +423,46 @@ fn completions_keep_builtin_members_visible_for_prefixed_object_field_results() 
         item.text_edit.as_ref().map(|edit| edit.new_text.as_str()) == Some("chars()$0")
     }));
 }
+
+#[test]
+fn completions_prioritize_matching_member_overloads_by_argument_types() {
+    let (analysis, file_id, text) = load_analysis(
+        r#"
+            fn run() {
+                "hello".pa(5, "!")
+            }
+        "#,
+    );
+
+    let offset = u32::try_from(
+        text.find("\"hello\".pa(5, \"!\")")
+            .expect("expected member completion target")
+            + "\"hello\".pa".len(),
+    )
+    .expect("offset");
+
+    let completions = completions_at(&analysis, file_id, offset);
+    let pad_overloads = completions
+        .iter()
+        .filter(|item| item.label == "pad" && item.source == CompletionItemSource::Member)
+        .collect::<Vec<_>>();
+
+    assert!(
+        pad_overloads.len() >= 2,
+        "expected multiple pad overload completions, got {completions:?}"
+    );
+
+    let string_index = pad_overloads
+        .iter()
+        .position(|item| item.detail.as_deref() == Some("fun(int, string) -> ()"))
+        .expect("expected string pad overload");
+    let char_index = pad_overloads
+        .iter()
+        .position(|item| item.detail.as_deref() == Some("fun(int, char) -> ()"))
+        .expect("expected char pad overload");
+
+    assert!(
+        string_index < char_index,
+        "expected string-matching pad overload to rank ahead of char overload: {pad_overloads:?}"
+    );
+}

@@ -9,7 +9,7 @@ use crate::tests::assert_no_syntax_diagnostics;
 use crate::{AnalysisHost, DiagnosticSeverity, DiagnosticTag};
 
 #[test]
-fn diagnostics_with_fixes_do_not_attach_workspace_export_auto_imports() {
+fn diagnostics_with_fixes_attach_workspace_export_auto_imports() {
     let mut host = AnalysisHost::default();
     host.apply_change(ChangeSet {
         files: vec![
@@ -45,7 +45,9 @@ fn diagnostics_with_fixes_do_not_attach_workspace_export_auto_imports() {
         })
         .expect("expected unresolved name diagnostic");
 
-    assert!(unresolved.fixes.is_empty());
+    assert_eq!(unresolved.fixes.len(), 1);
+    assert_eq!(unresolved.fixes[0].id.as_str(), "import.auto");
+    assert_eq!(unresolved.fixes[0].label, "Import `provider`");
 }
 #[test]
 fn diagnostics_with_fixes_attach_remove_unused_import_fix() {

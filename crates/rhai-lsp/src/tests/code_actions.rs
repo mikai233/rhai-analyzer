@@ -4,7 +4,7 @@ use crate::Server;
 use crate::tests::{assert_valid_rhai_syntax, file_url, offset_in};
 
 #[test]
-fn quickfix_code_actions_are_not_exposed_for_workspace_exports() {
+fn quickfix_code_actions_expose_module_qualified_workspace_auto_imports() {
     let mut server = Server::new();
     let provider_uri = file_url("provider.rhai");
     let consumer_uri = file_url("consumer.rhai");
@@ -40,8 +40,22 @@ fn quickfix_code_actions_are_not_exposed_for_workspace_exports() {
         )
         .expect("expected code actions");
 
-    assert!(
-        actions.is_empty(),
-        "expected no quickfix code actions for workspace export lookup at offset {offset}, got {actions:?}"
-    );
+    let action = actions
+        .iter()
+        .find(|action| action.id == "import.auto")
+        .unwrap_or_else(|| {
+            panic!(
+                "expected auto-import quickfix code action for workspace export lookup at offset {offset}, got {actions:?}"
+            )
+        });
+
+    assert_eq!(action.title, "Import `provider`");
+    assert_eq!(action.kind, CodeActionKind::QUICKFIX);
+    assert!(action.is_preferred);
+    assert_eq!(action.source_change.file_edits.len(), 1);
+
+    let edits = &action.source_change.file_edits[0].edits;
+    assert_eq!(edits.len(), 2);
+    assert_eq!(edits[0].new_text, "provider::shared_tools");
+    assert_eq!(edits[1].new_text, "import \"provider\" as provider;\n\n");
 }

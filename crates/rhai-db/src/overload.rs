@@ -51,6 +51,14 @@ where
         .next()
 }
 
+pub fn signature_match_quality(
+    signature: &FunctionTypeRef,
+    arg_types: &[Option<TypeRef>],
+) -> Option<SignatureMatchQuality> {
+    (signature.params.len() == arg_types.len())
+        .then(|| signature_match_score(signature, arg_types).quality())
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct SignatureScore {
     mismatch_free: bool,
@@ -58,6 +66,33 @@ struct SignatureScore {
     partial: usize,
     unknown: usize,
     mismatched: usize,
+}
+
+impl SignatureScore {
+    fn quality(self) -> SignatureMatchQuality {
+        if !self.mismatch_free {
+            return SignatureMatchQuality::Mismatch;
+        }
+
+        let compared = self.exact + self.partial + self.unknown;
+        if compared > 0 && self.exact == compared {
+            return SignatureMatchQuality::Exact;
+        }
+
+        if self.exact > 0 || self.partial > 0 {
+            return SignatureMatchQuality::Partial;
+        }
+
+        SignatureMatchQuality::Unknown
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SignatureMatchQuality {
+    Mismatch,
+    Unknown,
+    Partial,
+    Exact,
 }
 
 impl Ord for SignatureScore {

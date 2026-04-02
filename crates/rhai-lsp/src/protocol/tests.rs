@@ -294,6 +294,7 @@ fn completion_conversion_uses_label_filter_text_for_postfix_items() {
                 replace_range: TextRange::new(TextSize::from(13), TextSize::from(27)),
                 insert_range: Some(TextRange::new(TextSize::from(26), TextSize::from(27))),
                 new_text: "switch student.name {\n    ${1:_} => {\n        $0\n    }\n}".to_owned(),
+                additional_edits: Vec::new(),
             }),
             insert_format: CompletionInsertFormat::Snippet,
             relevance: CompletionRelevance::default(),
@@ -315,6 +316,51 @@ fn completion_conversion_uses_label_filter_text_for_postfix_items() {
         other => panic!("expected simple edit, got {other:?}"),
     }
     assert_eq!(item.additional_text_edits.as_ref().map(Vec::len), Some(1));
+}
+
+#[test]
+fn completion_conversion_preserves_additional_text_edits_for_auto_import_items() {
+    let server = ServerState::new();
+    let item = completion_item_to_lsp(
+        &server,
+        Some("fn run() { shared_to }"),
+        CompletionItem {
+            label: "shared_tools".to_owned(),
+            kind: CompletionItemKind::Symbol(SymbolKind::Constant),
+            source: CompletionItemSource::AutoImport,
+            origin: Some("provider".to_owned()),
+            sort_text: "0".to_owned(),
+            detail: Some("int".to_owned()),
+            docs: None,
+            filter_text: Some("shared_tools".to_owned()),
+            text_edit: Some(rhai_ide::CompletionTextEdit {
+                replace_range: TextRange::new(TextSize::from(11), TextSize::from(20)),
+                insert_range: Some(TextRange::new(TextSize::from(11), TextSize::from(20))),
+                new_text: "provider::shared_tools".to_owned(),
+                additional_edits: vec![rhai_ide::TextEdit::insert(
+                    TextSize::from(0),
+                    "import \"provider\" as provider;\n\n",
+                )],
+            }),
+            insert_format: CompletionInsertFormat::PlainText,
+            relevance: CompletionRelevance::default(),
+            file_id: None,
+            exported: true,
+            resolve_data: None,
+        },
+    );
+
+    assert_eq!(
+        item.detail.as_deref(),
+        Some("auto import export · provider")
+    );
+    assert_eq!(item.additional_text_edits.as_ref().map(Vec::len), Some(1));
+    match item.text_edit.as_ref().expect("expected text edit") {
+        lsp_types::CompletionTextEdit::InsertAndReplace(edit) => {
+            assert_eq!(edit.new_text, "provider::shared_tools");
+        }
+        other => panic!("expected insert/replace edit, got {other:?}"),
+    }
 }
 
 #[test]

@@ -3,6 +3,8 @@ use rhai_hir::SymbolKind;
 use rhai_syntax::TextRange;
 use rhai_vfs::FileId;
 
+use crate::TextEdit;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct FilePosition {
     pub file_id: FileId,
@@ -241,6 +243,7 @@ pub enum CompletionItemKind {
 pub enum CompletionItemSource {
     Visible,
     Project,
+    AutoImport,
     Module,
     Member,
     Builtin,
@@ -250,9 +253,24 @@ pub enum CompletionItemSource {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct CompletionRelevance {
     pub is_local: bool,
+    pub scope_distance: Option<u8>,
+    pub requires_import: bool,
+    pub import_cost: Option<u8>,
+    pub name_match: Option<CompletionRelevanceNameMatch>,
     pub type_match: Option<CompletionRelevanceTypeMatch>,
     pub callable_match: Option<CompletionRelevanceCallableMatch>,
+    pub callable_arity_match: Option<CompletionRelevanceCallableArityMatch>,
+    pub callable_signature_match: Option<CompletionRelevanceCallableSignatureMatch>,
+    pub active_parameter_match: Option<CompletionRelevanceActiveParameterMatch>,
     pub postfix_match: Option<CompletionRelevancePostfixMatch>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CompletionRelevanceNameMatch {
+    Contains,
+    Subsequence,
+    Prefix,
+    Exact,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -264,6 +282,23 @@ pub enum CompletionRelevanceTypeMatch {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CompletionRelevanceCallableMatch {
     Invocable,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CompletionRelevanceCallableArityMatch {
+    Exact,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CompletionRelevanceCallableSignatureMatch {
+    Partial,
+    Exact,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CompletionRelevanceActiveParameterMatch {
+    Partial,
+    Exact,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -282,6 +317,26 @@ impl CompletionRelevance {
             score += 1;
         }
 
+        if let Some(distance) = self.scope_distance {
+            score += 8u32.saturating_sub(u32::from(distance.min(8)));
+        }
+
+        if self.requires_import {
+            score = score.saturating_sub(24);
+        }
+
+        if let Some(cost) = self.import_cost {
+            score += 6u32.saturating_sub(u32::from(cost.min(6)));
+        }
+
+        score += match self.name_match {
+            Some(CompletionRelevanceNameMatch::Exact) => 12,
+            Some(CompletionRelevanceNameMatch::Prefix) => 6,
+            Some(CompletionRelevanceNameMatch::Subsequence) => 3,
+            Some(CompletionRelevanceNameMatch::Contains) => 1,
+            None => 0,
+        };
+
         score += match self.type_match {
             Some(CompletionRelevanceTypeMatch::Exact) => 18,
             Some(CompletionRelevanceTypeMatch::CouldUnify) => 5,
@@ -289,8 +344,24 @@ impl CompletionRelevance {
         };
 
         if self.callable_match.is_some() {
-            score += 8;
+            score += 10;
         }
+
+        if self.callable_arity_match.is_some() {
+            score += 6;
+        }
+
+        score += match self.callable_signature_match {
+            Some(CompletionRelevanceCallableSignatureMatch::Exact) => 10,
+            Some(CompletionRelevanceCallableSignatureMatch::Partial) => 4,
+            None => 0,
+        };
+
+        score += match self.active_parameter_match {
+            Some(CompletionRelevanceActiveParameterMatch::Exact) => 8,
+            Some(CompletionRelevanceActiveParameterMatch::Partial) => 3,
+            None => 0,
+        };
 
         match self.postfix_match {
             Some(CompletionRelevancePostfixMatch::Exact) => score += 100,
@@ -331,6 +402,7 @@ pub struct CompletionTextEdit {
     pub replace_range: TextRange,
     pub insert_range: Option<TextRange>,
     pub new_text: String,
+    pub additional_edits: Vec<TextEdit>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -84,6 +84,11 @@ impl FileHir {
         })
     }
 
+    pub fn active_parameter_at_offset(&self, offset: TextSize) -> Option<usize> {
+        let call_id = self.call_at_offset(offset)?;
+        self.active_parameter_index(self.call(call_id), offset)
+    }
+
     pub(crate) fn caller_scope_arg_offset(&self, call: &CallSite) -> usize {
         usize::from(
             call.caller_scope

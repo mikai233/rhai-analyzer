@@ -229,6 +229,7 @@ pub(crate) fn build_query_support(
                     name: symbol.name.clone(),
                     kind: symbol.kind,
                     range: symbol.range,
+                    scope_distance: 0,
                     docs: symbol.docs,
                     annotation: symbol.annotation.clone(),
                 },

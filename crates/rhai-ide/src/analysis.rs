@@ -215,15 +215,30 @@ impl Analysis {
             .into_iter()
             .map(|candidate| {
                 let module_name = candidate.module_name;
+                let label = if candidate.insert_text.is_empty() {
+                    format!("Qualify with `{}`", candidate.alias)
+                } else {
+                    format!("Import `{module_name}`")
+                };
+                let mut edits = vec![TextEdit::replace(
+                    candidate.replace_range,
+                    candidate.qualified_reference_text,
+                )];
+                if !candidate.insert_text.is_empty() {
+                    edits.push(TextEdit::insert(
+                        candidate.insertion_offset,
+                        candidate.insert_text,
+                    ));
+                }
 
                 AutoImportAction {
-                    label: format!("Import `{module_name}`"),
+                    label,
                     module_name,
                     provider_file_id: candidate.provider_file_id,
-                    source_change: SourceChange::from_text_edit(
+                    source_change: SourceChange::new(vec![crate::FileTextEdit::new(
                         position.file_id,
-                        TextEdit::insert(candidate.insertion_offset, candidate.insert_text),
-                    ),
+                        edits,
+                    )]),
                 }
             })
             .collect()

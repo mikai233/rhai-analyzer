@@ -14,15 +14,26 @@ pub(super) fn callable_completion_text_edit(
     kind: CompletionItemKind,
     parameter_names: Option<&[String]>,
 ) -> Option<CompletionTextEdit> {
+    callable_completion_text_edit_with_base_text(context, label, annotation, kind, parameter_names)
+}
+
+pub(super) fn callable_completion_text_edit_with_base_text(
+    context: &CompletionContext,
+    base_text: &str,
+    annotation: Option<&TypeRef>,
+    kind: CompletionItemKind,
+    parameter_names: Option<&[String]>,
+) -> Option<CompletionTextEdit> {
     if context.next_char_is_open_paren {
         return None;
     }
 
-    let snippet = completion_call_snippet(label, annotation, kind, parameter_names)?;
+    let snippet = completion_call_snippet(base_text, annotation, kind, parameter_names)?;
     Some(CompletionTextEdit {
         replace_range: context.replace_range,
         insert_range: None,
         new_text: snippet,
+        additional_edits: Vec::new(),
     })
 }
 

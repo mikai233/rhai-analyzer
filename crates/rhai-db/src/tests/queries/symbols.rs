@@ -195,7 +195,7 @@ fn completion_inputs_collect_visible_member_and_project_symbols() {
     );
 }
 #[test]
-fn auto_import_candidates_do_not_plan_symbol_imports_from_workspace_exports() {
+fn auto_import_candidates_plan_module_qualified_workspace_imports() {
     let mut db = AnalyzerDatabase::default();
     db.apply_change(ChangeSet {
         files: vec![
@@ -226,5 +226,69 @@ fn auto_import_candidates_do_not_plan_symbol_imports_from_workspace_exports() {
 
     let candidates =
         snapshot.auto_import_candidates(consumer, offset_in(&consumer_text, "shared_tools"));
-    assert!(candidates.is_empty());
+    assert_eq!(candidates.len(), 1);
+    let candidate = &candidates[0];
+    assert_eq!(candidate.name, "shared_tools");
+    assert_eq!(candidate.module_name, "provider");
+    assert_eq!(candidate.alias, "provider");
+    assert_eq!(candidate.qualified_reference_text, "provider::shared_tools");
+    assert_eq!(
+        candidate.insert_text,
+        "import \"provider\" as provider;\n\n"
+    );
+}
+
+#[test]
+fn auto_import_candidates_allocate_non_conflicting_aliases() {
+    let mut db = AnalyzerDatabase::default();
+    db.apply_change(ChangeSet {
+        files: vec![
+            FileChange {
+                path: "tools.rhai".into(),
+                text: "export const VALUE = 1;".to_owned(),
+                version: DocumentVersion(1),
+            },
+            FileChange {
+                path: "provider.rhai".into(),
+                text: "let helper = 1; export helper as shared_tools;".to_owned(),
+                version: DocumentVersion(1),
+            },
+            FileChange {
+                path: "consumer.rhai".into(),
+                text: r#"
+                    import "tools" as provider;
+
+                    fn run() { shared_tools(); }
+                "#
+                .to_owned(),
+                version: DocumentVersion(1),
+            },
+        ],
+        removed_files: Vec::new(),
+        project: None,
+    });
+
+    let snapshot = db.snapshot();
+    assert_workspace_files_have_no_syntax_diagnostics(&snapshot);
+    let consumer = snapshot
+        .vfs()
+        .file_id(Path::new("consumer.rhai"))
+        .expect("expected consumer.rhai");
+    let consumer_text = snapshot
+        .file_text(consumer)
+        .expect("expected consumer text");
+
+    let candidates =
+        snapshot.auto_import_candidates(consumer, offset_in(&consumer_text, "shared_tools"));
+    assert_eq!(candidates.len(), 1);
+    let candidate = &candidates[0];
+    assert_eq!(candidate.alias, "provider_1");
+    assert_eq!(
+        candidate.qualified_reference_text,
+        "provider_1::shared_tools"
+    );
+    assert_eq!(
+        candidate.insert_text,
+        "\nimport \"provider\" as provider_1;"
+    );
 }

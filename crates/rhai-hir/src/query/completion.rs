@@ -9,15 +9,16 @@ use crate::model::{
 
 impl FileHir {
     pub fn completion_symbols_at(&self, offset: TextSize) -> Vec<CompletionSymbol> {
-        self.visible_symbols_at(offset)
+        self.visible_symbols_with_scope_distance_at(offset)
             .into_iter()
-            .map(|symbol_id| {
+            .map(|(symbol_id, scope_distance)| {
                 let symbol = self.symbol(symbol_id);
                 CompletionSymbol {
                     symbol: symbol_id,
                     name: symbol.name.clone(),
                     kind: symbol.kind,
                     range: symbol.range,
+                    scope_distance,
                     docs: symbol.docs,
                     annotation: symbol.annotation.clone(),
                 }

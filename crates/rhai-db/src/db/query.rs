@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, HashSet};
+use std::path::{Path, PathBuf};
 
 use crate::builtin::semantic_keys::{BuiltinSemanticKey, builtin_property_access_semantic_key};
 use crate::builtin::signatures::{
@@ -6,6 +7,7 @@ use crate::builtin::signatures::{
 };
 use crate::builtin::topics::builtin_property_access_topic;
 use crate::db::DatabaseSnapshot;
+use crate::db::imports::export_symbol_docs;
 use crate::db::query_support::{object_field_member_completions, symbol_for_expr};
 use crate::db::rebuild::default_file_stats;
 use crate::infer::calls::{merge_function_candidate_signatures, preferred_completion_signature};
@@ -15,7 +17,9 @@ use crate::infer::infer_member_type_from_expr;
 use crate::types::{
     AutoImportCandidate, CachedFileAnalysis, CompletionInputs, DatabaseDebugView, DebugFileAnalysis,
 };
-use rhai_hir::{CompletionSymbol, ExprId, MemberCompletion, MemberCompletionSource, TypeRef};
+use rhai_hir::{
+    CompletionSymbol, ExprId, FileHir, MemberCompletion, MemberCompletionSource, TypeRef,
+};
 use rhai_syntax::TextSize;
 use rhai_vfs::FileId;
 
@@ -54,15 +58,68 @@ impl DatabaseSnapshot {
         let Some(analysis) = self.analysis.get(&file_id) else {
             return Vec::new();
         };
-        let Some(reference_id) = analysis.hir.reference_at_offset(offset) else {
+        let reference_offset = analysis
+            .hir
+            .reference_at_offset(offset)
+            .map(|_| offset)
+            .or_else(|| {
+                let previous = u32::from(offset).checked_sub(1).map(TextSize::from)?;
+                analysis.hir.reference_at_offset(previous).map(|_| previous)
+            });
+        let Some(reference_offset) = reference_offset else {
+            return Vec::new();
+        };
+        let Some(reference_id) = analysis.hir.reference_at_offset(reference_offset) else {
             return Vec::new();
         };
         let reference = analysis.hir.reference(reference_id);
-        if reference.target.is_some() || reference.kind != rhai_hir::ReferenceKind::Name {
+        if reference.target.is_some() {
             return Vec::new();
         }
 
-        self.auto_import_candidates_for_name(file_id, reference.name.as_str())
+        match reference.kind {
+            rhai_hir::ReferenceKind::Name => self.auto_import_candidates_for_name_at(
+                file_id,
+                reference.name.as_str(),
+                reference.range,
+            ),
+            rhai_hir::ReferenceKind::PathSegment => {
+                let Some(expr_id) = analysis.hir.expr_at_offset(reference.range.start()) else {
+                    return Vec::new();
+                };
+                let Some(path_expr) = analysis.hir.path_expr(expr_id) else {
+                    return Vec::new();
+                };
+                if path_expr.segments.last().copied() != Some(reference_id) {
+                    return Vec::new();
+                }
+                let path_parts = if path_expr.rooted_global {
+                    let mut parts = vec![String::from("global")];
+                    parts.extend(
+                        path_expr
+                            .segments
+                            .iter()
+                            .map(|segment| analysis.hir.reference(*segment).name.clone()),
+                    );
+                    parts
+                } else {
+                    let Some(path_parts) = analysis.hir.qualified_path_parts(expr_id) else {
+                        return Vec::new();
+                    };
+                    path_parts
+                };
+                let Some((member_name, module_path)) = path_parts.split_last() else {
+                    return Vec::new();
+                };
+                self.auto_import_candidates_for_module_path_at(
+                    file_id,
+                    module_path,
+                    member_name.as_str(),
+                    reference.range,
+                )
+            }
+            _ => Vec::new(),
+        }
     }
 
     pub fn auto_import_candidates_for_name(
@@ -70,8 +127,11 @@ impl DatabaseSnapshot {
         file_id: FileId,
         name: &str,
     ) -> Vec<AutoImportCandidate> {
-        let _ = (file_id, name);
-        Vec::new()
+        self.auto_import_candidates_for_name_at(
+            file_id,
+            name,
+            rhai_syntax::TextRange::empty(TextSize::from(0)),
+        )
     }
 
     pub fn debug_view(&self) -> DatabaseDebugView {
@@ -107,6 +167,354 @@ impl DatabaseSnapshot {
     }
 }
 
+impl DatabaseSnapshot {
+    fn auto_import_candidates_for_name_at(
+        &self,
+        file_id: FileId,
+        name: &str,
+        replace_range: rhai_syntax::TextRange,
+    ) -> Vec<AutoImportCandidate> {
+        let Some(importer_path) = self.normalized_path(file_id) else {
+            return Vec::new();
+        };
+        let Some(hir) = self.hir(file_id) else {
+            return Vec::new();
+        };
+        let Some(file_text) = self.file_text(file_id) else {
+            return Vec::new();
+        };
+        let taken_aliases = existing_import_aliases(hir.as_ref());
+
+        let name_lower = name.to_ascii_lowercase();
+        let mut candidates = self
+            .workspace_exports()
+            .iter()
+            .filter(|export| {
+                export
+                    .export
+                    .exported_name
+                    .as_deref()
+                    .is_some_and(|exported_name| {
+                        let exported_name = exported_name.to_ascii_lowercase();
+                        name_lower.is_empty()
+                            || exported_name.starts_with(name_lower.as_str())
+                            || exported_name.contains(name_lower.as_str())
+                    })
+            })
+            .filter_map(|export| {
+                let identity = crate::db::imports::project_identity_for_export(export)?;
+                let exported_name = export.export.exported_name.as_ref()?;
+                if export.file_id == file_id {
+                    return None;
+                }
+
+                let provider_path = self.normalized_path(export.file_id)?.to_path_buf();
+                let module_name = auto_import_module_name(importer_path, provider_path.as_path())?;
+                let existing_alias = existing_auto_import_alias(self, file_id, export.file_id);
+                let alias = existing_alias.clone().unwrap_or_else(|| {
+                    auto_import_alias_for_module(module_name.as_str(), &taken_aliases)
+                });
+                let insert_text = existing_alias.as_ref().map_or_else(
+                    || {
+                        auto_import_insert_text(
+                            hir.as_ref(),
+                            file_text.as_ref(),
+                            module_name.as_str(),
+                            alias.as_str(),
+                        )
+                    },
+                    |_| Some(String::new()),
+                )?;
+                let insertion_offset = if insert_text.is_empty() {
+                    TextSize::from(0)
+                } else {
+                    auto_import_insertion_offset(hir.as_ref(), file_text.as_ref())
+                };
+                let qualified_reference_text = format!("{alias}::{exported_name}");
+                let annotation_symbol = export
+                    .export
+                    .target
+                    .as_ref()
+                    .or(export.export.alias.as_ref())
+                    .unwrap_or(identity);
+                let annotation = self
+                    .inferred_symbol_type(export.file_id, annotation_symbol.symbol)
+                    .cloned()
+                    .or_else(|| {
+                        self.hir(export.file_id).and_then(|provider_hir| {
+                            provider_hir
+                                .declared_symbol_type(annotation_symbol.symbol)
+                                .cloned()
+                        })
+                    });
+                let docs = export_symbol_docs(self, export);
+
+                Some(AutoImportCandidate {
+                    file_id,
+                    provider_file_id: export.file_id,
+                    provider_path,
+                    symbol: annotation_symbol.symbol,
+                    name: exported_name.clone(),
+                    kind: annotation_symbol.kind,
+                    annotation,
+                    docs,
+                    module_name: module_name.clone(),
+                    alias,
+                    replace_range,
+                    qualified_reference_text,
+                    insertion_offset,
+                    insert_text,
+                    import_cost: if existing_alias.is_some() {
+                        0
+                    } else {
+                        auto_import_cost(module_name.as_str())
+                    },
+                })
+            })
+            .collect::<Vec<_>>();
+
+        candidates.sort_by(|left, right| {
+            left.import_cost
+                .cmp(&right.import_cost)
+                .then_with(|| left.module_name.cmp(&right.module_name))
+                .then_with(|| left.provider_file_id.0.cmp(&right.provider_file_id.0))
+        });
+        candidates.dedup_by(|left, right| {
+            left.provider_file_id == right.provider_file_id && left.alias == right.alias
+        });
+        candidates
+    }
+
+    fn auto_import_candidates_for_module_path_at(
+        &self,
+        file_id: FileId,
+        module_path: &[String],
+        member_name: &str,
+        replace_range: rhai_syntax::TextRange,
+    ) -> Vec<AutoImportCandidate> {
+        let Some(importer_path) = self.normalized_path(file_id) else {
+            return Vec::new();
+        };
+        let Some(hir) = self.hir(file_id) else {
+            return Vec::new();
+        };
+        let Some(file_text) = self.file_text(file_id) else {
+            return Vec::new();
+        };
+        let taken_aliases = existing_import_aliases(hir.as_ref());
+
+        let (desired_alias, restrict_default_alias) = match module_path {
+            [segment] if segment == "global" => {
+                if taken_aliases.contains("global") {
+                    return Vec::new();
+                }
+                (String::from("global"), None)
+            }
+            [segment] => {
+                if taken_aliases.contains(segment.as_str()) {
+                    return Vec::new();
+                }
+                (segment.clone(), Some(segment.as_str()))
+            }
+            _ => return Vec::new(),
+        };
+
+        let member_name_lower = member_name.to_ascii_lowercase();
+        let mut candidates = self
+            .workspace_exports()
+            .iter()
+            .filter(|export| {
+                export
+                    .export
+                    .exported_name
+                    .as_deref()
+                    .is_some_and(|exported_name| {
+                        let exported_name = exported_name.to_ascii_lowercase();
+                        member_name_lower.is_empty()
+                            || exported_name.starts_with(member_name_lower.as_str())
+                            || exported_name.contains(member_name_lower.as_str())
+                    })
+            })
+            .filter_map(|export| {
+                let identity = crate::db::imports::project_identity_for_export(export)?;
+                let exported_name = export.export.exported_name.as_ref()?;
+                if export.file_id == file_id {
+                    return None;
+                }
+
+                let provider_path = self.normalized_path(export.file_id)?.to_path_buf();
+                let module_name = auto_import_module_name(importer_path, provider_path.as_path())?;
+                if let Some(restrict_default_alias) = restrict_default_alias
+                    && auto_import_alias(module_name.as_str()) != restrict_default_alias
+                {
+                    return None;
+                }
+
+                let insert_text = auto_import_insert_text(
+                    hir.as_ref(),
+                    file_text.as_ref(),
+                    module_name.as_str(),
+                    desired_alias.as_str(),
+                )?;
+                let insertion_offset =
+                    auto_import_insertion_offset(hir.as_ref(), file_text.as_ref());
+                let annotation_symbol = export
+                    .export
+                    .target
+                    .as_ref()
+                    .or(export.export.alias.as_ref())
+                    .unwrap_or(identity);
+                let annotation = self
+                    .inferred_symbol_type(export.file_id, annotation_symbol.symbol)
+                    .cloned()
+                    .or_else(|| {
+                        self.hir(export.file_id).and_then(|provider_hir| {
+                            provider_hir
+                                .declared_symbol_type(annotation_symbol.symbol)
+                                .cloned()
+                        })
+                    });
+                let docs = export_symbol_docs(self, export);
+
+                Some(AutoImportCandidate {
+                    file_id,
+                    provider_file_id: export.file_id,
+                    provider_path,
+                    symbol: annotation_symbol.symbol,
+                    name: exported_name.clone(),
+                    kind: annotation_symbol.kind,
+                    annotation,
+                    docs,
+                    module_name: module_name.clone(),
+                    alias: desired_alias.clone(),
+                    replace_range,
+                    qualified_reference_text: exported_name.clone(),
+                    insertion_offset,
+                    insert_text,
+                    import_cost: auto_import_cost(module_name.as_str()),
+                })
+            })
+            .collect::<Vec<_>>();
+
+        candidates.sort_by(|left, right| {
+            left.import_cost
+                .cmp(&right.import_cost)
+                .then_with(|| left.module_name.cmp(&right.module_name))
+                .then_with(|| left.provider_file_id.0.cmp(&right.provider_file_id.0))
+        });
+        candidates.dedup_by(|left, right| {
+            left.provider_file_id == right.provider_file_id && left.alias == right.alias
+        });
+        candidates
+    }
+}
+
+fn auto_import_module_name(importer_path: &Path, provider_path: &Path) -> Option<String> {
+    let relative = strip_rhai_extension(provider_path);
+    let importer_dir = importer_path.parent().unwrap_or_else(|| Path::new(""));
+    let candidate = relative
+        .strip_prefix(importer_dir)
+        .ok()
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or(relative.as_path());
+    let module_name = candidate.to_string_lossy().replace('\\', "/");
+    (!module_name.is_empty()).then_some(module_name)
+}
+
+fn strip_rhai_extension(path: &Path) -> PathBuf {
+    if path
+        .extension()
+        .is_some_and(|extension| extension == "rhai")
+    {
+        path.with_extension("")
+    } else {
+        path.to_path_buf()
+    }
+}
+
+fn auto_import_alias(module_name: &str) -> String {
+    module_name
+        .rsplit('/')
+        .next()
+        .filter(|segment| !segment.is_empty())
+        .unwrap_or(module_name)
+        .to_owned()
+}
+
+fn auto_import_alias_for_module(module_name: &str, taken_aliases: &HashSet<String>) -> String {
+    let base = auto_import_alias(module_name);
+    if !taken_aliases.contains(base.as_str()) {
+        return base;
+    }
+
+    (1..)
+        .map(|index| format!("{base}_{index}"))
+        .find(|candidate| !taken_aliases.contains(candidate.as_str()))
+        .unwrap_or(base)
+}
+
+fn existing_auto_import_alias(
+    snapshot: &DatabaseSnapshot,
+    file_id: FileId,
+    provider_file_id: FileId,
+) -> Option<String> {
+    let hir = snapshot.hir(file_id)?;
+    let linked_import = snapshot
+        .linked_imports(file_id)
+        .iter()
+        .find(|linked_import| linked_import.provider_file_id == provider_file_id)?;
+    let alias = hir.import(linked_import.import).alias?;
+    Some(hir.symbol(alias).name.clone())
+}
+
+fn existing_import_aliases(hir: &FileHir) -> HashSet<String> {
+    hir.imports
+        .iter()
+        .filter_map(|import| import.alias)
+        .map(|alias| hir.symbol(alias).name.clone())
+        .collect()
+}
+
+fn auto_import_insertion_offset(hir: &FileHir, file_text: &str) -> TextSize {
+    if let Some(import) = hir.imports.last() {
+        return import.range.end();
+    }
+
+    let offset = file_text
+        .chars()
+        .take_while(|ch| ch.is_whitespace())
+        .map(char::len_utf8)
+        .sum::<usize>();
+    TextSize::from(offset as u32)
+}
+
+fn auto_import_insert_text(
+    hir: &FileHir,
+    file_text: &str,
+    module_name: &str,
+    alias: &str,
+) -> Option<String> {
+    let import_stmt = format!("import \"{module_name}\" as {alias};");
+    if hir.imports.is_empty() {
+        return Some(if file_text.trim().is_empty() {
+            import_stmt
+        } else {
+            format!("{import_stmt}\n\n")
+        });
+    }
+
+    Some(format!("\n{import_stmt}"))
+}
+
+fn auto_import_cost(module_name: &str) -> u8 {
+    module_name
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .count()
+        .saturating_sub(1)
+        .min(6) as u8
+}
+
 fn visible_completion_symbols(
     analysis: &CachedFileAnalysis,
     offset: TextSize,
@@ -117,13 +525,17 @@ fn visible_completion_symbols(
 
     analysis
         .hir
-        .visible_symbols_at(offset)
+        .visible_symbols_with_scope_distance_at(offset)
         .into_iter()
-        .filter_map(|symbol| {
+        .filter_map(|(symbol, scope_distance)| {
             query_support
                 .completion_symbols_by_symbol
                 .get(&symbol)
                 .cloned()
+                .map(|mut completion| {
+                    completion.scope_distance = scope_distance;
+                    completion
+                })
         })
         .collect()
 }

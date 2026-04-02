@@ -16,7 +16,9 @@ pub use crate::change::{AutoImportAction, FileRename, FileTextEdit, SourceChange
 pub use crate::navigation::rename::PreparedRename;
 pub use crate::types::{
     CallHierarchyItem, CompletionInsertFormat, CompletionItem, CompletionItemKind,
-    CompletionItemSource, CompletionRelevance, CompletionRelevanceCallableMatch,
+    CompletionItemSource, CompletionRelevance, CompletionRelevanceActiveParameterMatch,
+    CompletionRelevanceCallableArityMatch, CompletionRelevanceCallableMatch,
+    CompletionRelevanceCallableSignatureMatch, CompletionRelevanceNameMatch,
     CompletionRelevancePostfixMatch, CompletionRelevanceTypeMatch, CompletionResolveData,
     CompletionTextEdit, Diagnostic, DiagnosticSeverity, DiagnosticTag, DocumentHighlight,
     DocumentHighlightKind, DocumentSymbol, FilePosition, FoldingRange, FoldingRangeKind,

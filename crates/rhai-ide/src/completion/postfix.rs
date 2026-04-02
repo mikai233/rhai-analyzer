@@ -1,5 +1,8 @@
 use crate::completion::{CompletionContext, PostfixCompletionContext};
-use crate::types::{CompletionRelevance, CompletionRelevancePostfixMatch, CompletionTextEdit};
+use crate::types::{
+    CompletionRelevance, CompletionRelevanceNameMatch, CompletionRelevancePostfixMatch,
+    CompletionTextEdit,
+};
 use crate::{CompletionInsertFormat, CompletionItem, CompletionItemKind, CompletionItemSource};
 
 pub(super) fn postfix_completion_items(context: &CompletionContext) -> Vec<CompletionItem> {
@@ -76,6 +79,13 @@ fn postfix_templates(
         kind: CompletionItemKind::Snippet,
         source: CompletionItemSource::Postfix,
         relevance: CompletionRelevance {
+            name_match: if prefix.is_empty() {
+                None
+            } else if prefix == label {
+                Some(CompletionRelevanceNameMatch::Exact)
+            } else {
+                Some(CompletionRelevanceNameMatch::Prefix)
+            },
             postfix_match: if prefix.is_empty() {
                 None
             } else if prefix == label {
@@ -94,6 +104,7 @@ fn postfix_templates(
             replace_range: postfix.replace_range,
             insert_range: Some(insert_range),
             new_text,
+            additional_edits: Vec::new(),
         }),
         insert_format: CompletionInsertFormat::Snippet,
         file_id: None,

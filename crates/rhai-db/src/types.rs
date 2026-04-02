@@ -253,10 +253,18 @@ pub struct AutoImportCandidate {
     pub file_id: FileId,
     pub provider_file_id: FileId,
     pub provider_path: PathBuf,
+    pub symbol: SymbolId,
+    pub name: String,
+    pub kind: SymbolKind,
+    pub annotation: Option<TypeRef>,
+    pub docs: Option<String>,
     pub module_name: String,
     pub alias: String,
+    pub replace_range: TextRange,
+    pub qualified_reference_text: String,
     pub insertion_offset: TextSize,
     pub insert_text: String,
+    pub import_cost: u8,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

@@ -96,6 +96,7 @@ pub struct CompletionSymbol {
     pub name: String,
     pub kind: SymbolKind,
     pub range: TextRange,
+    pub scope_distance: u8,
     pub docs: Option<DocBlockId>,
     pub annotation: Option<TypeRef>,
 }

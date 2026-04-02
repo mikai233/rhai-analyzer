@@ -35,6 +35,7 @@ pub(crate) struct CompletionResolvePayload {
 pub(crate) enum CompletionSourcePayload {
     Visible,
     Project,
+    AutoImport,
     Module,
     Member,
     Builtin,
@@ -66,7 +67,20 @@ pub(crate) fn completion_item_to_lsp(
     let label_details = completion_label_details(&item);
     let source_detail = completion_source_description(server, &item);
     let documentation = item.docs.map(crate::protocol::markdown_documentation);
-    let mut additional_text_edits = None;
+    let mut additional_text_edits = text.zip(item.text_edit.as_ref()).and_then(|(text, edit)| {
+        (!edit.additional_edits.is_empty()).then(|| {
+            edit.additional_edits
+                .iter()
+                .filter_map(|edit| {
+                    let range = text_range_to_lsp_range(text, edit.range)?;
+                    Some(TextEdit {
+                        range,
+                        new_text: edit.new_text.clone(),
+                    })
+                })
+                .collect::<Vec<_>>()
+        })
+    });
     let text_edit = text.zip(item.text_edit.as_ref()).and_then(|(text, edit)| {
         if matches!(item.source, IdeCompletionItemSource::Postfix)
             && let Some(insert_range) = edit.insert_range
@@ -77,10 +91,12 @@ pub(crate) fn completion_item_to_lsp(
                     text,
                     rhai_syntax::TextRange::new(edit.replace_range.start(), insert_range.start()),
                 )?;
-                additional_text_edits = Some(vec![TextEdit {
-                    range: delete_prefix,
-                    new_text: String::new(),
-                }]);
+                additional_text_edits
+                    .get_or_insert_with(Vec::new)
+                    .push(TextEdit {
+                        range: delete_prefix,
+                        new_text: String::new(),
+                    });
             }
             return Some(lsp_types::CompletionTextEdit::Edit(TextEdit {
                 range: source_range,
@@ -197,6 +213,8 @@ fn completion_source_description(server: &ServerState, item: &IdeCompletionItem)
         (IdeCompletionItemSource::Visible, _) => "local".to_owned(),
         (IdeCompletionItemSource::Project, true) => "project export".to_owned(),
         (IdeCompletionItemSource::Project, false) => "project".to_owned(),
+        (IdeCompletionItemSource::AutoImport, true) => "auto import export".to_owned(),
+        (IdeCompletionItemSource::AutoImport, false) => "auto import".to_owned(),
         (IdeCompletionItemSource::Module, true) => "module export".to_owned(),
         (IdeCompletionItemSource::Module, false) => "module".to_owned(),
         (IdeCompletionItemSource::Member, _) => "member".to_owned(),
@@ -213,7 +231,9 @@ fn completion_source_description(server: &ServerState, item: &IdeCompletionItem)
         Some(module)
             if matches!(
                 item.source,
-                IdeCompletionItemSource::Project | IdeCompletionItemSource::Module
+                IdeCompletionItemSource::Project
+                    | IdeCompletionItemSource::AutoImport
+                    | IdeCompletionItemSource::Module
             ) && !module.is_empty() =>
         {
             format!("{source} · {module}")
@@ -292,6 +312,7 @@ fn completion_source_payload(source: IdeCompletionItemSource) -> CompletionSourc
     match source {
         IdeCompletionItemSource::Visible => CompletionSourcePayload::Visible,
         IdeCompletionItemSource::Project => CompletionSourcePayload::Project,
+        IdeCompletionItemSource::AutoImport => CompletionSourcePayload::AutoImport,
         IdeCompletionItemSource::Module => CompletionSourcePayload::Module,
         IdeCompletionItemSource::Member => CompletionSourcePayload::Member,
         IdeCompletionItemSource::Builtin => CompletionSourcePayload::Builtin,
@@ -303,6 +324,7 @@ fn completion_source_from_payload(source: CompletionSourcePayload) -> IdeComplet
     match source {
         CompletionSourcePayload::Visible => IdeCompletionItemSource::Visible,
         CompletionSourcePayload::Project => IdeCompletionItemSource::Project,
+        CompletionSourcePayload::AutoImport => IdeCompletionItemSource::AutoImport,
         CompletionSourcePayload::Module => IdeCompletionItemSource::Module,
         CompletionSourcePayload::Member => IdeCompletionItemSource::Member,
         CompletionSourcePayload::Builtin => IdeCompletionItemSource::Builtin,

@@ -481,7 +481,10 @@ fn host_function_docs(function: &crate::HostFunction) -> Option<String> {
     (!docs.is_empty()).then(|| docs.join("\n\n"))
 }
 
-fn export_symbol_docs(snapshot: &DatabaseSnapshot, export: &LocatedModuleExport) -> Option<String> {
+pub(crate) fn export_symbol_docs(
+    snapshot: &DatabaseSnapshot,
+    export: &LocatedModuleExport,
+) -> Option<String> {
     let hir = snapshot.hir(export.file_id)?;
 
     export

@@ -5,7 +5,7 @@ mod ranking;
 mod snippets;
 mod workspace;
 
-use rhai_db::DatabaseSnapshot;
+use rhai_db::{DatabaseSnapshot, SignatureMatchQuality, signature_match_quality};
 use rhai_hir::{SymbolKind, TypeRef};
 use rhai_syntax::{TextRange, TextSize};
 
@@ -13,18 +13,24 @@ use crate::completion::context::completion_context;
 use crate::completion::docs::doc_completion_items;
 use crate::completion::postfix::postfix_completion_items;
 use crate::completion::ranking::rank_completion_items;
-use crate::completion::snippets::{callable_completion_text_edit, callable_parameter_names};
+use crate::completion::snippets::{
+    callable_completion_text_edit, callable_completion_text_edit_with_base_text,
+    callable_parameter_names,
+};
 use crate::completion::workspace::{
     builtin_function_annotation, builtin_function_detail, builtin_function_docs,
     inferred_completion_type, workspace_completion_metadata,
 };
 use crate::support::convert::format_type_ref;
 use crate::types::{
-    CompletionRelevance, CompletionRelevanceCallableMatch, CompletionRelevanceTypeMatch,
+    CompletionRelevance, CompletionRelevanceActiveParameterMatch,
+    CompletionRelevanceCallableArityMatch, CompletionRelevanceCallableMatch,
+    CompletionRelevanceCallableSignatureMatch, CompletionRelevanceNameMatch,
+    CompletionRelevanceTypeMatch,
 };
 use crate::{
     CompletionInsertFormat, CompletionItem, CompletionItemKind, CompletionItemSource,
-    CompletionResolveData, FilePosition,
+    CompletionResolveData, FilePosition, TextEdit,
 };
 
 pub(crate) fn completions(
@@ -80,6 +86,13 @@ pub(super) struct PostfixCompletionContext {
     replace_range: TextRange,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct CompletionCallContext<'a> {
+    argument_count: Option<usize>,
+    argument_types: Option<&'a [Option<TypeRef>]>,
+    active_parameter_index: Option<usize>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum DocCompletionContext {
     Tag {
@@ -108,11 +121,23 @@ fn completion_items(
         return Vec::new();
     }
 
+    let query_offset = TextSize::from(context.query_offset as u32);
+    let expected_type = snapshot.expected_type_at(position.file_id, query_offset);
+    let call_argument_count = snapshot.call_argument_count_at(position.file_id, query_offset);
+    let call_argument_types = snapshot.call_argument_types_at(position.file_id, query_offset);
+    let active_parameter_index = snapshot.active_parameter_index_at(position.file_id, query_offset);
+    let call_context = CompletionCallContext {
+        argument_count: call_argument_count,
+        argument_types: call_argument_types.as_deref(),
+        active_parameter_index,
+    };
+
     if let Some(module_path) = &context.module_path {
         let mut items = snapshot
             .imported_module_completions(position.file_id, module_path)
             .into_iter()
             .map(|item| {
+                let name_match = completion_name_match(item.name.as_str(), &context);
                 let parameter_names =
                     item.file_id.zip(item.symbol).and_then(|(file_id, symbol)| {
                         callable_parameter_names(
@@ -139,10 +164,26 @@ fn completion_items(
                     kind: CompletionItemKind::Symbol(item.kind),
                     source: CompletionItemSource::Module,
                     relevance: CompletionRelevance {
+                        name_match,
                         callable_match: completion_callable_match(
                             &context,
                             item.annotation.as_ref(),
                             CompletionItemKind::Symbol(item.kind),
+                        ),
+                        callable_arity_match: completion_callable_arity_match(
+                            &context,
+                            item.annotation.as_ref(),
+                            None,
+                        ),
+                        callable_signature_match: completion_callable_signature_match(
+                            &context,
+                            item.annotation.as_ref(),
+                            None,
+                        ),
+                        active_parameter_match: completion_active_parameter_match(
+                            &context,
+                            item.annotation.as_ref(),
+                            call_context,
                         ),
                         ..CompletionRelevance::default()
                     },
@@ -163,6 +204,98 @@ fn completion_items(
                 }
             })
             .collect::<Vec<_>>();
+        items.extend(
+            snapshot
+                .auto_import_candidates(position.file_id, query_offset)
+                .into_iter()
+                .map(|candidate| {
+                    let parameter_names = callable_parameter_names(
+                        snapshot,
+                        candidate.provider_file_id,
+                        candidate.symbol,
+                        candidate.annotation.as_ref(),
+                    );
+                    let mut text_edit = callable_completion_text_edit_with_base_text(
+                        &context,
+                        candidate.qualified_reference_text.as_str(),
+                        candidate.annotation.as_ref(),
+                        CompletionItemKind::Symbol(candidate.kind),
+                        parameter_names.as_deref(),
+                    )
+                    .unwrap_or_else(|| crate::CompletionTextEdit {
+                        replace_range: candidate.replace_range,
+                        insert_range: Some(context.replace_range),
+                        new_text: candidate.qualified_reference_text.clone(),
+                        additional_edits: Vec::new(),
+                    });
+                    if !candidate.insert_text.is_empty() {
+                        text_edit.additional_edits.push(TextEdit::insert(
+                            candidate.insertion_offset,
+                            candidate.insert_text.clone(),
+                        ));
+                    }
+                    let insert_format = if candidate
+                        .annotation
+                        .as_ref()
+                        .is_some_and(|annotation| matches!(annotation, TypeRef::Function(_)))
+                        || matches!(candidate.kind, SymbolKind::Function)
+                    {
+                        CompletionInsertFormat::Snippet
+                    } else {
+                        CompletionInsertFormat::PlainText
+                    };
+
+                    CompletionItem {
+                        label: candidate.name.clone(),
+                        kind: CompletionItemKind::Symbol(candidate.kind),
+                        source: CompletionItemSource::AutoImport,
+                        relevance: CompletionRelevance {
+                            requires_import: !candidate.insert_text.is_empty(),
+                            import_cost: Some(candidate.import_cost),
+                            name_match: completion_name_match(candidate.name.as_str(), &context),
+                            callable_match: completion_callable_match(
+                                &context,
+                                candidate.annotation.as_ref(),
+                                CompletionItemKind::Symbol(candidate.kind),
+                            ),
+                            callable_arity_match: completion_callable_arity_match(
+                                &context,
+                                candidate.annotation.as_ref(),
+                                call_context.argument_count,
+                            ),
+                            callable_signature_match: completion_callable_signature_match(
+                                &context,
+                                candidate.annotation.as_ref(),
+                                call_context.argument_types,
+                            ),
+                            active_parameter_match: completion_active_parameter_match(
+                                &context,
+                                candidate.annotation.as_ref(),
+                                call_context,
+                            ),
+                            type_match: completion_type_match(
+                                expected_type.as_ref(),
+                                candidate.annotation.as_ref(),
+                            ),
+                            ..CompletionRelevance::default()
+                        },
+                        origin: Some(candidate.module_name.clone()),
+                        sort_text: String::new(),
+                        detail: candidate.annotation.as_ref().map(format_type_ref),
+                        docs: if matches!(detail_level, CompletionDetailLevel::Full) {
+                            candidate.docs.clone()
+                        } else {
+                            None
+                        },
+                        filter_text: Some(candidate.name.clone()),
+                        text_edit: Some(text_edit),
+                        insert_format,
+                        file_id: Some(candidate.provider_file_id),
+                        exported: true,
+                        resolve_data: None,
+                    }
+                }),
+        );
         rank_completion_items(&mut items, &context);
         return items;
     }
@@ -174,10 +307,6 @@ fn completion_items(
         return Vec::new();
     };
     let member_only_context = context.member_access;
-    let expected_type = snapshot.expected_type_at(
-        position.file_id,
-        TextSize::from(context.query_offset as u32),
-    );
 
     let mut items = Vec::new();
     let hir = snapshot.hir(position.file_id);
@@ -217,10 +346,31 @@ fn completion_items(
                 source: CompletionItemSource::Visible,
                 relevance: CompletionRelevance {
                     is_local: matches!(symbol.kind, SymbolKind::Variable | SymbolKind::Parameter),
+                    scope_distance: matches!(
+                        symbol.kind,
+                        SymbolKind::Variable | SymbolKind::Parameter | SymbolKind::ImportAlias
+                    )
+                    .then_some(symbol.scope_distance),
+                    name_match: completion_name_match(symbol.name.as_str(), &context),
                     callable_match: completion_callable_match(
                         &context,
                         annotation,
                         CompletionItemKind::Symbol(symbol.kind),
+                    ),
+                    callable_arity_match: completion_callable_arity_match(
+                        &context,
+                        annotation,
+                        call_context.argument_count,
+                    ),
+                    callable_signature_match: completion_callable_signature_match(
+                        &context,
+                        annotation,
+                        call_context.argument_types,
+                    ),
+                    active_parameter_match: completion_active_parameter_match(
+                        &context,
+                        annotation,
+                        call_context,
                     ),
                     type_match: completion_type_match(expected_type.as_ref(), annotation),
                     ..CompletionRelevance::default()
@@ -270,10 +420,26 @@ fn completion_items(
                 kind: CompletionItemKind::Symbol(symbol.symbol.kind),
                 source: CompletionItemSource::Project,
                 relevance: CompletionRelevance {
+                    name_match: completion_name_match(symbol.symbol.name.as_str(), &context),
                     callable_match: completion_callable_match(
                         &context,
                         annotation.as_ref(),
                         CompletionItemKind::Symbol(symbol.symbol.kind),
+                    ),
+                    callable_arity_match: completion_callable_arity_match(
+                        &context,
+                        annotation.as_ref(),
+                        call_context.argument_count,
+                    ),
+                    callable_signature_match: completion_callable_signature_match(
+                        &context,
+                        annotation.as_ref(),
+                        call_context.argument_types,
+                    ),
+                    active_parameter_match: completion_active_parameter_match(
+                        &context,
+                        annotation.as_ref(),
+                        call_context,
                     ),
                     type_match: completion_type_match(expected_type.as_ref(), annotation.as_ref()),
                     ..CompletionRelevance::default()
@@ -294,19 +460,130 @@ fn completion_items(
             }
         }));
 
+        items.extend(
+            snapshot
+                .auto_import_candidates(position.file_id, query_offset)
+                .into_iter()
+                .filter(|candidate| {
+                    context.prefix.is_empty()
+                        || candidate
+                            .name
+                            .to_ascii_lowercase()
+                            .contains(context.prefix.to_ascii_lowercase().as_str())
+                })
+                .map(|candidate| {
+                    let parameter_names = callable_parameter_names(
+                        snapshot,
+                        candidate.provider_file_id,
+                        candidate.symbol,
+                        candidate.annotation.as_ref(),
+                    );
+                    let mut text_edit = callable_completion_text_edit_with_base_text(
+                        &context,
+                        candidate.qualified_reference_text.as_str(),
+                        candidate.annotation.as_ref(),
+                        CompletionItemKind::Symbol(candidate.kind),
+                        parameter_names.as_deref(),
+                    )
+                    .unwrap_or_else(|| crate::CompletionTextEdit {
+                        replace_range: candidate.replace_range,
+                        insert_range: Some(context.replace_range),
+                        new_text: candidate.qualified_reference_text.clone(),
+                        additional_edits: Vec::new(),
+                    });
+                    if !candidate.insert_text.is_empty() {
+                        text_edit.additional_edits.push(TextEdit::insert(
+                            candidate.insertion_offset,
+                            candidate.insert_text.clone(),
+                        ));
+                    }
+                    let insert_format = if candidate
+                        .annotation
+                        .as_ref()
+                        .is_some_and(|annotation| matches!(annotation, TypeRef::Function(_)))
+                        || matches!(candidate.kind, SymbolKind::Function)
+                    {
+                        CompletionInsertFormat::Snippet
+                    } else {
+                        CompletionInsertFormat::PlainText
+                    };
+
+                    CompletionItem {
+                        label: candidate.name.clone(),
+                        kind: CompletionItemKind::Symbol(candidate.kind),
+                        source: CompletionItemSource::AutoImport,
+                        relevance: CompletionRelevance {
+                            requires_import: !candidate.insert_text.is_empty(),
+                            import_cost: Some(candidate.import_cost),
+                            name_match: completion_name_match(candidate.name.as_str(), &context),
+                            callable_match: completion_callable_match(
+                                &context,
+                                candidate.annotation.as_ref(),
+                                CompletionItemKind::Symbol(candidate.kind),
+                            ),
+                            callable_arity_match: completion_callable_arity_match(
+                                &context,
+                                candidate.annotation.as_ref(),
+                                call_context.argument_count,
+                            ),
+                            callable_signature_match: completion_callable_signature_match(
+                                &context,
+                                candidate.annotation.as_ref(),
+                                call_context.argument_types,
+                            ),
+                            active_parameter_match: completion_active_parameter_match(
+                                &context,
+                                candidate.annotation.as_ref(),
+                                call_context,
+                            ),
+                            type_match: completion_type_match(
+                                expected_type.as_ref(),
+                                candidate.annotation.as_ref(),
+                            ),
+                            ..CompletionRelevance::default()
+                        },
+                        origin: Some(candidate.module_name.clone()),
+                        sort_text: String::new(),
+                        detail: candidate.annotation.as_ref().map(format_type_ref),
+                        docs: if matches!(detail_level, CompletionDetailLevel::Full) {
+                            candidate.docs.clone()
+                        } else {
+                            None
+                        },
+                        filter_text: Some(candidate.name.clone()),
+                        text_edit: Some(text_edit),
+                        insert_format,
+                        file_id: Some(candidate.provider_file_id),
+                        exported: true,
+                        resolve_data: None,
+                    }
+                }),
+        );
+
         let existing_labels = items
             .iter()
             .map(|item| item.label.clone())
             .collect::<std::collections::HashSet<_>>();
         items.extend(
-            builtin_global_completion_items(snapshot, &context, expected_type.as_ref())
-                .into_iter()
-                .filter(|item| !existing_labels.contains(item.label.as_str())),
+            builtin_global_completion_items(
+                snapshot,
+                &context,
+                expected_type.as_ref(),
+                call_context,
+            )
+            .into_iter()
+            .filter(|item| !existing_labels.contains(item.label.as_str())),
         );
     }
 
     items.extend(inputs.member_symbols.iter().flat_map(|member| {
-        member_completion_items(member, &context, position, expected_type.as_ref())
+        member_completion_items(
+            member,
+            &context,
+            position,
+            expected_type.as_ref(),
+            call_context,
+        )
     }));
 
     rank_completion_items(&mut items, &context);
@@ -318,6 +595,7 @@ fn member_completion_items(
     context: &CompletionContext,
     position: FilePosition,
     expected_type: Option<&TypeRef>,
+    call_context: CompletionCallContext<'_>,
 ) -> Vec<CompletionItem> {
     if member.callable_overloads.len() > 1 {
         let mut overloads = member.callable_overloads.clone();
@@ -332,7 +610,14 @@ fn member_completion_items(
             .into_iter()
             .map(|signature| {
                 let annotation = TypeRef::Function(signature);
-                member_completion_item(member, Some(&annotation), context, position, expected_type)
+                member_completion_item(
+                    member,
+                    Some(&annotation),
+                    context,
+                    position,
+                    expected_type,
+                    call_context,
+                )
             })
             .collect();
     }
@@ -343,6 +628,7 @@ fn member_completion_items(
         context,
         position,
         expected_type,
+        call_context,
     )]
 }
 
@@ -352,6 +638,7 @@ fn member_completion_item(
     context: &CompletionContext,
     position: FilePosition,
     expected_type: Option<&TypeRef>,
+    call_context: CompletionCallContext<'_>,
 ) -> CompletionItem {
     let text_edit = callable_completion_text_edit(
         context,
@@ -371,10 +658,26 @@ fn member_completion_item(
         kind: CompletionItemKind::Member,
         source: CompletionItemSource::Member,
         relevance: CompletionRelevance {
+            name_match: completion_name_match(member.name.as_str(), context),
             callable_match: completion_callable_match(
                 context,
                 annotation,
                 CompletionItemKind::Member,
+            ),
+            callable_arity_match: completion_callable_arity_match(
+                context,
+                annotation,
+                call_context.argument_count,
+            ),
+            callable_signature_match: completion_callable_signature_match(
+                context,
+                annotation,
+                call_context.argument_types,
+            ),
+            active_parameter_match: completion_active_parameter_match(
+                context,
+                annotation,
+                call_context,
             ),
             type_match: completion_type_match(expected_type, annotation),
             ..CompletionRelevance::default()
@@ -399,6 +702,7 @@ fn builtin_global_completion_items(
     snapshot: &DatabaseSnapshot,
     context: &CompletionContext,
     expected_type: Option<&TypeRef>,
+    call_context: CompletionCallContext<'_>,
 ) -> Vec<CompletionItem> {
     snapshot
         .global_functions()
@@ -424,10 +728,26 @@ fn builtin_global_completion_items(
                 kind: CompletionItemKind::Symbol(SymbolKind::Function),
                 source: CompletionItemSource::Builtin,
                 relevance: CompletionRelevance {
+                    name_match: completion_name_match(function.name.as_str(), context),
                     callable_match: completion_callable_match(
                         context,
                         annotation.as_ref(),
                         CompletionItemKind::Symbol(SymbolKind::Function),
+                    ),
+                    callable_arity_match: completion_callable_arity_match(
+                        context,
+                        annotation.as_ref(),
+                        call_context.argument_count,
+                    ),
+                    callable_signature_match: completion_callable_signature_match(
+                        context,
+                        annotation.as_ref(),
+                        call_context.argument_types,
+                    ),
+                    active_parameter_match: completion_active_parameter_match(
+                        context,
+                        annotation.as_ref(),
+                        call_context,
                     ),
                     type_match: completion_type_match(expected_type, annotation.as_ref()),
                     ..CompletionRelevance::default()
@@ -472,6 +792,53 @@ fn completion_type_match(
     types_could_unify(expected, candidate).then_some(CompletionRelevanceTypeMatch::CouldUnify)
 }
 
+fn completion_name_match(
+    label: &str,
+    context: &CompletionContext,
+) -> Option<CompletionRelevanceNameMatch> {
+    let prefix = context.prefix.as_str();
+    if prefix.is_empty() {
+        return None;
+    }
+
+    let label_lower = label.to_ascii_lowercase();
+    let prefix_lower = prefix.to_ascii_lowercase();
+
+    if label_lower == prefix_lower {
+        Some(CompletionRelevanceNameMatch::Exact)
+    } else if label_lower.starts_with(prefix_lower.as_str()) {
+        Some(CompletionRelevanceNameMatch::Prefix)
+    } else if name_matches_subsequence(label, prefix) {
+        Some(CompletionRelevanceNameMatch::Subsequence)
+    } else if label_lower.contains(prefix_lower.as_str()) {
+        Some(CompletionRelevanceNameMatch::Contains)
+    } else {
+        None
+    }
+}
+
+fn name_matches_subsequence(label: &str, prefix: &str) -> bool {
+    if prefix.is_empty() {
+        return false;
+    }
+
+    let mut prefix_chars = prefix.chars().map(|ch| ch.to_ascii_lowercase());
+    let Some(mut needle) = prefix_chars.next() else {
+        return false;
+    };
+
+    for ch in label.chars().map(|ch| ch.to_ascii_lowercase()) {
+        if ch == needle {
+            match prefix_chars.next() {
+                Some(next) => needle = next,
+                None => return true,
+            }
+        }
+    }
+
+    false
+}
+
 fn completion_callable_match(
     context: &CompletionContext,
     annotation: Option<&TypeRef>,
@@ -488,6 +855,84 @@ fn completion_callable_match(
         }
         _ => None,
     }
+}
+
+fn completion_callable_arity_match(
+    context: &CompletionContext,
+    annotation: Option<&TypeRef>,
+    call_argument_count: Option<usize>,
+) -> Option<CompletionRelevanceCallableArityMatch> {
+    if !context.next_char_is_open_paren {
+        return None;
+    }
+
+    match annotation {
+        Some(TypeRef::Function(signature))
+            if call_argument_count.is_some_and(|count| signature.params.len() == count) =>
+        {
+            Some(CompletionRelevanceCallableArityMatch::Exact)
+        }
+        _ => None,
+    }
+}
+
+fn completion_callable_signature_match(
+    context: &CompletionContext,
+    annotation: Option<&TypeRef>,
+    call_argument_types: Option<&[Option<TypeRef>]>,
+) -> Option<CompletionRelevanceCallableSignatureMatch> {
+    if !context.next_char_is_open_paren {
+        return None;
+    }
+
+    let (Some(TypeRef::Function(signature)), Some(arg_types)) = (annotation, call_argument_types)
+    else {
+        return None;
+    };
+
+    match signature_match_quality(signature, arg_types)? {
+        SignatureMatchQuality::Exact => Some(CompletionRelevanceCallableSignatureMatch::Exact),
+        SignatureMatchQuality::Partial => Some(CompletionRelevanceCallableSignatureMatch::Partial),
+        SignatureMatchQuality::Unknown | SignatureMatchQuality::Mismatch => None,
+    }
+}
+
+fn completion_active_parameter_match(
+    context: &CompletionContext,
+    annotation: Option<&TypeRef>,
+    call_context: CompletionCallContext<'_>,
+) -> Option<CompletionRelevanceActiveParameterMatch> {
+    if !context.next_char_is_open_paren {
+        return None;
+    }
+
+    let (Some(TypeRef::Function(signature)), Some(index), Some(arg_types)) = (
+        annotation,
+        call_context.active_parameter_index,
+        call_context.argument_types,
+    ) else {
+        return None;
+    };
+    let actual = arg_types.get(index).and_then(|ty| ty.as_ref())?;
+    let expected = signature.params.get(index)?;
+    if !is_informative_type(expected) || !is_informative_type(actual) {
+        return None;
+    }
+
+    if types_match_exact(expected, actual) {
+        Some(CompletionRelevanceActiveParameterMatch::Exact)
+    } else if types_could_unify(expected, actual) {
+        Some(CompletionRelevanceActiveParameterMatch::Partial)
+    } else {
+        None
+    }
+}
+
+fn is_informative_type(ty: &TypeRef) -> bool {
+    !matches!(
+        ty,
+        TypeRef::Unknown | TypeRef::Any | TypeRef::Dynamic | TypeRef::Never
+    )
 }
 
 fn types_match_exact(expected: &TypeRef, candidate: &TypeRef) -> bool {

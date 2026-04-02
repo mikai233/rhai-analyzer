@@ -20,7 +20,10 @@ pub use builtin::topics::{
 pub use change::{ChangeSet, FileChange};
 pub use db::{AnalyzerDatabase, DatabaseSnapshot};
 pub use infer::generics::specialize_signature_with_receiver_and_arg_types;
-pub use overload::{best_matching_signature_index, best_matching_signature_indexes};
+pub use overload::{
+    SignatureMatchQuality, best_matching_signature_index, best_matching_signature_indexes,
+    signature_match_quality,
+};
 use rhai_hir::{ExprId, FileHir, FunctionTypeRef, TypeRef};
 pub use types::{
     AutoImportCandidate, CachedMemberCompletionSet, CachedNavigationTarget, ChangeImpact,

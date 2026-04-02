@@ -92,6 +92,41 @@ fn query_helpers_support_definition_body_and_visible_symbol_lookups() {
     assert!(!visible.iter().any(|symbol| symbol.name == "result"));
     assert!(!visible.iter().any(|symbol| symbol.name == "OUTER"));
 }
+
+#[test]
+fn visible_symbol_queries_track_scope_distance() {
+    let source = r#"
+            fn helper() {
+                let outer_value = 1;
+                {
+                    let inner_value = outer_value;
+                    inner_value + outer_value
+                }
+            }
+        "#;
+    let parse = parse_valid(source);
+    let hir = lower_file(&parse);
+
+    let use_offset =
+        TextSize::from(u32::try_from(source.rfind("inner_value + outer_value").unwrap()).unwrap());
+    let visible = hir.visible_symbols_with_scope_distance_at(use_offset);
+
+    let inner_distance = visible
+        .iter()
+        .find_map(|(symbol, distance)| {
+            (hir.symbol(*symbol).name == "inner_value").then_some(*distance)
+        })
+        .expect("expected inner_value distance");
+    let outer_distance = visible
+        .iter()
+        .find_map(|(symbol, distance)| {
+            (hir.symbol(*symbol).name == "outer_value").then_some(*distance)
+        })
+        .expect("expected outer_value distance");
+
+    assert_eq!(inner_distance, 0);
+    assert_eq!(outer_distance, 1);
+}
 #[test]
 fn offset_based_query_helpers_support_navigation_workflows() {
     let source = r#"

@@ -97,6 +97,13 @@ impl FileHir {
     }
 
     pub fn visible_symbols_at(&self, offset: TextSize) -> Vec<SymbolId> {
+        self.visible_symbols_with_scope_distance_at(offset)
+            .into_iter()
+            .map(|(symbol, _)| symbol)
+            .collect()
+    }
+
+    pub fn visible_symbols_with_scope_distance_at(&self, offset: TextSize) -> Vec<(SymbolId, u8)> {
         let mut visible = Vec::new();
         let mut hidden_symbols = HashSet::new();
         let mut scope = match self.find_scope_at(offset) {
@@ -104,6 +111,7 @@ impl FileHir {
             None => return visible,
         };
         let mut crossed_function_boundary = false;
+        let mut scope_distance = 0u8;
 
         loop {
             let scope_data = self.scope(scope);
@@ -114,13 +122,16 @@ impl FileHir {
                 }
                 if self.symbol_is_visible_at(symbol_id, offset, crossed_function_boundary) {
                     hidden_symbols.insert(key);
-                    visible.push(symbol_id);
+                    visible.push((symbol_id, scope_distance));
                 }
             }
 
             crossed_function_boundary |= scope_data.kind == ScopeKind::Function;
             match scope_data.parent {
-                Some(parent) => scope = parent,
+                Some(parent) => {
+                    scope = parent;
+                    scope_distance = scope_distance.saturating_add(1);
+                }
                 None => break,
             }
         }

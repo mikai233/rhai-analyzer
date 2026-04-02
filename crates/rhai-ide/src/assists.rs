@@ -140,7 +140,10 @@ fn auto_import_assists(
         .iter()
         .filter(|reference| {
             reference.target.is_none()
-                && reference.kind == HirReferenceKind::Name
+                && matches!(
+                    reference.kind,
+                    HirReferenceKind::Name | HirReferenceKind::PathSegment
+                )
                 && ranges_intersect_or_touch(range, reference.range)
         })
         .filter_map(|reference| {
@@ -151,16 +154,31 @@ fn auto_import_assists(
             snapshot
                 .auto_import_candidates(file_id, reference.range.start())
                 .into_iter()
-                .map(move |candidate| Assist {
-                    id: AUTO_IMPORT_ASSIST_ID,
-                    kind: AssistKind::QuickFix,
-                    group: Some("Import".to_owned()),
-                    label: format!("Import `{}`", candidate.module_name),
-                    target: reference.range,
-                    source_change: SourceChange::from_text_edit(
-                        file_id,
-                        TextEdit::insert(candidate.insertion_offset, candidate.insert_text),
-                    ),
+                .map(move |candidate| {
+                    let label = if candidate.insert_text.is_empty() {
+                        format!("Qualify with `{}`", candidate.alias)
+                    } else {
+                        format!("Import `{}`", candidate.module_name)
+                    };
+                    let mut edits = vec![TextEdit::replace(
+                        candidate.replace_range,
+                        candidate.qualified_reference_text,
+                    )];
+                    if !candidate.insert_text.is_empty() {
+                        edits.push(TextEdit::insert(
+                            candidate.insertion_offset,
+                            candidate.insert_text,
+                        ));
+                    }
+
+                    Assist {
+                        id: AUTO_IMPORT_ASSIST_ID,
+                        kind: AssistKind::QuickFix,
+                        group: Some("Import".to_owned()),
+                        label,
+                        target: reference.range,
+                        source_change: SourceChange::new(vec![FileTextEdit::new(file_id, edits)]),
+                    }
                 })
         })
         .collect()
