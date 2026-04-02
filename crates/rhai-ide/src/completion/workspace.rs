@@ -1,5 +1,5 @@
 use rhai_db::{DatabaseSnapshot, HostFunction, LocatedWorkspaceSymbol};
-use rhai_hir::{SymbolId, TypeRef};
+use rhai_hir::{FunctionTypeRef, SymbolId, TypeRef};
 use rhai_vfs::FileId;
 
 use crate::completion::CompletionDetailLevel;
@@ -61,15 +61,21 @@ pub(super) fn workspace_completion_metadata(
 }
 
 pub(super) fn builtin_function_annotation(function: &HostFunction) -> Option<TypeRef> {
-    if function.overloads.len() != 1 {
-        return None;
-    }
+    preferred_completion_signature(
+        function
+            .overloads
+            .iter()
+            .filter_map(|overload| overload.signature.clone()),
+    )
+    .map(TypeRef::Function)
+}
 
-    function
-        .overloads
-        .first()
-        .and_then(|overload| overload.signature.clone())
-        .map(TypeRef::Function)
+fn preferred_completion_signature(
+    signatures: impl IntoIterator<Item = FunctionTypeRef>,
+) -> Option<FunctionTypeRef> {
+    signatures
+        .into_iter()
+        .min_by_key(|signature| signature.params.len())
 }
 
 pub(super) fn builtin_function_detail(

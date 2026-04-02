@@ -3,7 +3,7 @@ use rhai_syntax::TextRange;
 use crate::model::expr::ExprId;
 use crate::model::scope::{ReferenceId, ScopeId};
 use crate::model::symbol::{SymbolId, SymbolKind};
-use crate::ty::TypeRef;
+use crate::ty::{FunctionTypeRef, TypeRef};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ImportLinkageKind {
@@ -132,6 +132,7 @@ pub enum MemberCompletionSource {
 pub struct MemberCompletion {
     pub name: String,
     pub annotation: Option<TypeRef>,
+    pub callable_overloads: Vec<FunctionTypeRef>,
     pub docs: Option<String>,
     pub range: Option<TextRange>,
     pub source: MemberCompletionSource,

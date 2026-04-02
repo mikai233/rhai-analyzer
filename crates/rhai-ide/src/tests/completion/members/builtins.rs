@@ -1,5 +1,8 @@
 use crate::CompletionItemSource;
 use crate::tests::completion::members::{completions_at, load_analysis, member_completion};
+use crate::{AnalysisHost, CompletionInsertFormat, FilePosition};
+use rhai_db::ChangeSet;
+use rhai_vfs::DocumentVersion;
 
 #[test]
 fn completions_include_builtin_string_members() {
@@ -373,4 +376,50 @@ fn completions_include_builtin_members_for_chained_and_indexed_receivers() {
     let field_completions = completions_at(&analysis, file_id, field_offset);
     member_completion(&field_completions, "contains");
     member_completion(&field_completions, "len");
+}
+
+#[test]
+fn completions_keep_builtin_members_visible_for_prefixed_object_field_results() {
+    let mut host = AnalysisHost::default();
+    host.apply_change(ChangeSet::single_file(
+        "main.rhai",
+        r#"
+            let student = #{ name: "mikai233" };
+            let chars = student.name.c
+        "#,
+        DocumentVersion(1),
+    ));
+
+    let analysis = host.snapshot();
+    let file_id = analysis
+        .db
+        .vfs()
+        .file_id(std::path::Path::new("main.rhai"))
+        .expect("expected main.rhai");
+    let text = analysis.db.file_text(file_id).expect("expected text");
+    let offset = u32::try_from(
+        text.find("student.name.c")
+            .expect("expected member completion target")
+            + "student.name.c".len(),
+    )
+    .expect("offset");
+
+    let completions = analysis.completions(FilePosition { file_id, offset });
+    let chars = completions
+        .iter()
+        .filter(|item| item.label == "chars" && item.source == CompletionItemSource::Member)
+        .collect::<Vec<_>>();
+    member_completion(&completions, "contains");
+    assert!(
+        chars.len() >= 2,
+        "expected overloaded chars completion items, got {completions:?}"
+    );
+    assert!(
+        chars
+            .iter()
+            .all(|item| item.insert_format == CompletionInsertFormat::Snippet)
+    );
+    assert!(chars.iter().any(|item| {
+        item.text_edit.as_ref().map(|edit| edit.new_text.as_str()) == Some("chars()$0")
+    }));
 }

@@ -123,6 +123,17 @@ pub(crate) fn merge_function_candidate_signatures(
         ret: Box::new(ret),
     })
 }
+
+pub(crate) fn preferred_completion_signature(
+    signatures: impl IntoIterator<Item = FunctionTypeRef>,
+) -> Option<FunctionTypeRef> {
+    let signatures = signatures.into_iter().collect::<Vec<_>>();
+    let min_arity = signatures
+        .iter()
+        .map(|signature| signature.params.len())
+        .min()?;
+    merge_function_candidate_signatures(signatures, Some(min_arity))
+}
 pub(crate) fn expected_call_signature(
     hir: &FileHir,
     inference: &FileTypeInference,

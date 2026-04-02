@@ -11,6 +11,7 @@ pub(crate) use crate::infer::calls::selection::{
 };
 pub(crate) use crate::infer::calls::signatures::{
     expected_call_signature, join_callable_target_signatures, merge_function_candidate_signatures,
+    preferred_completion_signature,
 };
 pub(crate) use crate::infer::calls::targets::{
     callable_targets_for_call, imported_method_signature_for_expr, named_callable_targets_at_offset,

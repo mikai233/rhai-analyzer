@@ -8,9 +8,10 @@ use crate::builtin::topics::builtin_property_access_topic;
 use crate::db::DatabaseSnapshot;
 use crate::db::query_support::{object_field_member_completions, symbol_for_expr};
 use crate::db::rebuild::default_file_stats;
-use crate::infer::calls::merge_function_candidate_signatures;
+use crate::infer::calls::{merge_function_candidate_signatures, preferred_completion_signature};
 use crate::infer::field_value_exprs_from_expr;
 use crate::infer::generics::specialize_signature_with_receiver_and_arg_types;
+use crate::infer::infer_member_type_from_expr;
 use crate::types::{
     AutoImportCandidate, CachedFileAnalysis, CompletionInputs, DatabaseDebugView, DebugFileAnalysis,
 };
@@ -166,10 +167,16 @@ fn cached_member_completion_at(
             }
         }
 
-        enrich_member_completions_with_inference(&mut members, analysis, access.receiver);
+        enrich_member_completions_with_inference(&mut members, snapshot, analysis, access.receiver);
 
         for member in host_type_member_completions(snapshot, file_id, analysis, access.receiver) {
-            if should_skip_ambiguous_host_member(&members, &member, analysis, access.receiver) {
+            if should_skip_ambiguous_host_member(
+                &members,
+                &member,
+                snapshot,
+                analysis,
+                access.receiver,
+            ) {
                 continue;
             }
             merge_member_completion(&mut members, member);
@@ -187,11 +194,13 @@ fn host_type_member_completions(
     analysis: &CachedFileAnalysis,
     receiver: rhai_hir::ExprId,
 ) -> Vec<MemberCompletion> {
-    let Some(receiver_ty) = receiver_type_for_member_completion(analysis, receiver).or_else(|| {
-        snapshot
-            .inferred_expr_type_at(file_id, analysis.hir.expr(receiver).range.start())
-            .cloned()
-    }) else {
+    let Some(receiver_ty) = receiver_type_for_member_completion(snapshot, analysis, receiver)
+        .or_else(|| {
+            snapshot
+                .inferred_expr_type_at(file_id, analysis.hir.expr(receiver).range.start())
+                .cloned()
+        })
+    else {
         return Vec::new();
     };
 
@@ -255,10 +264,10 @@ fn fallback_member_completion_at(
         members.entry(member.name.clone()).or_insert(member);
     }
 
-    enrich_member_completions_with_inference(&mut members, analysis, receiver_expr);
+    enrich_member_completions_with_inference(&mut members, snapshot, analysis, receiver_expr);
 
     for member in host_type_member_completions(snapshot, file_id, analysis, receiver_expr) {
-        if should_skip_ambiguous_host_member(&members, &member, analysis, receiver_expr) {
+        if should_skip_ambiguous_host_member(&members, &member, snapshot, analysis, receiver_expr) {
             continue;
         }
         merge_member_completion(&mut members, member);
@@ -313,11 +322,17 @@ fn incomplete_member_receiver_expr(
         text.as_ref(),
         usize::try_from(u32::from(offset)).ok()?.min(text.len()),
     );
-    if offset == 0 || text.as_bytes().get(offset - 1).copied() != Some(b'.') {
+    let bytes = text.as_bytes();
+    let mut prefix_start = offset;
+    while prefix_start > 0 && is_identifier_byte(bytes[prefix_start - 1]) {
+        prefix_start -= 1;
+    }
+
+    if prefix_start == 0 || bytes.get(prefix_start - 1).copied() != Some(b'.') {
         return None;
     }
 
-    let dot_offset = TextSize::from((offset - 1) as u32);
+    let dot_offset = TextSize::from((prefix_start - 1) as u32);
     analysis
         .hir
         .exprs
@@ -387,11 +402,14 @@ fn add_host_type_members(
     host_types: &[crate::HostType],
 ) {
     for method in &host_type.methods {
+        let callable_overloads =
+            method_completion_overloads(receiver_ty, host_type, method, host_types);
         members
             .entry(method.name.clone())
             .or_insert(MemberCompletion {
                 name: method.name.clone(),
-                annotation: method_signature_annotation(receiver_ty, host_type, method, host_types),
+                annotation: completion_annotation_for_overloads(callable_overloads.as_slice()),
+                callable_overloads,
                 docs: method_docs(method),
                 range: None,
                 source: MemberCompletionSource::HostTypeMember,
@@ -399,13 +417,13 @@ fn add_host_type_members(
     }
 }
 
-fn method_signature_annotation(
+fn method_completion_overloads(
     receiver_ty: &TypeRef,
     host_type: &crate::HostType,
     method: &crate::HostFunction,
     host_types: &[crate::HostType],
-) -> Option<TypeRef> {
-    let signatures = method
+) -> Vec<rhai_hir::FunctionTypeRef> {
+    method
         .overloads
         .iter()
         .filter_map(|overload| overload.signature.as_ref())
@@ -418,17 +436,30 @@ fn method_signature_annotation(
                 host_types,
             )
         })
-        .collect::<Vec<_>>();
-    merge_function_candidate_signatures(signatures, None).map(TypeRef::Function)
+        .collect()
+}
+
+fn completion_annotation_for_overloads(overloads: &[rhai_hir::FunctionTypeRef]) -> Option<TypeRef> {
+    match overloads {
+        [] => None,
+        [signature] => Some(TypeRef::Function(signature.clone())),
+        _ => merge_function_candidate_signatures(overloads.to_vec(), None)
+            .or_else(|| preferred_completion_signature(overloads.iter().cloned()))
+            .map(TypeRef::Function),
+    }
 }
 
 fn add_universal_method_members(members: &mut BTreeMap<String, MemberCompletion>) {
     for method_name in builtin_universal_method_names() {
+        let callable_overloads = builtin_universal_method_signature(method_name)
+            .into_iter()
+            .collect::<Vec<_>>();
         members
             .entry((*method_name).to_owned())
             .or_insert(MemberCompletion {
                 name: (*method_name).to_owned(),
-                annotation: builtin_universal_method_signature(method_name).map(TypeRef::Function),
+                annotation: completion_annotation_for_overloads(callable_overloads.as_slice()),
+                callable_overloads,
                 docs: crate::builtin::signatures::builtin_universal_method_docs(method_name),
                 range: None,
                 source: MemberCompletionSource::HostTypeMember,
@@ -452,6 +483,7 @@ fn add_builtin_property_members(members: &mut BTreeMap<String, MemberCompletion>
             entry.insert(MemberCompletion {
                 name: String::from("tag"),
                 annotation: Some(TypeRef::Int),
+                callable_overloads: Vec::new(),
                 docs: Some(topic.docs),
                 range: None,
                 source: MemberCompletionSource::HostTypeMember,
@@ -495,6 +527,15 @@ fn merge_member_completion(
                 existing.annotation =
                     merge_member_annotation(existing.annotation.as_ref(), annotation);
             }
+            for overload in incoming.callable_overloads {
+                if !existing.callable_overloads.contains(&overload) {
+                    existing.callable_overloads.push(overload);
+                }
+            }
+            if !existing.callable_overloads.is_empty() {
+                existing.annotation =
+                    completion_annotation_for_overloads(existing.callable_overloads.as_slice());
+            }
             if existing.docs.is_none() {
                 existing.docs = incoming.docs;
             } else if let Some(incoming_docs) = incoming.docs
@@ -512,16 +553,19 @@ fn merge_member_completion(
 
 fn enrich_member_completions_with_inference(
     members: &mut BTreeMap<String, MemberCompletion>,
+    snapshot: &DatabaseSnapshot,
     analysis: &CachedFileAnalysis,
     receiver: ExprId,
 ) {
-    if let Some(receiver_ty) = receiver_type_for_member_completion(analysis, receiver) {
+    if let Some(receiver_ty) = receiver_type_for_member_completion(snapshot, analysis, receiver) {
         enrich_member_completions_with_type(members, &receiver_ty);
     }
 
     let member_names = members.keys().cloned().collect::<Vec<_>>();
     for name in member_names {
-        let Some(annotation) = inferred_member_annotation(analysis, receiver, name.as_str()) else {
+        let Some(annotation) =
+            inferred_member_annotation(snapshot, analysis, receiver, name.as_str())
+        else {
             continue;
         };
 
@@ -532,11 +576,13 @@ fn enrich_member_completions_with_inference(
 }
 
 fn inferred_member_annotation(
+    snapshot: &DatabaseSnapshot,
     analysis: &CachedFileAnalysis,
     receiver: ExprId,
     field_name: &str,
 ) -> Option<TypeRef> {
-    if let Some(TypeRef::Object(fields)) = receiver_type_for_member_completion(analysis, receiver)
+    if let Some(TypeRef::Object(fields)) =
+        receiver_type_for_member_completion(snapshot, analysis, receiver)
         && let Some(annotation) = fields.get(field_name)
     {
         return Some(annotation.clone());
@@ -556,10 +602,12 @@ fn inferred_member_annotation(
 fn should_skip_ambiguous_host_member(
     members: &BTreeMap<String, MemberCompletion>,
     incoming: &MemberCompletion,
+    snapshot: &DatabaseSnapshot,
     analysis: &CachedFileAnalysis,
     receiver: ExprId,
 ) -> bool {
-    let Some(receiver_ty) = receiver_type_for_member_completion(analysis, receiver) else {
+    let Some(receiver_ty) = receiver_type_for_member_completion(snapshot, analysis, receiver)
+    else {
         return false;
     };
 
@@ -584,10 +632,7 @@ fn should_skip_ambiguous_host_member_for_type(
     matches!(
         existing.source,
         MemberCompletionSource::DocumentedField | MemberCompletionSource::ObjectLiteralField
-    ) && existing
-        .annotation
-        .as_ref()
-        .is_some_and(type_contains_callable)
+    )
 }
 
 fn enrich_member_completions_with_type(
@@ -601,6 +646,7 @@ fn enrich_member_completions_with_type(
                     entry.insert(MemberCompletion {
                         name: name.clone(),
                         annotation: Some(annotation.clone()),
+                        callable_overloads: Vec::new(),
                         docs: None,
                         range: None,
                         source: MemberCompletionSource::ObjectLiteralField,
@@ -615,6 +661,7 @@ fn enrich_member_completions_with_type(
 }
 
 fn receiver_type_for_member_completion(
+    snapshot: &DatabaseSnapshot,
     analysis: &CachedFileAnalysis,
     receiver: ExprId,
 ) -> Option<TypeRef> {
@@ -626,6 +673,38 @@ fn receiver_type_for_member_completion(
             symbol_for_expr(&analysis.hir, receiver)
                 .and_then(|symbol| analysis.type_inference.symbol_types.get(&symbol).cloned())
         })
+        .or_else(|| infer_field_expr_type_for_member_completion(snapshot, analysis, receiver))
+}
+
+fn infer_field_expr_type_for_member_completion(
+    _snapshot: &DatabaseSnapshot,
+    analysis: &CachedFileAnalysis,
+    expr: ExprId,
+) -> Option<TypeRef> {
+    let access = analysis.hir.member_access(expr)?;
+    let field_name = analysis.hir.reference(access.field_reference).name.as_str();
+    let read_ty = infer_member_type_from_expr(
+        &analysis.hir,
+        &analysis.type_inference,
+        access.receiver,
+        field_name,
+    );
+    let method_ty = builtin_universal_method_signature(field_name).map(TypeRef::Function);
+
+    match (read_ty, method_ty) {
+        (Some(read_ty), Some(method_ty))
+            if crate::receiver_supports_field_method_ambiguity(
+                &analysis.hir,
+                &analysis.type_inference,
+                access.receiver,
+            ) =>
+        {
+            Some(crate::infer::join_types(&read_ty, &method_ty))
+        }
+        (Some(read_ty), _) => Some(read_ty),
+        (_, Some(method_ty)) => Some(method_ty),
+        _ => None,
+    }
 }
 
 fn type_supports_field_method_ambiguity(ty: &TypeRef) -> bool {
@@ -634,16 +713,6 @@ fn type_supports_field_method_ambiguity(ty: &TypeRef) -> bool {
         TypeRef::Nullable(inner) => type_supports_field_method_ambiguity(inner),
         TypeRef::Union(items) | TypeRef::Ambiguous(items) => {
             items.iter().any(type_supports_field_method_ambiguity)
-        }
-        _ => false,
-    }
-}
-
-fn type_contains_callable(ty: &TypeRef) -> bool {
-    match ty {
-        TypeRef::Function(_) => true,
-        TypeRef::Union(items) | TypeRef::Ambiguous(items) => {
-            items.iter().any(type_contains_callable)
         }
         _ => false,
     }

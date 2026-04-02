@@ -271,41 +271,85 @@ fn completion_items(
         );
     }
 
-    items.extend(inputs.member_symbols.iter().map(|member| {
-        let text_edit = callable_completion_text_edit(
-            &context,
-            member.name.as_str(),
-            member.annotation.as_ref(),
-            CompletionItemKind::Member,
-            None,
-        );
-        let insert_format = if text_edit.is_some() {
-            CompletionInsertFormat::Snippet
-        } else {
-            CompletionInsertFormat::PlainText
-        };
-        CompletionItem {
-            label: member.name.clone(),
-            kind: CompletionItemKind::Member,
-            source: CompletionItemSource::Member,
-            origin: None,
-            sort_text: String::new(),
-            detail: member.annotation.as_ref().map(format_type_ref),
-            docs: member.docs.clone(),
-            filter_text: None,
-            text_edit,
-            insert_format,
-            file_id: None,
-            exported: false,
-            resolve_data: Some(CompletionResolveData {
-                file_id: position.file_id,
-                offset: position.offset,
-            }),
-        }
-    }));
+    items.extend(
+        inputs
+            .member_symbols
+            .iter()
+            .flat_map(|member| member_completion_items(member, &context, position)),
+    );
 
     rank_completion_items(&mut items, &context);
     items
+}
+
+fn member_completion_items(
+    member: &rhai_hir::MemberCompletion,
+    context: &CompletionContext,
+    position: FilePosition,
+) -> Vec<CompletionItem> {
+    if member.callable_overloads.len() > 1 {
+        let mut overloads = member.callable_overloads.clone();
+        overloads.sort_by(|left, right| {
+            left.params.len().cmp(&right.params.len()).then_with(|| {
+                format_type_ref(&TypeRef::Function(left.clone()))
+                    .cmp(&format_type_ref(&TypeRef::Function(right.clone())))
+            })
+        });
+
+        return overloads
+            .into_iter()
+            .map(|signature| {
+                let annotation = TypeRef::Function(signature);
+                member_completion_item(member, Some(&annotation), context, position)
+            })
+            .collect();
+    }
+
+    vec![member_completion_item(
+        member,
+        member.annotation.as_ref(),
+        context,
+        position,
+    )]
+}
+
+fn member_completion_item(
+    member: &rhai_hir::MemberCompletion,
+    annotation: Option<&TypeRef>,
+    context: &CompletionContext,
+    position: FilePosition,
+) -> CompletionItem {
+    let text_edit = callable_completion_text_edit(
+        context,
+        member.name.as_str(),
+        annotation,
+        CompletionItemKind::Member,
+        None,
+    );
+    let insert_format = if text_edit.is_some() {
+        CompletionInsertFormat::Snippet
+    } else {
+        CompletionInsertFormat::PlainText
+    };
+
+    CompletionItem {
+        label: member.name.clone(),
+        kind: CompletionItemKind::Member,
+        source: CompletionItemSource::Member,
+        origin: None,
+        sort_text: String::new(),
+        detail: annotation.map(format_type_ref),
+        docs: member.docs.clone(),
+        filter_text: None,
+        text_edit,
+        insert_format,
+        file_id: None,
+        exported: false,
+        resolve_data: Some(CompletionResolveData {
+            file_id: position.file_id,
+            offset: position.offset,
+        }),
+    }
 }
 
 fn builtin_global_completion_items(
@@ -367,7 +411,7 @@ pub(super) fn text_range(start: usize, end: usize) -> TextRange {
 #[cfg(test)]
 mod tests {
     use crate::CompletionInsertFormat;
-    use crate::completion::ranking::source_rank;
+    use crate::completion::ranking::{rank_completion_items, source_rank};
     use crate::{CompletionItem, CompletionItemKind, CompletionItemSource};
     use rhai_hir::SymbolKind;
     use rhai_syntax::{TextRange, TextSize};
@@ -409,8 +453,8 @@ mod tests {
     #[test]
     fn module_candidates_rank_ahead_of_project_candidates() {
         assert!(
-            source_rank(CompletionItemSource::Module, false)
-                < source_rank(CompletionItemSource::Project, false)
+            source_rank(CompletionItemSource::Module, &test_context(false))
+                < source_rank(CompletionItemSource::Project, &test_context(false))
         );
 
         let context = test_context(false);
@@ -423,5 +467,95 @@ mod tests {
 
         assert_eq!(items[0].source, CompletionItemSource::Module);
         assert_eq!(items[1].source, CompletionItemSource::Project);
+    }
+
+    #[test]
+    fn exact_postfix_matches_rank_ahead_of_other_candidates() {
+        let context = CompletionContext {
+            prefix: "switch".to_owned(),
+            ..test_context(true)
+        };
+        let mut items = vec![
+            CompletionItem {
+                label: "switch".to_owned(),
+                kind: CompletionItemKind::Snippet,
+                source: CompletionItemSource::Postfix,
+                origin: None,
+                sort_text: String::new(),
+                detail: None,
+                docs: None,
+                filter_text: Some("switch".to_owned()),
+                text_edit: None,
+                insert_format: CompletionInsertFormat::Snippet,
+                file_id: None,
+                exported: false,
+                resolve_data: None,
+            },
+            CompletionItem {
+                label: "substring".to_owned(),
+                kind: CompletionItemKind::Member,
+                source: CompletionItemSource::Member,
+                origin: None,
+                sort_text: String::new(),
+                detail: None,
+                docs: None,
+                filter_text: None,
+                text_edit: None,
+                insert_format: CompletionInsertFormat::PlainText,
+                file_id: None,
+                exported: false,
+                resolve_data: None,
+            },
+        ];
+
+        rank_completion_items(&mut items, &context);
+
+        assert_eq!(items[0].label, "switch");
+        assert_eq!(items[0].source, CompletionItemSource::Postfix);
+    }
+
+    #[test]
+    fn non_exact_postfix_matches_rank_after_normal_candidates() {
+        let context = CompletionContext {
+            prefix: "s".to_owned(),
+            ..test_context(true)
+        };
+        let mut items = vec![
+            CompletionItem {
+                label: "switch".to_owned(),
+                kind: CompletionItemKind::Snippet,
+                source: CompletionItemSource::Postfix,
+                origin: None,
+                sort_text: String::new(),
+                detail: None,
+                docs: None,
+                filter_text: Some("switch".to_owned()),
+                text_edit: None,
+                insert_format: CompletionInsertFormat::Snippet,
+                file_id: None,
+                exported: false,
+                resolve_data: None,
+            },
+            CompletionItem {
+                label: "split".to_owned(),
+                kind: CompletionItemKind::Member,
+                source: CompletionItemSource::Member,
+                origin: None,
+                sort_text: String::new(),
+                detail: None,
+                docs: None,
+                filter_text: None,
+                text_edit: None,
+                insert_format: CompletionInsertFormat::PlainText,
+                file_id: None,
+                exported: false,
+                resolve_data: None,
+            },
+        ];
+
+        rank_completion_items(&mut items, &context);
+
+        assert_eq!(items[0].label, "split");
+        assert_eq!(items[1].label, "switch");
     }
 }
