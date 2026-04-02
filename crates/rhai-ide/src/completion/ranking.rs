@@ -19,7 +19,7 @@ pub(super) fn rank_completion_items(items: &mut [CompletionItem], context: &Comp
 }
 
 fn completion_sort_text(item: &CompletionItem, context: &CompletionContext) -> String {
-    let relevance_rank = relevance_rank(item, context);
+    let relevance_rank = relevance_rank(item);
     let prefix_rank = prefix_match_rank(item.label.as_str(), context.prefix.as_str());
     let source_rank = source_rank(item.source, context);
     let kind_rank = kind_rank(item.kind);
@@ -30,20 +30,8 @@ fn completion_sort_text(item: &CompletionItem, context: &CompletionContext) -> S
     )
 }
 
-fn relevance_rank(item: &CompletionItem, context: &CompletionContext) -> u8 {
-    if item.source != CompletionItemSource::Postfix {
-        return 1;
-    }
-
-    if context.prefix.is_empty() {
-        return 1;
-    }
-
-    if item.label.eq_ignore_ascii_case(context.prefix.as_str()) {
-        0
-    } else {
-        2
-    }
+fn relevance_rank(item: &CompletionItem) -> String {
+    format!("{:010}", u32::MAX - item.relevance.score())
 }
 
 fn prefix_match_rank(label: &str, prefix: &str) -> u8 {

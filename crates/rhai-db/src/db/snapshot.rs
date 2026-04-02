@@ -5,6 +5,7 @@ use crate::db::DatabaseSnapshot;
 use crate::db::imports::imported_global_method_symbols;
 use crate::db::navigation::workspace_symbol_match_rank;
 use crate::db::rebuild::{resolved_source_roots, source_root_index_for_path};
+use crate::infer::calls::expected_call_signature;
 use crate::types::{
     FileAnalysisDependencies, FileCommentDirectives, FilePerformanceStats, FileTypeInference,
     HostModule, HostType, LinkedModuleImport, LocatedCallHierarchyItem, LocatedIncomingCall,
@@ -13,8 +14,9 @@ use crate::types::{
     WorkspaceDependencyGraph, WorkspaceFileInfo,
 };
 use rhai_hir::{
-    DocumentSymbol, ExternalSignatureIndex, FileBackedSymbolIdentity, FileHir, FileSymbolIndex,
-    ModuleGraphIndex, SemanticDiagnostic, SymbolId, TypeRef, WorkspaceSymbol,
+    CallSiteId, DocumentSymbol, ExpectedTypeSource, ExternalSignatureIndex,
+    FileBackedSymbolIdentity, FileHir, FileSymbolIndex, ModuleGraphIndex, SemanticDiagnostic,
+    SymbolId, TypeRef, WorkspaceSymbol,
 };
 use rhai_project::ProjectConfig;
 use rhai_syntax::{Parse, SyntaxError, TextSize};
@@ -210,6 +212,42 @@ impl DatabaseSnapshot {
         self.inferred_symbol_type(file_id, symbol)
     }
 
+    pub fn expected_type_at(&self, file_id: FileId, offset: TextSize) -> Option<TypeRef> {
+        let analysis = self.analysis.get(&file_id)?;
+        let site = analysis
+            .hir
+            .expected_type_sites
+            .iter()
+            .filter(|site| {
+                let range = analysis.hir.expr(site.expr).range;
+                range.contains(offset) || range.end() == offset
+            })
+            .min_by_key(|site| analysis.hir.expr(site.expr).range.len())?;
+
+        let ty = match site.source {
+            ExpectedTypeSource::Symbol(symbol) => {
+                self.inferred_symbol_type(file_id, symbol).cloned()
+            }
+            ExpectedTypeSource::FunctionReturn(symbol) => function_return_type(
+                self.inferred_symbol_type(file_id, symbol)
+                    .or_else(|| analysis.hir.declared_symbol_type(symbol)),
+            ),
+            ExpectedTypeSource::CallArgument {
+                call,
+                parameter_index,
+            } => expected_call_argument_type(
+                self,
+                file_id,
+                analysis.hir.as_ref(),
+                analysis.type_inference.as_ref(),
+                call,
+                parameter_index,
+            ),
+        }?;
+
+        completion_relevant_type(&ty)
+    }
+
     pub fn query_support(&self, file_id: FileId) -> Option<&PerFileQuerySupport> {
         self.analysis
             .get(&file_id)
@@ -343,5 +381,66 @@ impl DatabaseSnapshot {
                 .then_with(|| left.file_id.0.cmp(&right.file_id.0))
         });
         matches
+    }
+}
+
+fn expected_call_argument_type(
+    snapshot: &DatabaseSnapshot,
+    file_id: FileId,
+    hir: &FileHir,
+    inference: &FileTypeInference,
+    call: CallSiteId,
+    parameter_index: usize,
+) -> Option<TypeRef> {
+    if let Some(symbol) = hir.call_parameter_binding(call, parameter_index) {
+        return snapshot.inferred_symbol_type(file_id, symbol).cloned();
+    }
+
+    let imported_methods = snapshot.imported_method_signatures(file_id);
+    let signature = expected_call_signature(
+        hir,
+        inference,
+        hir.call(call),
+        &snapshot.effective_external_signatures(file_id),
+        snapshot.global_functions(),
+        snapshot.host_types(),
+        imported_methods.as_slice(),
+    )?;
+    signature.params.get(parameter_index).cloned()
+}
+
+fn function_return_type(ty: Option<&TypeRef>) -> Option<TypeRef> {
+    match ty? {
+        TypeRef::Function(signature) => Some(signature.ret.as_ref().clone()),
+        _ => None,
+    }
+}
+
+fn completion_relevant_type(ty: &TypeRef) -> Option<TypeRef> {
+    match ty {
+        TypeRef::Unknown | TypeRef::Never | TypeRef::Any | TypeRef::Dynamic => None,
+        TypeRef::Union(items) => {
+            let members = items
+                .iter()
+                .filter_map(completion_relevant_type)
+                .collect::<Vec<_>>();
+            match members.len() {
+                0 => None,
+                1 => members.into_iter().next(),
+                _ => Some(TypeRef::Union(members)),
+            }
+        }
+        TypeRef::Ambiguous(items) => {
+            let members = items
+                .iter()
+                .filter_map(completion_relevant_type)
+                .collect::<Vec<_>>();
+            match members.len() {
+                0 => None,
+                1 => members.into_iter().next(),
+                _ => Some(TypeRef::Ambiguous(members)),
+            }
+        }
+        _ => Some(ty.clone()),
     }
 }

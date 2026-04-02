@@ -16,13 +16,14 @@ pub use crate::change::{AutoImportAction, FileRename, FileTextEdit, SourceChange
 pub use crate::navigation::rename::PreparedRename;
 pub use crate::types::{
     CallHierarchyItem, CompletionInsertFormat, CompletionItem, CompletionItemKind,
-    CompletionItemSource, CompletionResolveData, CompletionTextEdit, Diagnostic,
-    DiagnosticSeverity, DiagnosticTag, DocumentHighlight, DocumentHighlightKind, DocumentSymbol,
-    FilePosition, FoldingRange, FoldingRangeKind, HoverResult, HoverSignatureSource, IncomingCall,
-    InlayHint, InlayHintKind, InlayHintSource, NavigationTarget, OutgoingCall, ReferenceKind,
-    ReferenceLocation, ReferencesResult, RenameIssue, RenamePlan, SemanticToken, SemanticTokenKind,
-    SemanticTokenModifier, SignatureHelp, SignatureInformation, SignatureParameter,
-    WorkspaceSymbol,
+    CompletionItemSource, CompletionRelevance, CompletionRelevanceCallableMatch,
+    CompletionRelevancePostfixMatch, CompletionRelevanceTypeMatch, CompletionResolveData,
+    CompletionTextEdit, Diagnostic, DiagnosticSeverity, DiagnosticTag, DocumentHighlight,
+    DocumentHighlightKind, DocumentSymbol, FilePosition, FoldingRange, FoldingRangeKind,
+    HoverResult, HoverSignatureSource, IncomingCall, InlayHint, InlayHintKind, InlayHintSource,
+    NavigationTarget, OutgoingCall, ReferenceKind, ReferenceLocation, ReferencesResult,
+    RenameIssue, RenamePlan, SemanticToken, SemanticTokenKind, SemanticTokenModifier,
+    SignatureHelp, SignatureInformation, SignatureParameter, WorkspaceSymbol,
 };
 
 #[cfg(test)]

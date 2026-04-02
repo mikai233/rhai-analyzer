@@ -247,11 +247,67 @@ pub enum CompletionItemSource {
     Postfix,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct CompletionRelevance {
+    pub is_local: bool,
+    pub type_match: Option<CompletionRelevanceTypeMatch>,
+    pub callable_match: Option<CompletionRelevanceCallableMatch>,
+    pub postfix_match: Option<CompletionRelevancePostfixMatch>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CompletionRelevanceTypeMatch {
+    CouldUnify,
+    Exact,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CompletionRelevanceCallableMatch {
+    Invocable,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CompletionRelevancePostfixMatch {
+    NonExact,
+    Exact,
+}
+
+impl CompletionRelevance {
+    const BASE_SCORE: u32 = u32::MAX / 2;
+
+    pub fn score(self) -> u32 {
+        let mut score = Self::BASE_SCORE;
+
+        if self.is_local {
+            score += 1;
+        }
+
+        score += match self.type_match {
+            Some(CompletionRelevanceTypeMatch::Exact) => 18,
+            Some(CompletionRelevanceTypeMatch::CouldUnify) => 5,
+            None => 0,
+        };
+
+        if self.callable_match.is_some() {
+            score += 8;
+        }
+
+        match self.postfix_match {
+            Some(CompletionRelevancePostfixMatch::Exact) => score += 100,
+            Some(CompletionRelevancePostfixMatch::NonExact) => score = score.saturating_sub(5),
+            None => {}
+        }
+
+        score
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompletionItem {
     pub label: String,
     pub kind: CompletionItemKind,
     pub source: CompletionItemSource,
+    pub relevance: CompletionRelevance,
     pub origin: Option<String>,
     pub sort_text: String,
     pub detail: Option<String>,

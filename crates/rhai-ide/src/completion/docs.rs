@@ -1,7 +1,7 @@
 use rhai_syntax::TextRange;
 
 use crate::completion::DocCompletionContext;
-use crate::types::CompletionTextEdit;
+use crate::types::{CompletionRelevance, CompletionTextEdit};
 use crate::{CompletionInsertFormat, CompletionItem, CompletionItemKind, CompletionItemSource};
 
 pub(super) fn doc_completion_items(context: &DocCompletionContext) -> Vec<CompletionItem> {
@@ -45,6 +45,7 @@ fn doc_tag_completion_items(replace_range: TextRange) -> Vec<CompletionItem> {
             new_text: label.to_owned(),
         }),
         insert_format: CompletionInsertFormat::PlainText,
+        relevance: CompletionRelevance::default(),
         file_id: None,
         exported: false,
         resolve_data: None,
@@ -93,6 +94,7 @@ fn doc_type_completion_items(replace_range: TextRange) -> Vec<CompletionItem> {
             new_text: label.to_owned(),
         }),
         insert_format: CompletionInsertFormat::PlainText,
+        relevance: CompletionRelevance::default(),
         file_id: None,
         exported: false,
         resolve_data: None,

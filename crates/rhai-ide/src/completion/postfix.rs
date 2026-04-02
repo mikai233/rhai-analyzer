@@ -1,5 +1,5 @@
 use crate::completion::{CompletionContext, PostfixCompletionContext};
-use crate::types::CompletionTextEdit;
+use crate::types::{CompletionRelevance, CompletionRelevancePostfixMatch, CompletionTextEdit};
 use crate::{CompletionInsertFormat, CompletionItem, CompletionItemKind, CompletionItemSource};
 
 pub(super) fn postfix_completion_items(context: &CompletionContext) -> Vec<CompletionItem> {
@@ -75,6 +75,16 @@ fn postfix_templates(
         label: label.to_owned(),
         kind: CompletionItemKind::Snippet,
         source: CompletionItemSource::Postfix,
+        relevance: CompletionRelevance {
+            postfix_match: if prefix.is_empty() {
+                None
+            } else if prefix == label {
+                Some(CompletionRelevancePostfixMatch::Exact)
+            } else {
+                Some(CompletionRelevancePostfixMatch::NonExact)
+            },
+            ..CompletionRelevance::default()
+        },
         origin: None,
         sort_text: String::new(),
         detail: Some("postfix template".to_owned()),

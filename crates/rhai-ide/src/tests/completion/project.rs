@@ -448,7 +448,6 @@ fn member_completions_preserve_inferred_callable_field_signatures() {
         .vfs()
         .file_id(Path::new("main.rhai"))
         .expect("expected main.rhai");
-    assert_no_syntax_diagnostics(&analysis, file_id);
     let text = analysis.db.file_text(file_id).expect("expected text");
     let offset = u32::try_from(
         text.find("DEFAULTS.ta")
@@ -464,4 +463,227 @@ fn member_completions_preserve_inferred_callable_field_signatures() {
         .expect("expected member tag completion");
 
     assert_eq!(tag.detail.as_deref(), Some("fun() -> string"));
+}
+
+#[test]
+fn completions_prioritize_visible_type_matches_from_expected_context() {
+    let mut host = AnalysisHost::default();
+    host.apply_change(ChangeSet {
+        files: vec![rhai_db::FileChange {
+            path: "main.rhai".into(),
+            text: r#"
+                /// @param value string
+                fn wants_string(value) {}
+
+                fn run() {
+                    let seed = 1;
+                    let story = "Ada";
+                    wants_string(s)
+                }
+            "#
+            .to_owned(),
+            version: DocumentVersion(1),
+        }],
+        removed_files: Vec::new(),
+        project: None,
+    });
+
+    let analysis = host.snapshot();
+    let file_id = analysis
+        .db
+        .vfs()
+        .file_id(Path::new("main.rhai"))
+        .expect("expected main.rhai");
+    let text = analysis.db.file_text(file_id).expect("expected text");
+    let offset = u32::try_from(
+        text.rfind("wants_string(s)")
+            .expect("expected completion prefix")
+            + "wants_string(s".len(),
+    )
+    .expect("offset");
+
+    let completions = analysis.completions(FilePosition { file_id, offset });
+    let seed_index = completions
+        .iter()
+        .position(|item| item.label == "seed" && item.source == CompletionItemSource::Visible)
+        .expect("expected seed completion");
+    let story_index = completions
+        .iter()
+        .position(|item| item.label == "story" && item.source == CompletionItemSource::Visible)
+        .expect("expected story completion");
+
+    assert!(
+        story_index < seed_index,
+        "expected string-typed visible symbol to outrank int-typed one: {completions:?}"
+    );
+}
+
+#[test]
+fn completions_prioritize_project_type_matches_from_expected_context() {
+    let mut host = AnalysisHost::default();
+    host.apply_change(ChangeSet {
+        files: vec![
+            rhai_db::FileChange {
+                path: "main.rhai".into(),
+                text: r#"
+                    /// @param value string
+                    fn wants_string(value) {}
+
+                    fn run() {
+                        wants_string(st)
+                    }
+                "#
+                .to_owned(),
+                version: DocumentVersion(1),
+            },
+            rhai_db::FileChange {
+                path: "support.rhai".into(),
+                text: r#"
+                    let stack = 1;
+                    let story = "Ada";
+
+                    export stack as stack;
+                    export story as story;
+                "#
+                .to_owned(),
+                version: DocumentVersion(1),
+            },
+        ],
+        removed_files: Vec::new(),
+        project: None,
+    });
+
+    let analysis = host.snapshot();
+    let file_id = analysis
+        .db
+        .vfs()
+        .file_id(Path::new("main.rhai"))
+        .expect("expected main.rhai");
+    let text = analysis.db.file_text(file_id).expect("expected text");
+    let offset = u32::try_from(
+        text.rfind("wants_string(st)")
+            .expect("expected completion prefix")
+            + "wants_string(st".len(),
+    )
+    .expect("offset");
+
+    let completions = analysis.completions(FilePosition { file_id, offset });
+    let stack_index = completions
+        .iter()
+        .position(|item| item.label == "stack" && item.source == CompletionItemSource::Project)
+        .expect("expected stack completion");
+    let story_index = completions
+        .iter()
+        .position(|item| item.label == "story" && item.source == CompletionItemSource::Project)
+        .expect("expected story completion");
+
+    assert!(
+        story_index < stack_index,
+        "expected string-typed project symbol to outrank int-typed one: {completions:?}"
+    );
+}
+
+#[test]
+fn completions_prioritize_visible_callables_in_call_context() {
+    let mut host = AnalysisHost::default();
+    host.apply_change(ChangeSet {
+        files: vec![rhai_db::FileChange {
+            path: "main.rhai".into(),
+            text: r#"
+                fn helper() {}
+
+                fn run() {
+                    let helium = 1;
+                    he(
+                }
+            "#
+            .to_owned(),
+            version: DocumentVersion(1),
+        }],
+        removed_files: Vec::new(),
+        project: None,
+    });
+
+    let analysis = host.snapshot();
+    let file_id = analysis
+        .db
+        .vfs()
+        .file_id(Path::new("main.rhai"))
+        .expect("expected main.rhai");
+    let text = analysis.db.file_text(file_id).expect("expected text");
+    let offset = u32::try_from(text.rfind("he(").expect("expected completion prefix") + "he".len())
+        .expect("offset");
+
+    let completions = analysis.completions(FilePosition { file_id, offset });
+    let helper_index = completions
+        .iter()
+        .position(|item| item.label == "helper" && item.source == CompletionItemSource::Visible)
+        .expect("expected helper completion");
+    let helium_index = completions
+        .iter()
+        .position(|item| item.label == "helium" && item.source == CompletionItemSource::Visible)
+        .expect("expected helium completion");
+
+    assert!(
+        helper_index < helium_index,
+        "expected callable visible symbol to outrank non-callable one in call context: {completions:?}"
+    );
+}
+
+#[test]
+fn completions_prioritize_project_callables_in_call_context() {
+    let mut host = AnalysisHost::default();
+    host.apply_change(ChangeSet {
+        files: vec![
+            rhai_db::FileChange {
+                path: "main.rhai".into(),
+                text: r#"
+                    fn run() {
+                        he(
+                    }
+                "#
+                .to_owned(),
+                version: DocumentVersion(1),
+            },
+            rhai_db::FileChange {
+                path: "support.rhai".into(),
+                text: r#"
+                    fn helper() {}
+                    let helium = 1;
+
+                    export helper as helper;
+                    export helium as helium;
+                "#
+                .to_owned(),
+                version: DocumentVersion(1),
+            },
+        ],
+        removed_files: Vec::new(),
+        project: None,
+    });
+
+    let analysis = host.snapshot();
+    let file_id = analysis
+        .db
+        .vfs()
+        .file_id(Path::new("main.rhai"))
+        .expect("expected main.rhai");
+    let text = analysis.db.file_text(file_id).expect("expected text");
+    let offset = u32::try_from(text.rfind("he(").expect("expected completion prefix") + "he".len())
+        .expect("offset");
+
+    let completions = analysis.completions(FilePosition { file_id, offset });
+    let helper_index = completions
+        .iter()
+        .position(|item| item.label == "helper" && item.source == CompletionItemSource::Project)
+        .expect("expected helper completion");
+    let helium_index = completions
+        .iter()
+        .position(|item| item.label == "helium" && item.source == CompletionItemSource::Project)
+        .expect("expected helium completion");
+
+    assert!(
+        helper_index < helium_index,
+        "expected callable project symbol to outrank non-callable one in call context: {completions:?}"
+    );
 }

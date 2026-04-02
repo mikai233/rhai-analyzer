@@ -1,10 +1,10 @@
 use lsp_types::{CodeActionKind, DocumentChangeOperation, DocumentChanges, ResourceOp};
 use rhai_hir::SymbolKind;
 use rhai_ide::{
-    CompletionInsertFormat, CompletionItem, CompletionItemKind, CompletionItemSource, FileRename,
-    FileTextEdit, HoverResult, HoverSignatureSource, SignatureHelp as IdeSignatureHelp,
-    SignatureInformation as IdeSignatureInformation, SignatureParameter as IdeSignatureParameter,
-    SourceChange, TextEdit,
+    CompletionInsertFormat, CompletionItem, CompletionItemKind, CompletionItemSource,
+    CompletionRelevance, FileRename, FileTextEdit, HoverResult, HoverSignatureSource,
+    SignatureHelp as IdeSignatureHelp, SignatureInformation as IdeSignatureInformation,
+    SignatureParameter as IdeSignatureParameter, SourceChange, TextEdit,
 };
 use rhai_syntax::{TextRange, TextSize};
 
@@ -175,6 +175,7 @@ fn completion_conversion_surfaces_source_descriptions() {
             filter_text: None,
             text_edit: None,
             insert_format: CompletionInsertFormat::PlainText,
+            relevance: CompletionRelevance::default(),
             file_id: None,
             exported: true,
             resolve_data: None,
@@ -223,6 +224,7 @@ fn completion_conversion_includes_project_module_name() {
             filter_text: None,
             text_edit: None,
             insert_format: CompletionInsertFormat::PlainText,
+            relevance: CompletionRelevance::default(),
             file_id: Some(file_id),
             exported: true,
             resolve_data: None,
@@ -256,6 +258,7 @@ fn completion_conversion_includes_module_origin_name() {
             filter_text: None,
             text_edit: None,
             insert_format: CompletionInsertFormat::PlainText,
+            relevance: CompletionRelevance::default(),
             file_id: None,
             exported: true,
             resolve_data: None,
@@ -293,6 +296,7 @@ fn completion_conversion_uses_label_filter_text_for_postfix_items() {
                 new_text: "switch student.name {\n    ${1:_} => {\n        $0\n    }\n}".to_owned(),
             }),
             insert_format: CompletionInsertFormat::Snippet,
+            relevance: CompletionRelevance::default(),
             file_id: None,
             exported: false,
             resolve_data: None,
@@ -330,6 +334,7 @@ fn completion_roundtrip_restores_signature_detail_from_label_details() {
             filter_text: None,
             text_edit: None,
             insert_format: CompletionInsertFormat::Snippet,
+            relevance: CompletionRelevance::default(),
             file_id: None,
             exported: false,
             resolve_data: Some(rhai_ide::CompletionResolveData {
@@ -360,6 +365,7 @@ fn completion_roundtrip_restores_signature_detail_from_payload_without_ui_fields
             filter_text: None,
             text_edit: None,
             insert_format: CompletionInsertFormat::Snippet,
+            relevance: CompletionRelevance::default(),
             file_id: None,
             exported: false,
             resolve_data: Some(rhai_ide::CompletionResolveData {

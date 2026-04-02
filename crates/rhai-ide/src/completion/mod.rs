@@ -19,6 +19,9 @@ use crate::completion::workspace::{
     inferred_completion_type, workspace_completion_metadata,
 };
 use crate::support::convert::format_type_ref;
+use crate::types::{
+    CompletionRelevance, CompletionRelevanceCallableMatch, CompletionRelevanceTypeMatch,
+};
 use crate::{
     CompletionInsertFormat, CompletionItem, CompletionItemKind, CompletionItemSource,
     CompletionResolveData, FilePosition,
@@ -135,6 +138,14 @@ fn completion_items(
                     label: item.name,
                     kind: CompletionItemKind::Symbol(item.kind),
                     source: CompletionItemSource::Module,
+                    relevance: CompletionRelevance {
+                        callable_match: completion_callable_match(
+                            &context,
+                            item.annotation.as_ref(),
+                            CompletionItemKind::Symbol(item.kind),
+                        ),
+                        ..CompletionRelevance::default()
+                    },
                     origin: item.origin,
                     sort_text: String::new(),
                     detail: item.annotation.as_ref().map(format_type_ref),
@@ -163,6 +174,10 @@ fn completion_items(
         return Vec::new();
     };
     let member_only_context = context.member_access;
+    let expected_type = snapshot.expected_type_at(
+        position.file_id,
+        TextSize::from(context.query_offset as u32),
+    );
 
     let mut items = Vec::new();
     let hir = snapshot.hir(position.file_id);
@@ -200,6 +215,16 @@ fn completion_items(
                 label: symbol.name.clone(),
                 kind: CompletionItemKind::Symbol(symbol.kind),
                 source: CompletionItemSource::Visible,
+                relevance: CompletionRelevance {
+                    is_local: matches!(symbol.kind, SymbolKind::Variable | SymbolKind::Parameter),
+                    callable_match: completion_callable_match(
+                        &context,
+                        annotation,
+                        CompletionItemKind::Symbol(symbol.kind),
+                    ),
+                    type_match: completion_type_match(expected_type.as_ref(), annotation),
+                    ..CompletionRelevance::default()
+                },
                 origin: None,
                 sort_text: String::new(),
                 detail: annotation
@@ -244,6 +269,15 @@ fn completion_items(
                 label: symbol.symbol.name.clone(),
                 kind: CompletionItemKind::Symbol(symbol.symbol.kind),
                 source: CompletionItemSource::Project,
+                relevance: CompletionRelevance {
+                    callable_match: completion_callable_match(
+                        &context,
+                        annotation.as_ref(),
+                        CompletionItemKind::Symbol(symbol.symbol.kind),
+                    ),
+                    type_match: completion_type_match(expected_type.as_ref(), annotation.as_ref()),
+                    ..CompletionRelevance::default()
+                },
                 origin,
                 sort_text: String::new(),
                 detail,
@@ -265,18 +299,15 @@ fn completion_items(
             .map(|item| item.label.clone())
             .collect::<std::collections::HashSet<_>>();
         items.extend(
-            builtin_global_completion_items(snapshot, &context)
+            builtin_global_completion_items(snapshot, &context, expected_type.as_ref())
                 .into_iter()
                 .filter(|item| !existing_labels.contains(item.label.as_str())),
         );
     }
 
-    items.extend(
-        inputs
-            .member_symbols
-            .iter()
-            .flat_map(|member| member_completion_items(member, &context, position)),
-    );
+    items.extend(inputs.member_symbols.iter().flat_map(|member| {
+        member_completion_items(member, &context, position, expected_type.as_ref())
+    }));
 
     rank_completion_items(&mut items, &context);
     items
@@ -286,6 +317,7 @@ fn member_completion_items(
     member: &rhai_hir::MemberCompletion,
     context: &CompletionContext,
     position: FilePosition,
+    expected_type: Option<&TypeRef>,
 ) -> Vec<CompletionItem> {
     if member.callable_overloads.len() > 1 {
         let mut overloads = member.callable_overloads.clone();
@@ -300,7 +332,7 @@ fn member_completion_items(
             .into_iter()
             .map(|signature| {
                 let annotation = TypeRef::Function(signature);
-                member_completion_item(member, Some(&annotation), context, position)
+                member_completion_item(member, Some(&annotation), context, position, expected_type)
             })
             .collect();
     }
@@ -310,6 +342,7 @@ fn member_completion_items(
         member.annotation.as_ref(),
         context,
         position,
+        expected_type,
     )]
 }
 
@@ -318,6 +351,7 @@ fn member_completion_item(
     annotation: Option<&TypeRef>,
     context: &CompletionContext,
     position: FilePosition,
+    expected_type: Option<&TypeRef>,
 ) -> CompletionItem {
     let text_edit = callable_completion_text_edit(
         context,
@@ -336,6 +370,15 @@ fn member_completion_item(
         label: member.name.clone(),
         kind: CompletionItemKind::Member,
         source: CompletionItemSource::Member,
+        relevance: CompletionRelevance {
+            callable_match: completion_callable_match(
+                context,
+                annotation,
+                CompletionItemKind::Member,
+            ),
+            type_match: completion_type_match(expected_type, annotation),
+            ..CompletionRelevance::default()
+        },
         origin: None,
         sort_text: String::new(),
         detail: annotation.map(format_type_ref),
@@ -355,6 +398,7 @@ fn member_completion_item(
 fn builtin_global_completion_items(
     snapshot: &DatabaseSnapshot,
     context: &CompletionContext,
+    expected_type: Option<&TypeRef>,
 ) -> Vec<CompletionItem> {
     snapshot
         .global_functions()
@@ -379,6 +423,15 @@ fn builtin_global_completion_items(
                 label: function.name.clone(),
                 kind: CompletionItemKind::Symbol(SymbolKind::Function),
                 source: CompletionItemSource::Builtin,
+                relevance: CompletionRelevance {
+                    callable_match: completion_callable_match(
+                        context,
+                        annotation.as_ref(),
+                        CompletionItemKind::Symbol(SymbolKind::Function),
+                    ),
+                    type_match: completion_type_match(expected_type, annotation.as_ref()),
+                    ..CompletionRelevance::default()
+                },
                 origin: None,
                 sort_text: String::new(),
                 detail: builtin_function_detail(function, annotation.as_ref()),
@@ -404,6 +457,109 @@ fn same_completion_item(left: &CompletionItem, right: &CompletionItem) -> bool {
         && left.exported == right.exported
 }
 
+fn completion_type_match(
+    expected: Option<&TypeRef>,
+    candidate: Option<&TypeRef>,
+) -> Option<CompletionRelevanceTypeMatch> {
+    let (Some(expected), Some(candidate)) = (expected, candidate) else {
+        return None;
+    };
+
+    if types_match_exact(expected, candidate) {
+        return Some(CompletionRelevanceTypeMatch::Exact);
+    }
+
+    types_could_unify(expected, candidate).then_some(CompletionRelevanceTypeMatch::CouldUnify)
+}
+
+fn completion_callable_match(
+    context: &CompletionContext,
+    annotation: Option<&TypeRef>,
+    kind: CompletionItemKind,
+) -> Option<CompletionRelevanceCallableMatch> {
+    if !context.next_char_is_open_paren {
+        return None;
+    }
+
+    match (annotation, kind) {
+        (Some(TypeRef::Function(_)), _) => Some(CompletionRelevanceCallableMatch::Invocable),
+        (_, CompletionItemKind::Symbol(SymbolKind::Function)) => {
+            Some(CompletionRelevanceCallableMatch::Invocable)
+        }
+        _ => None,
+    }
+}
+
+fn types_match_exact(expected: &TypeRef, candidate: &TypeRef) -> bool {
+    expected == candidate
+}
+
+fn types_could_unify(expected: &TypeRef, candidate: &TypeRef) -> bool {
+    if expected == candidate {
+        return true;
+    }
+
+    match (expected, candidate) {
+        (TypeRef::Nullable(expected), other) | (other, TypeRef::Nullable(expected)) => {
+            types_could_unify(expected, other)
+        }
+        (TypeRef::Union(items), other) | (TypeRef::Ambiguous(items), other) => {
+            items.iter().any(|item| types_could_unify(item, other))
+        }
+        (other, TypeRef::Union(items)) | (other, TypeRef::Ambiguous(items)) => {
+            items.iter().any(|item| types_could_unify(other, item))
+        }
+        (TypeRef::FnPtr, TypeRef::Function(_)) | (TypeRef::Function(_), TypeRef::FnPtr) => true,
+        (TypeRef::Array(expected), TypeRef::Array(candidate)) => {
+            types_could_unify(expected, candidate)
+        }
+        (
+            TypeRef::Map(expected_key, expected_value),
+            TypeRef::Map(candidate_key, candidate_value),
+        ) => {
+            types_could_unify(expected_key, candidate_key)
+                && types_could_unify(expected_value, candidate_value)
+        }
+        (TypeRef::Object(expected_fields), TypeRef::Object(candidate_fields)) => {
+            expected_fields.iter().all(|(name, expected)| {
+                candidate_fields
+                    .get(name)
+                    .is_some_and(|candidate| types_could_unify(expected, candidate))
+            })
+        }
+        (
+            TypeRef::Applied {
+                name: expected_name,
+                args: expected_args,
+            },
+            TypeRef::Applied {
+                name: candidate_name,
+                args: candidate_args,
+            },
+        ) => {
+            expected_name == candidate_name
+                && expected_args.len() == candidate_args.len()
+                && expected_args
+                    .iter()
+                    .zip(candidate_args.iter())
+                    .all(|(expected, candidate)| types_could_unify(expected, candidate))
+        }
+        (TypeRef::Named(expected), TypeRef::Named(candidate)) => expected == candidate,
+        (TypeRef::Named(expected), TypeRef::Applied { name, .. })
+        | (TypeRef::Applied { name, .. }, TypeRef::Named(expected)) => expected == name,
+        (TypeRef::Function(expected), TypeRef::Function(candidate)) => {
+            expected.params.len() == candidate.params.len()
+                && expected
+                    .params
+                    .iter()
+                    .zip(candidate.params.iter())
+                    .all(|(expected, candidate)| types_could_unify(expected, candidate))
+                && types_could_unify(expected.ret.as_ref(), candidate.ret.as_ref())
+        }
+        _ => false,
+    }
+}
+
 pub(super) fn text_range(start: usize, end: usize) -> TextRange {
     TextRange::new(TextSize::from(start as u32), TextSize::from(end as u32))
 }
@@ -412,6 +568,7 @@ pub(super) fn text_range(start: usize, end: usize) -> TextRange {
 mod tests {
     use crate::CompletionInsertFormat;
     use crate::completion::ranking::{rank_completion_items, source_rank};
+    use crate::types::{CompletionRelevance, CompletionRelevancePostfixMatch};
     use crate::{CompletionItem, CompletionItemKind, CompletionItemSource};
     use rhai_hir::SymbolKind;
     use rhai_syntax::{TextRange, TextSize};
@@ -437,6 +594,7 @@ mod tests {
             label: "shared_helper".to_owned(),
             kind: CompletionItemKind::Symbol(SymbolKind::Function),
             source,
+            relevance: CompletionRelevance::default(),
             origin: None,
             sort_text: String::new(),
             detail: None,
@@ -480,6 +638,10 @@ mod tests {
                 label: "switch".to_owned(),
                 kind: CompletionItemKind::Snippet,
                 source: CompletionItemSource::Postfix,
+                relevance: CompletionRelevance {
+                    postfix_match: Some(CompletionRelevancePostfixMatch::Exact),
+                    ..CompletionRelevance::default()
+                },
                 origin: None,
                 sort_text: String::new(),
                 detail: None,
@@ -495,6 +657,7 @@ mod tests {
                 label: "substring".to_owned(),
                 kind: CompletionItemKind::Member,
                 source: CompletionItemSource::Member,
+                relevance: CompletionRelevance::default(),
                 origin: None,
                 sort_text: String::new(),
                 detail: None,
@@ -525,6 +688,10 @@ mod tests {
                 label: "switch".to_owned(),
                 kind: CompletionItemKind::Snippet,
                 source: CompletionItemSource::Postfix,
+                relevance: CompletionRelevance {
+                    postfix_match: Some(CompletionRelevancePostfixMatch::NonExact),
+                    ..CompletionRelevance::default()
+                },
                 origin: None,
                 sort_text: String::new(),
                 detail: None,
@@ -540,6 +707,7 @@ mod tests {
                 label: "split".to_owned(),
                 kind: CompletionItemKind::Member,
                 source: CompletionItemSource::Member,
+                relevance: CompletionRelevance::default(),
                 origin: None,
                 sort_text: String::new(),
                 detail: None,

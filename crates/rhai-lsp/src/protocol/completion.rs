@@ -6,7 +6,7 @@ use rhai_hir::SymbolKind as HirSymbolKind;
 use rhai_ide::{
     CompletionInsertFormat as IdeCompletionInsertFormat, CompletionItem as IdeCompletionItem,
     CompletionItemKind as IdeCompletionItemKind, CompletionItemSource as IdeCompletionItemSource,
-    CompletionResolveData,
+    CompletionRelevance, CompletionResolveData,
 };
 use rhai_vfs::FileId;
 use serde::{Deserialize, Serialize};
@@ -172,6 +172,7 @@ pub(crate) fn completion_item_from_lsp(item: CompletionItem) -> Option<IdeComple
             Some(lsp_types::InsertTextFormat::SNIPPET) => IdeCompletionInsertFormat::Snippet,
             _ => IdeCompletionInsertFormat::PlainText,
         },
+        relevance: CompletionRelevance::default(),
         file_id: payload.file_id.map(FileId),
         exported: payload.exported,
         resolve_data: Some(CompletionResolveData {

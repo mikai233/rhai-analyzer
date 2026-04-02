@@ -180,6 +180,37 @@ impl AnalyzerDatabase {
 }
 
 impl DatabaseSnapshot {
+    pub(crate) fn imported_method_signatures(
+        &self,
+        file_id: FileId,
+    ) -> Vec<ImportedMethodSignature> {
+        self.linked_imports(file_id)
+            .iter()
+            .flat_map(|linked_import| linked_import.exports.iter())
+            .filter_map(|export| {
+                let identity = project_identity_for_export(export)?;
+                (identity.kind == rhai_hir::SymbolKind::Function)
+                    .then_some((export.file_id, identity))
+            })
+            .filter_map(|(provider_file_id, identity)| {
+                let provider_hir = self.hir(provider_file_id)?;
+                let this_type = provider_hir
+                    .function_info(identity.symbol)?
+                    .this_type
+                    .clone()?;
+                let signature = match provider_hir.symbol(identity.symbol).annotation.as_ref()? {
+                    TypeRef::Function(signature) => signature.clone(),
+                    _ => return None,
+                };
+                Some(ImportedMethodSignature {
+                    name: identity.name.clone(),
+                    receiver: this_type,
+                    signature,
+                })
+            })
+            .collect()
+    }
+
     pub fn imported_module_completions(
         &self,
         file_id: FileId,
