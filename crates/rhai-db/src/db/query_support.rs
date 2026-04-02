@@ -360,7 +360,13 @@ pub(crate) fn object_field_member_completions(
 
 fn object_field_annotation_from_expr(hir: &FileHir, expr: ExprId) -> Option<TypeRef> {
     match hir.expr(expr).kind {
-        ExprKind::Literal => None,
+        ExprKind::Literal => hir.literal(expr).map(|literal| match literal.kind {
+            rhai_hir::LiteralKind::Int => TypeRef::Int,
+            rhai_hir::LiteralKind::Float => TypeRef::Float,
+            rhai_hir::LiteralKind::String => TypeRef::String,
+            rhai_hir::LiteralKind::Char => TypeRef::Char,
+            rhai_hir::LiteralKind::Bool => TypeRef::Bool,
+        }),
         ExprKind::Object => Some(TypeRef::Object(
             hir.object_fields
                 .iter()

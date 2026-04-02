@@ -4,7 +4,8 @@ use crate::hints::signature_help::{host_method_candidates_for_type, signature_he
 use rhai_db::{
     builtin_assignment_operator_topic, builtin_binary_operator_topic, builtin_indexer_topic,
     builtin_property_access_topic, builtin_unary_operator_topic, builtin_universal_method_docs,
-    builtin_universal_method_signature,
+    builtin_universal_method_signature, callable_field_signature,
+    receiver_supports_field_method_ambiguity,
 };
 use rhai_hir::{SymbolKind, TypeRef};
 
@@ -123,7 +124,8 @@ fn hover_for_builtin_property_access(
 
     let inference = snapshot.type_inference(position.file_id)?;
     let receiver_ty = hir.expr_type(access.receiver, &inference.expr_types)?;
-    let topic = builtin_property_access_topic(receiver_ty)?;
+    let field_name = hir.reference(access.field_reference).name.as_str();
+    let topic = builtin_property_access_topic(receiver_ty, field_name)?;
 
     Some(HoverResult {
         signature: topic.signature.clone(),
@@ -603,10 +605,37 @@ fn hover_for_callable(
     let method_docs = call
         .callee_range
         .and_then(|range| hir.expr_at(range))
-        .and_then(|expr| hir.member_access(expr))
-        .map(|access| hir.reference(access.field_reference).name.as_str())
+        .and_then(|expr| {
+            builtin_universal_method_docs_fallback(snapshot, position.file_id, hir.as_ref(), expr)
+        })
+        .as_deref()
         .and_then(builtin_universal_method_docs);
     hover_from_signature_help(help, method_docs)
+}
+
+fn builtin_universal_method_docs_fallback(
+    snapshot: &rhai_db::DatabaseSnapshot,
+    file_id: FileId,
+    hir: &rhai_hir::FileHir,
+    expr: rhai_hir::ExprId,
+) -> Option<String> {
+    let access = hir.member_access(expr)?;
+    let method_name = hir.reference(access.field_reference).name.as_str();
+    let inference = snapshot.type_inference(file_id)?;
+    if receiver_supports_field_method_ambiguity(hir, inference, access.receiver)
+        && callable_field_signature(
+            hir,
+            inference,
+            access.receiver,
+            method_name,
+            None,
+            snapshot.host_types(),
+        )
+        .is_some()
+    {
+        return None;
+    }
+    Some(method_name.to_owned())
 }
 
 fn hover_for_member_method(

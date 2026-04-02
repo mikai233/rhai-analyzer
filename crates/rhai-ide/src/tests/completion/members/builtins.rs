@@ -82,6 +82,37 @@ fn completions_merge_object_fields_with_builtin_map_members() {
 }
 
 #[test]
+fn completions_prefer_map_tag_field_over_builtin_dynamic_tag_property() {
+    let (analysis, file_id, text) = load_analysis(
+        r#"
+            fn run() {
+                let user = #{ tag: "field-value", name: "Ada" };
+                user.
+                helper();
+            }
+
+            fn helper() {}
+        "#,
+    );
+
+    let offset =
+        u32::try_from(text.find("user.").expect("expected object member access") + "user.".len())
+            .expect("offset");
+
+    let completions = completions_at(&analysis, file_id, offset);
+    let tag = member_completion(&completions, "tag");
+    let detail = tag.detail.as_deref().expect("expected tag detail");
+    assert!(
+        detail.contains("string"),
+        "expected map tag completion to keep the field type, got {detail}"
+    );
+    assert!(
+        !detail.contains("string | int"),
+        "expected map tag completion not to advertise builtin tag property, got {detail}"
+    );
+}
+
+#[test]
 fn completions_include_builtin_primitive_members() {
     let (analysis, file_id, text) = load_analysis(
         r#"
@@ -109,6 +140,11 @@ fn completions_include_builtin_primitive_members() {
     let int_completions = completions_at(&analysis, file_id, int_offset);
     member_completion(&int_completions, "is_odd");
     member_completion(&int_completions, "to_float");
+    let tag_completion = member_completion(&int_completions, "tag");
+    assert_eq!(tag_completion.detail.as_deref(), Some("int"));
+    let docs = tag_completion.docs.as_deref().expect("expected tag docs");
+    assert!(docs.contains("## Usage"));
+    assert!(docs.contains("set_tag"));
 
     let float_offset =
         u32::try_from(text.find("ratio.").expect("expected float member access") + "ratio.".len())

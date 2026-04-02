@@ -11,8 +11,9 @@ use crate::infer::calls::signatures::{
     signature_from_type,
 };
 use crate::infer::objects::{
-    host_method_signature_for_expr, largest_inner_expr, receiver_dispatch_is_precise,
-    receiver_matches_method_type, string_literal_value,
+    host_method_signature_for_expr, infer_member_type_from_expr, largest_inner_expr,
+    receiver_dispatch_is_precise, receiver_matches_method_type,
+    receiver_supports_field_method_ambiguity, string_literal_value,
 };
 use crate::{FileTypeInference, HostFunction, HostType, best_matching_signature_indexes};
 use rhai_hir::{
@@ -376,6 +377,11 @@ pub(crate) fn local_method_targets_for_expr(
         Some(access) => access,
         None => return Vec::new(),
     };
+    if let Some(field_targets) =
+        callable_field_targets_for_member_expr(hir, inference, expr, host_types, arg_types)
+    {
+        return field_targets;
+    }
     let receiver_ty = match inferred_expr_type(hir, inference, access.receiver) {
         Some(ty) => ty,
         None => return Vec::new(),
@@ -394,6 +400,27 @@ pub(crate) fn local_method_targets_for_expr(
         arg_types,
         visited_symbols,
     )
+}
+
+fn callable_field_targets_for_member_expr(
+    hir: &FileHir,
+    inference: &FileTypeInference,
+    expr: ExprId,
+    host_types: &[HostType],
+    arg_types: Option<&[Option<TypeRef>]>,
+) -> Option<Vec<CallableTarget>> {
+    let access = hir.member_access(expr)?;
+    if !receiver_supports_field_method_ambiguity(hir, inference, access.receiver) {
+        return None;
+    }
+
+    let method_name = hir.reference(access.field_reference).name.as_str();
+    let field_ty = infer_member_type_from_expr(hir, inference, access.receiver, method_name)?;
+    let signature = signature_from_type(&field_ty, arg_types, host_types)?;
+    Some(vec![CallableTarget {
+        signature,
+        local_symbol: None,
+    }])
 }
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn local_method_targets_for_name(

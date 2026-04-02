@@ -15,10 +15,11 @@ mod propagation;
 pub(crate) use crate::infer::calls::{
     callable_targets_for_call, join_callable_target_signatures, named_callable_targets_at_offset,
 };
+pub(crate) use crate::infer::helpers::join_types;
 pub(crate) use crate::infer::helpers::{ReadTargetKey, read_target_key_for_expr};
 pub(crate) use crate::infer::objects::{
-    field_value_exprs_from_expr, field_value_exprs_from_symbol, largest_inner_expr,
-    string_literal_value,
+    field_value_exprs_from_expr, field_value_exprs_from_symbol, infer_member_type_from_expr,
+    largest_inner_expr, receiver_supports_field_method_ambiguity, string_literal_value,
 };
 
 use crate::infer::exprs::infer_expr_types;

@@ -74,3 +74,20 @@ fn signature_help_returns_builtin_primitive_method_signatures() {
         "fn max(int | float) -> float"
     );
 }
+
+#[test]
+fn signature_help_prefers_map_tag_field_function_over_builtin_dynamic_tag_method() {
+    let (analysis, file_id, text) = load_analysis(
+        r#"
+            fn run() {
+                let user = #{ tag: || "field-fn", name: "Ada" };
+                user.tag();
+            }
+        "#,
+    );
+
+    let offset = u32::try_from(text.find(".tag(").expect("expected tag call") + ".tag(".len())
+        .expect("offset");
+    let help = signature_help_at(&analysis, file_id, offset);
+    assert_eq!(help.signatures[0].label, "fn tag() -> string");
+}

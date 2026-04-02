@@ -79,8 +79,9 @@ fn completions_merge_visible_project_and_member_results() {
         Some("shared helper docs")
     );
 
-    let member_offset = u32::try_from(main_text.find("user.").expect("expected member access"))
-        .expect("expected offset to fit");
+    let member_offset =
+        u32::try_from(main_text.find("user.").expect("expected member access") + "user.".len())
+            .expect("expected offset to fit");
     let member_completions = analysis.completions(FilePosition {
         file_id: main,
         offset: member_offset,
@@ -89,6 +90,19 @@ fn completions_merge_visible_project_and_member_results() {
         member_completions
             .iter()
             .any(|item| { item.label == "name" && item.source == CompletionItemSource::Member })
+    );
+    assert!(
+        !member_completions
+            .iter()
+            .any(|item| item.label == "helper" && item.source == CompletionItemSource::Visible),
+        "member completion should not mix visible symbols: {member_completions:?}"
+    );
+    assert!(
+        !member_completions
+            .iter()
+            .any(|item| item.label == "shared_helper"
+                && item.source == CompletionItemSource::Project),
+        "member completion should not mix project symbols: {member_completions:?}"
     );
 }
 #[test]
@@ -406,4 +420,48 @@ fn explicit_global_import_alias_overrides_automatic_global_module_completions() 
         !completions.iter().any(|item| item.label == "ANSWER"),
         "explicit `global` alias should suppress automatic global members: {completions:?}"
     );
+}
+
+#[test]
+fn member_completions_preserve_inferred_callable_field_signatures() {
+    let mut host = AnalysisHost::default();
+    host.apply_change(ChangeSet {
+        files: vec![rhai_db::FileChange {
+            path: "main.rhai".into(),
+            text: r#"
+                export const DEFAULTS = #{
+                    tag: || "hello world",
+                };
+
+                DEFAULTS.ta
+            "#
+            .to_owned(),
+            version: DocumentVersion(1),
+        }],
+        removed_files: Vec::new(),
+        project: None,
+    });
+
+    let analysis = host.snapshot();
+    let file_id = analysis
+        .db
+        .vfs()
+        .file_id(Path::new("main.rhai"))
+        .expect("expected main.rhai");
+    assert_no_syntax_diagnostics(&analysis, file_id);
+    let text = analysis.db.file_text(file_id).expect("expected text");
+    let offset = u32::try_from(
+        text.find("DEFAULTS.ta")
+            .expect("expected member completion prefix")
+            + "DEFAULTS.ta".len(),
+    )
+    .expect("offset");
+
+    let completions = analysis.completions(FilePosition { file_id, offset });
+    let tag = completions
+        .iter()
+        .find(|item| item.label == "tag" && item.source == CompletionItemSource::Member)
+        .expect("expected member tag completion");
+
+    assert_eq!(tag.detail.as_deref(), Some("fun() -> string"));
 }

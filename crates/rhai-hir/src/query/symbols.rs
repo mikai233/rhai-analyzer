@@ -217,7 +217,13 @@ impl FileHir {
 
     pub(crate) fn object_field_annotation_from_expr(&self, expr: ExprId) -> Option<TypeRef> {
         match self.expr(expr).kind {
-            crate::ExprKind::Literal => None,
+            crate::ExprKind::Literal => self.literal(expr).map(|literal| match literal.kind {
+                crate::LiteralKind::Int => TypeRef::Int,
+                crate::LiteralKind::Float => TypeRef::Float,
+                crate::LiteralKind::String => TypeRef::String,
+                crate::LiteralKind::Char => TypeRef::Char,
+                crate::LiteralKind::Bool => TypeRef::Bool,
+            }),
             crate::ExprKind::Object => Some(TypeRef::Object(
                 self.object_fields
                     .iter()

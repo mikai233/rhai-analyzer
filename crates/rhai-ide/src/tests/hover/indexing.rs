@@ -169,3 +169,81 @@ fn hover_supports_map_index_topics_with_property_cross_reference() {
         "expected index hover notes to mention property form"
     );
 }
+
+#[test]
+fn hover_supports_dynamic_tag_property_topics() {
+    let mut host = AnalysisHost::default();
+    host.apply_change(ChangeSet::single_file(
+        "main.rhai",
+        r#"
+            fn run() {
+                let value = "hello";
+                let current = value.tag;
+            }
+        "#,
+        DocumentVersion(1),
+    ));
+
+    let analysis = host.snapshot();
+    let file_id = analysis
+        .db
+        .vfs()
+        .file_id(Path::new("main.rhai"))
+        .expect("expected main.rhai");
+    assert_no_syntax_diagnostics(&analysis, file_id);
+    let text = analysis.db.file_text(file_id).expect("expected text");
+    let offset =
+        u32::try_from(text.find('.').expect("expected property operator")).expect("offset");
+
+    let hover = analysis
+        .hover(FilePosition { file_id, offset })
+        .expect("expected dynamic tag hover");
+
+    assert_eq!(hover.signature, "value.tag -> int");
+    assert_eq!(hover.source, HoverSignatureSource::Structural);
+    let docs = hover.docs.as_deref().expect("expected builtin docs");
+    assert_structured_builtin_docs(docs, "tag");
+    assert!(
+        docs.contains("set_tag"),
+        "expected tag docs to mention set_tag helper"
+    );
+}
+
+#[test]
+fn hover_treats_map_tag_as_regular_property_access() {
+    let mut host = AnalysisHost::default();
+    host.apply_change(ChangeSet::single_file(
+        "main.rhai",
+        r#"
+            fn run() {
+                let user = #{ tag: "field-value", name: "Ada" };
+                let current = user.tag;
+            }
+        "#,
+        DocumentVersion(1),
+    ));
+
+    let analysis = host.snapshot();
+    let file_id = analysis
+        .db
+        .vfs()
+        .file_id(Path::new("main.rhai"))
+        .expect("expected main.rhai");
+    assert_no_syntax_diagnostics(&analysis, file_id);
+    let text = analysis.db.file_text(file_id).expect("expected text");
+    let offset =
+        u32::try_from(text.find('.').expect("expected property operator")).expect("offset");
+
+    let hover = analysis
+        .hover(FilePosition { file_id, offset })
+        .expect("expected map property hover");
+
+    assert_eq!(hover.signature, "map.field -> any | ()");
+    assert_eq!(hover.source, HoverSignatureSource::Structural);
+    let docs = hover.docs.as_deref().expect("expected builtin docs");
+    assert_structured_builtin_docs(docs, "property");
+    assert!(
+        docs.contains("[\"name\"]"),
+        "expected map property docs to mention bracket syntax"
+    );
+}

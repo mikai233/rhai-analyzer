@@ -9,6 +9,7 @@ pub enum BuiltinSemanticKey {
     StringIndex,
     StringRangeIndex,
     MapIndex,
+    DynamicTagPropertyAccess,
     MapPropertyAccess,
     IntBitIndex,
     IntBitRangeIndex,
@@ -168,7 +169,18 @@ pub fn builtin_index_semantic_key(
     }
 }
 
-pub fn builtin_property_access_semantic_key(receiver_ty: &TypeRef) -> Option<BuiltinSemanticKey> {
+pub fn builtin_property_access_semantic_key(
+    receiver_ty: &TypeRef,
+    field_name: &str,
+) -> Option<BuiltinSemanticKey> {
+    if field_name == "tag" {
+        return if !type_may_be_map_like(receiver_ty) {
+            Some(BuiltinSemanticKey::DynamicTagPropertyAccess)
+        } else {
+            Some(BuiltinSemanticKey::MapPropertyAccess)
+        };
+    }
+
     match receiver_ty {
         TypeRef::Map(_, _) | TypeRef::Object(_) => Some(BuiltinSemanticKey::MapPropertyAccess),
         _ => None,

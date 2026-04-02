@@ -14,6 +14,7 @@ pub enum BuiltinTopicKey {
     StringIndex,
     StringRangeIndex,
     MapIndex,
+    DynamicTagPropertyAccess,
     MapPropertyAccess,
     IntBitIndex,
     IntBitRangeIndex,
@@ -55,8 +56,11 @@ pub fn builtin_indexer_topic(
     builtin_index_semantic_key(receiver_ty, index_ty).map(index_topic_for_key)
 }
 
-pub fn builtin_property_access_topic(receiver_ty: &TypeRef) -> Option<BuiltinTopicDoc> {
-    builtin_property_access_semantic_key(receiver_ty).map(property_topic_for_key)
+pub fn builtin_property_access_topic(
+    receiver_ty: &TypeRef,
+    field_name: &str,
+) -> Option<BuiltinTopicDoc> {
+    builtin_property_access_semantic_key(receiver_ty, field_name).map(property_topic_for_key)
 }
 
 pub fn builtin_binary_operator_topic(
@@ -138,6 +142,7 @@ fn index_topic_for_key(key: BuiltinSemanticKey) -> BuiltinTopicDoc {
 
 fn property_topic_for_key(key: BuiltinSemanticKey) -> BuiltinTopicDoc {
     match key {
+        BuiltinSemanticKey::DynamicTagPropertyAccess => dynamic_tag_property_access_topic(),
         BuiltinSemanticKey::MapPropertyAccess => map_property_access_topic(),
         _ => unreachable!("unexpected property semantic key: {key:?}"),
     }
@@ -318,6 +323,36 @@ fn map_property_access_topic() -> BuiltinTopicDoc {
         notes: vec![
             "Builtin object map property access syntax.".to_owned(),
             "Equivalent indexing syntax: map[\"field\"] for dynamic or quoted property access."
+                .to_owned(),
+        ],
+    }
+}
+
+fn dynamic_tag_property_access_topic() -> BuiltinTopicDoc {
+    BuiltinTopicDoc {
+        key: BuiltinTopicKey::DynamicTagPropertyAccess,
+        signature: "value.tag -> int".to_owned(),
+        docs: builtin_topic_docs(
+            "Read or write the dynamic tag stored on any Rhai value. The tag defaults to `0`, can also be accessed through `tag(value)` and `set_tag(value, int)`, and can be used as a bit-field through indexing syntax.",
+            &[
+                "let current = value.tag;",
+                "value.tag = 123;",
+                "value.tag[3..5] = 2;",
+            ],
+            &[
+                "let value = 42;",
+                "let initial = value.tag;",
+                "// initial == 0",
+                "value.tag = 123;",
+                "// value.tag == 123",
+                "value.tag[3..5] = 2;",
+                "// bits 3..=5 of the tag now store 2",
+            ],
+            "https://rhai.rs/book/language/dynamic-tag.html",
+        ),
+        notes: vec![
+            "Builtin dynamic tag property available on Rhai values.".to_owned(),
+            "Function-style access is also available through tag(value) and set_tag(value, int)."
                 .to_owned(),
         ],
     }

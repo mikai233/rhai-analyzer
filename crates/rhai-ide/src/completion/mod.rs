@@ -162,111 +162,114 @@ fn completion_items(
     ) else {
         return Vec::new();
     };
+    let member_only_context = context.member_access;
 
     let mut items = Vec::new();
     let hir = snapshot.hir(position.file_id);
 
     items.extend(postfix_completion_items(&context));
 
-    items.extend(inputs.visible_symbols.iter().map(|symbol| {
-        let docs = match (detail_level, &hir, symbol.docs) {
-            (CompletionDetailLevel::Full, Some(hir), Some(docs)) => {
-                Some(hir.doc_block(docs).text.clone())
+    if !member_only_context {
+        items.extend(inputs.visible_symbols.iter().map(|symbol| {
+            let docs = match (detail_level, &hir, symbol.docs) {
+                (CompletionDetailLevel::Full, Some(hir), Some(docs)) => {
+                    Some(hir.doc_block(docs).text.clone())
+                }
+                _ => None,
+            };
+            let annotation = symbol
+                .annotation
+                .as_ref()
+                .or_else(|| inferred_completion_type(snapshot, position.file_id, symbol.symbol));
+            let parameter_names =
+                callable_parameter_names(snapshot, position.file_id, symbol.symbol, annotation);
+            let text_edit = callable_completion_text_edit(
+                &context,
+                symbol.name.as_str(),
+                annotation,
+                CompletionItemKind::Symbol(symbol.kind),
+                parameter_names.as_deref(),
+            );
+            let insert_format = if text_edit.is_some() {
+                CompletionInsertFormat::Snippet
+            } else {
+                CompletionInsertFormat::PlainText
+            };
+
+            CompletionItem {
+                label: symbol.name.clone(),
+                kind: CompletionItemKind::Symbol(symbol.kind),
+                source: CompletionItemSource::Visible,
+                origin: None,
+                sort_text: String::new(),
+                detail: annotation
+                    .filter(|ty| !matches!(ty, TypeRef::Unknown))
+                    .map(format_type_ref),
+                docs,
+                filter_text: None,
+                text_edit,
+                insert_format,
+                file_id: Some(position.file_id),
+                exported: false,
+                resolve_data: Some(CompletionResolveData {
+                    file_id: position.file_id,
+                    offset: position.offset,
+                }),
             }
-            _ => None,
-        };
-        let annotation = symbol
-            .annotation
-            .as_ref()
-            .or_else(|| inferred_completion_type(snapshot, position.file_id, symbol.symbol));
-        let parameter_names =
-            callable_parameter_names(snapshot, position.file_id, symbol.symbol, annotation);
-        let text_edit = callable_completion_text_edit(
-            &context,
-            symbol.name.as_str(),
-            annotation,
-            CompletionItemKind::Symbol(symbol.kind),
-            parameter_names.as_deref(),
+        }));
+
+        items.extend(inputs.project_symbols.iter().map(|symbol| {
+            let (detail, docs, annotation, origin) =
+                workspace_completion_metadata(snapshot, symbol, detail_level);
+            let parameter_names = callable_parameter_names(
+                snapshot,
+                symbol.file_id,
+                symbol.symbol.symbol,
+                annotation.as_ref(),
+            );
+            let text_edit = callable_completion_text_edit(
+                &context,
+                symbol.symbol.name.as_str(),
+                annotation.as_ref(),
+                CompletionItemKind::Symbol(symbol.symbol.kind),
+                parameter_names.as_deref(),
+            );
+            let insert_format = if text_edit.is_some() {
+                CompletionInsertFormat::Snippet
+            } else {
+                CompletionInsertFormat::PlainText
+            };
+
+            CompletionItem {
+                label: symbol.symbol.name.clone(),
+                kind: CompletionItemKind::Symbol(symbol.symbol.kind),
+                source: CompletionItemSource::Project,
+                origin,
+                sort_text: String::new(),
+                detail,
+                docs,
+                filter_text: None,
+                text_edit,
+                insert_format,
+                file_id: Some(symbol.file_id),
+                exported: symbol.symbol.exported,
+                resolve_data: Some(CompletionResolveData {
+                    file_id: position.file_id,
+                    offset: position.offset,
+                }),
+            }
+        }));
+
+        let existing_labels = items
+            .iter()
+            .map(|item| item.label.clone())
+            .collect::<std::collections::HashSet<_>>();
+        items.extend(
+            builtin_global_completion_items(snapshot, &context)
+                .into_iter()
+                .filter(|item| !existing_labels.contains(item.label.as_str())),
         );
-        let insert_format = if text_edit.is_some() {
-            CompletionInsertFormat::Snippet
-        } else {
-            CompletionInsertFormat::PlainText
-        };
-
-        CompletionItem {
-            label: symbol.name.clone(),
-            kind: CompletionItemKind::Symbol(symbol.kind),
-            source: CompletionItemSource::Visible,
-            origin: None,
-            sort_text: String::new(),
-            detail: annotation
-                .filter(|ty| !matches!(ty, TypeRef::Unknown))
-                .map(format_type_ref),
-            docs,
-            filter_text: None,
-            text_edit,
-            insert_format,
-            file_id: Some(position.file_id),
-            exported: false,
-            resolve_data: Some(CompletionResolveData {
-                file_id: position.file_id,
-                offset: position.offset,
-            }),
-        }
-    }));
-
-    items.extend(inputs.project_symbols.iter().map(|symbol| {
-        let (detail, docs, annotation, origin) =
-            workspace_completion_metadata(snapshot, symbol, detail_level);
-        let parameter_names = callable_parameter_names(
-            snapshot,
-            symbol.file_id,
-            symbol.symbol.symbol,
-            annotation.as_ref(),
-        );
-        let text_edit = callable_completion_text_edit(
-            &context,
-            symbol.symbol.name.as_str(),
-            annotation.as_ref(),
-            CompletionItemKind::Symbol(symbol.symbol.kind),
-            parameter_names.as_deref(),
-        );
-        let insert_format = if text_edit.is_some() {
-            CompletionInsertFormat::Snippet
-        } else {
-            CompletionInsertFormat::PlainText
-        };
-
-        CompletionItem {
-            label: symbol.symbol.name.clone(),
-            kind: CompletionItemKind::Symbol(symbol.symbol.kind),
-            source: CompletionItemSource::Project,
-            origin,
-            sort_text: String::new(),
-            detail,
-            docs,
-            filter_text: None,
-            text_edit,
-            insert_format,
-            file_id: Some(symbol.file_id),
-            exported: symbol.symbol.exported,
-            resolve_data: Some(CompletionResolveData {
-                file_id: position.file_id,
-                offset: position.offset,
-            }),
-        }
-    }));
-
-    let existing_labels = items
-        .iter()
-        .map(|item| item.label.clone())
-        .collect::<std::collections::HashSet<_>>();
-    items.extend(
-        builtin_global_completion_items(snapshot, &context)
-            .into_iter()
-            .filter(|item| !existing_labels.contains(item.label.as_str())),
-    );
+    }
 
     items.extend(inputs.member_symbols.iter().map(|member| {
         let text_edit = callable_completion_text_edit(

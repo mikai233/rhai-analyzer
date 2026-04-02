@@ -952,8 +952,17 @@ pub(crate) fn infer_field_expr_type(
 ) -> Option<TypeRef> {
     let access = hir.member_access(expr)?;
     let field_name = hir.reference(access.field_reference).name.as_str();
-    let read_ty = infer_symbol_read_type(hir, inference, expr)
-        .or_else(|| infer_member_type_from_expr(hir, inference, access.receiver, field_name));
+    let tag_property_is_builtin = field_name == "tag"
+        && !receiver_supports_field_method_ambiguity(hir, inference, access.receiver);
+    let read_ty = if tag_property_is_builtin {
+        let builtin_property_ty = Some(TypeRef::Int);
+        let base_read_ty = infer_symbol_read_type(hir, inference, expr)
+            .or_else(|| infer_member_type_from_expr(hir, inference, access.receiver, field_name));
+        join_option_types(base_read_ty.as_ref(), builtin_property_ty.as_ref())
+    } else {
+        infer_symbol_read_type(hir, inference, expr)
+            .or_else(|| infer_member_type_from_expr(hir, inference, access.receiver, field_name))
+    };
     let method_ty = host_method_signature_for_expr(hir, inference, expr, host_types, None)
         .map(TypeRef::Function)
         .or_else(|| {

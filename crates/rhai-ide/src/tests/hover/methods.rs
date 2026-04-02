@@ -278,6 +278,38 @@ fn hover_supports_builtin_dynamic_tag_docs() {
 }
 
 #[test]
+fn hover_prefers_map_tag_field_function_over_builtin_dynamic_tag_method() {
+    let mut host = AnalysisHost::default();
+    host.apply_change(ChangeSet::single_file(
+        "main.rhai",
+        r#"
+            fn run() {
+                let user = #{ tag: || "field-fn", name: "Ada" };
+                user.tag();
+            }
+        "#,
+        DocumentVersion(1),
+    ));
+
+    let analysis = host.snapshot();
+    let file_id = analysis
+        .db
+        .vfs()
+        .file_id(Path::new("main.rhai"))
+        .expect("expected main.rhai");
+    assert_no_syntax_diagnostics(&analysis, file_id);
+    let text = analysis.db.file_text(file_id).expect("expected text");
+    let offset =
+        u32::try_from(text.find(".tag").expect("expected tag method") + 2).expect("offset");
+
+    let hover = analysis
+        .hover(FilePosition { file_id, offset })
+        .expect("expected field function hover");
+
+    assert_eq!(hover.signature, "field tag: fun() -> string");
+}
+
+#[test]
 fn hover_supports_builtin_map_methods_with_examples() {
     let mut host = AnalysisHost::default();
     host.apply_change(ChangeSet::single_file(

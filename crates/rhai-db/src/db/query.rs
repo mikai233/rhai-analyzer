@@ -1,17 +1,20 @@
 use std::collections::{BTreeMap, HashSet};
 
+use crate::builtin::semantic_keys::{BuiltinSemanticKey, builtin_property_access_semantic_key};
 use crate::builtin::signatures::{
     builtin_universal_method_names, builtin_universal_method_signature, host_type_name_for_type,
 };
+use crate::builtin::topics::builtin_property_access_topic;
 use crate::db::DatabaseSnapshot;
 use crate::db::query_support::{object_field_member_completions, symbol_for_expr};
 use crate::db::rebuild::default_file_stats;
 use crate::infer::calls::merge_function_candidate_signatures;
+use crate::infer::field_value_exprs_from_expr;
 use crate::infer::generics::specialize_signature_with_receiver_and_arg_types;
 use crate::types::{
     AutoImportCandidate, CachedFileAnalysis, CompletionInputs, DatabaseDebugView, DebugFileAnalysis,
 };
-use rhai_hir::{CompletionSymbol, MemberCompletion, MemberCompletionSource, TypeRef};
+use rhai_hir::{CompletionSymbol, ExprId, MemberCompletion, MemberCompletionSource, TypeRef};
 use rhai_syntax::TextSize;
 use rhai_vfs::FileId;
 
@@ -163,8 +166,13 @@ fn cached_member_completion_at(
             }
         }
 
+        enrich_member_completions_with_inference(&mut members, analysis, access.receiver);
+
         for member in host_type_member_completions(snapshot, file_id, analysis, access.receiver) {
-            members.entry(member.name.clone()).or_insert(member);
+            if should_skip_ambiguous_host_member(&members, &member, analysis, access.receiver) {
+                continue;
+            }
+            merge_member_completion(&mut members, member);
         }
 
         return members.into_values().collect();
@@ -179,16 +187,11 @@ fn host_type_member_completions(
     analysis: &CachedFileAnalysis,
     receiver: rhai_hir::ExprId,
 ) -> Vec<MemberCompletion> {
-    let Some(receiver_ty) = analysis
-        .hir
-        .expr_type(receiver, &analysis.type_inference.expr_types)
-        .cloned()
-        .or_else(|| {
-            snapshot
-                .inferred_expr_type_at(file_id, analysis.hir.expr(receiver).range.start())
-                .cloned()
-        })
-    else {
+    let Some(receiver_ty) = receiver_type_for_member_completion(analysis, receiver).or_else(|| {
+        snapshot
+            .inferred_expr_type_at(file_id, analysis.hir.expr(receiver).range.start())
+            .cloned()
+    }) else {
         return Vec::new();
     };
 
@@ -221,6 +224,7 @@ fn fallback_member_completion_at(
         }
 
         if let Some(receiver_ty) = snapshot.inferred_symbol_type(file_id, symbol).cloned() {
+            enrich_member_completions_with_type(&mut members, &receiver_ty);
             let mut host_members = BTreeMap::<String, MemberCompletion>::new();
             collect_host_type_member_completions(
                 &mut host_members,
@@ -228,7 +232,10 @@ fn fallback_member_completion_at(
                 &receiver_ty,
             );
             for member in host_members.into_values() {
-                members.entry(member.name.clone()).or_insert(member);
+                if should_skip_ambiguous_host_member_for_type(&members, &member, &receiver_ty) {
+                    continue;
+                }
+                merge_member_completion(&mut members, member);
             }
         }
 
@@ -248,8 +255,13 @@ fn fallback_member_completion_at(
         members.entry(member.name.clone()).or_insert(member);
     }
 
+    enrich_member_completions_with_inference(&mut members, analysis, receiver_expr);
+
     for member in host_type_member_completions(snapshot, file_id, analysis, receiver_expr) {
-        members.entry(member.name.clone()).or_insert(member);
+        if should_skip_ambiguous_host_member(&members, &member, analysis, receiver_expr) {
+            continue;
+        }
+        merge_member_completion(&mut members, member);
     }
 
     members.into_values().collect()
@@ -349,6 +361,7 @@ fn collect_host_type_member_completions(
         }
         _ => {
             let Some(host_type_name) = host_type_name_for_type(ty) else {
+                add_builtin_property_members(members, ty);
                 add_universal_method_members(members);
                 return;
             };
@@ -363,6 +376,7 @@ fn collect_host_type_member_completions(
         }
     }
 
+    add_builtin_property_members(members, ty);
     add_universal_method_members(members);
 }
 
@@ -415,10 +429,223 @@ fn add_universal_method_members(members: &mut BTreeMap<String, MemberCompletion>
             .or_insert(MemberCompletion {
                 name: (*method_name).to_owned(),
                 annotation: builtin_universal_method_signature(method_name).map(TypeRef::Function),
-                docs: None,
+                docs: crate::builtin::signatures::builtin_universal_method_docs(method_name),
                 range: None,
                 source: MemberCompletionSource::HostTypeMember,
             });
+    }
+}
+
+fn add_builtin_property_members(members: &mut BTreeMap<String, MemberCompletion>, ty: &TypeRef) {
+    if builtin_property_access_semantic_key(ty, "tag")
+        != Some(BuiltinSemanticKey::DynamicTagPropertyAccess)
+    {
+        return;
+    }
+
+    let Some(topic) = builtin_property_access_topic(ty, "tag") else {
+        return;
+    };
+
+    match members.entry(String::from("tag")) {
+        std::collections::btree_map::Entry::Vacant(entry) => {
+            entry.insert(MemberCompletion {
+                name: String::from("tag"),
+                annotation: Some(TypeRef::Int),
+                docs: Some(topic.docs),
+                range: None,
+                source: MemberCompletionSource::HostTypeMember,
+            });
+        }
+        std::collections::btree_map::Entry::Occupied(mut entry) => {
+            let member = entry.get_mut();
+            member.annotation = merge_member_annotation(member.annotation.as_ref(), &TypeRef::Int);
+            member.docs = match member.docs.take() {
+                Some(existing)
+                    if existing.contains("dynamic value tag")
+                        || existing.contains("object map is ambiguous") =>
+                {
+                    Some(existing)
+                }
+                Some(existing) => Some(format!("{existing}\n\n---\n\n{}", topic.docs)),
+                None => Some(topic.docs),
+            };
+        }
+    }
+}
+
+fn merge_member_annotation(current: Option<&TypeRef>, added: &TypeRef) -> Option<TypeRef> {
+    match current {
+        Some(current) => Some(crate::infer::join_types(current, added)),
+        None => Some(added.clone()),
+    }
+}
+
+fn merge_member_completion(
+    members: &mut BTreeMap<String, MemberCompletion>,
+    incoming: MemberCompletion,
+) {
+    match members.entry(incoming.name.clone()) {
+        std::collections::btree_map::Entry::Vacant(entry) => {
+            entry.insert(incoming);
+        }
+        std::collections::btree_map::Entry::Occupied(mut entry) => {
+            let existing = entry.get_mut();
+            if let Some(annotation) = incoming.annotation.as_ref() {
+                existing.annotation =
+                    merge_member_annotation(existing.annotation.as_ref(), annotation);
+            }
+            if existing.docs.is_none() {
+                existing.docs = incoming.docs;
+            } else if let Some(incoming_docs) = incoming.docs
+                && !existing
+                    .docs
+                    .as_ref()
+                    .is_some_and(|docs| docs.contains(incoming_docs.as_str()))
+            {
+                let current_docs = existing.docs.take().expect("checked docs presence");
+                existing.docs = Some(format!("{current_docs}\n\n---\n\n{incoming_docs}"));
+            }
+        }
+    }
+}
+
+fn enrich_member_completions_with_inference(
+    members: &mut BTreeMap<String, MemberCompletion>,
+    analysis: &CachedFileAnalysis,
+    receiver: ExprId,
+) {
+    if let Some(receiver_ty) = receiver_type_for_member_completion(analysis, receiver) {
+        enrich_member_completions_with_type(members, &receiver_ty);
+    }
+
+    let member_names = members.keys().cloned().collect::<Vec<_>>();
+    for name in member_names {
+        let Some(annotation) = inferred_member_annotation(analysis, receiver, name.as_str()) else {
+            continue;
+        };
+
+        if let Some(member) = members.get_mut(name.as_str()) {
+            member.annotation = Some(annotation);
+        }
+    }
+}
+
+fn inferred_member_annotation(
+    analysis: &CachedFileAnalysis,
+    receiver: ExprId,
+    field_name: &str,
+) -> Option<TypeRef> {
+    if let Some(TypeRef::Object(fields)) = receiver_type_for_member_completion(analysis, receiver)
+        && let Some(annotation) = fields.get(field_name)
+    {
+        return Some(annotation.clone());
+    }
+
+    field_value_exprs_from_expr(&analysis.hir, receiver, field_name)
+        .into_iter()
+        .filter_map(|expr| {
+            analysis
+                .hir
+                .expr_type(expr, &analysis.type_inference.expr_types)
+                .cloned()
+        })
+        .reduce(|left, right| crate::infer::join_types(&left, &right))
+}
+
+fn should_skip_ambiguous_host_member(
+    members: &BTreeMap<String, MemberCompletion>,
+    incoming: &MemberCompletion,
+    analysis: &CachedFileAnalysis,
+    receiver: ExprId,
+) -> bool {
+    let Some(receiver_ty) = receiver_type_for_member_completion(analysis, receiver) else {
+        return false;
+    };
+
+    should_skip_ambiguous_host_member_for_type(members, incoming, &receiver_ty)
+}
+
+fn should_skip_ambiguous_host_member_for_type(
+    members: &BTreeMap<String, MemberCompletion>,
+    incoming: &MemberCompletion,
+    receiver_ty: &TypeRef,
+) -> bool {
+    if incoming.source != MemberCompletionSource::HostTypeMember
+        || !type_supports_field_method_ambiguity(receiver_ty)
+    {
+        return false;
+    }
+
+    let Some(existing) = members.get(incoming.name.as_str()) else {
+        return false;
+    };
+
+    matches!(
+        existing.source,
+        MemberCompletionSource::DocumentedField | MemberCompletionSource::ObjectLiteralField
+    ) && existing
+        .annotation
+        .as_ref()
+        .is_some_and(type_contains_callable)
+}
+
+fn enrich_member_completions_with_type(
+    members: &mut BTreeMap<String, MemberCompletion>,
+    receiver_ty: &TypeRef,
+) {
+    if let TypeRef::Object(fields) = receiver_ty {
+        for (name, annotation) in fields {
+            match members.entry(name.clone()) {
+                std::collections::btree_map::Entry::Vacant(entry) => {
+                    entry.insert(MemberCompletion {
+                        name: name.clone(),
+                        annotation: Some(annotation.clone()),
+                        docs: None,
+                        range: None,
+                        source: MemberCompletionSource::ObjectLiteralField,
+                    });
+                }
+                std::collections::btree_map::Entry::Occupied(mut entry) => {
+                    entry.get_mut().annotation = Some(annotation.clone());
+                }
+            }
+        }
+    }
+}
+
+fn receiver_type_for_member_completion(
+    analysis: &CachedFileAnalysis,
+    receiver: ExprId,
+) -> Option<TypeRef> {
+    analysis
+        .hir
+        .expr_type(receiver, &analysis.type_inference.expr_types)
+        .cloned()
+        .or_else(|| {
+            symbol_for_expr(&analysis.hir, receiver)
+                .and_then(|symbol| analysis.type_inference.symbol_types.get(&symbol).cloned())
+        })
+}
+
+fn type_supports_field_method_ambiguity(ty: &TypeRef) -> bool {
+    match ty {
+        TypeRef::Map(_, _) | TypeRef::Object(_) => true,
+        TypeRef::Nullable(inner) => type_supports_field_method_ambiguity(inner),
+        TypeRef::Union(items) | TypeRef::Ambiguous(items) => {
+            items.iter().any(type_supports_field_method_ambiguity)
+        }
+        _ => false,
+    }
+}
+
+fn type_contains_callable(ty: &TypeRef) -> bool {
+    match ty {
+        TypeRef::Function(_) => true,
+        TypeRef::Union(items) | TypeRef::Ambiguous(items) => {
+            items.iter().any(type_contains_callable)
+        }
+        _ => false,
     }
 }
 

@@ -1,6 +1,7 @@
 use rhai_db::{
     DatabaseSnapshot, LocatedNavigationTarget, best_matching_signature_index,
-    builtin_universal_method_signature, specialize_signature_with_receiver_and_arg_types,
+    builtin_universal_method_signature, callable_field_signature,
+    receiver_supports_field_method_ambiguity, specialize_signature_with_receiver_and_arg_types,
 };
 use rhai_hir::{CallSite, FileHir, FunctionTypeRef, ParameterHint, SymbolId, SymbolKind, TypeRef};
 use rhai_syntax::TextSize;
@@ -49,6 +50,12 @@ pub(crate) fn signature_help(
         call,
         active_parameter,
     ) {
+        return Some(help);
+    }
+
+    if let Some(help) =
+        signature_help_from_callable_field(snapshot, file_id, hir.as_ref(), call, active_parameter)
+    {
         return Some(help);
     }
 
@@ -417,6 +424,51 @@ fn signature_help_from_builtin_universal_method(
             label: format_signature_label(method_name, &signature.params, signature.ret.as_ref()),
             docs: None,
             parameters: Vec::new(),
+            file_id: None,
+        }],
+        active_signature: 0,
+        active_parameter,
+    })
+}
+
+fn signature_help_from_callable_field(
+    snapshot: &DatabaseSnapshot,
+    file_id: FileId,
+    hir: &FileHir,
+    call: &CallSite,
+    active_parameter: usize,
+) -> Option<SignatureHelp> {
+    let callee_expr = call.callee_range.and_then(|range| hir.expr_at(range))?;
+    let access = hir.member_access(callee_expr)?;
+    let inference = snapshot.type_inference(file_id)?;
+    if !receiver_supports_field_method_ambiguity(hir, inference, access.receiver) {
+        return None;
+    }
+
+    let method_name = hir.reference(access.field_reference).name.as_str();
+    let arg_types = call_argument_types(snapshot, file_id, hir, call);
+    let signature = callable_field_signature(
+        hir,
+        inference,
+        access.receiver,
+        method_name,
+        Some(arg_types.as_slice()),
+        snapshot.host_types(),
+    )?;
+
+    Some(SignatureHelp {
+        signatures: vec![SignatureInformation {
+            label: format_signature_label(method_name, &signature.params, signature.ret.as_ref()),
+            docs: None,
+            parameters: signature
+                .params
+                .iter()
+                .enumerate()
+                .map(|(index, parameter)| SignatureParameter {
+                    label: format!("arg{}", index + 1),
+                    annotation: Some(format_type_ref(parameter)),
+                })
+                .collect(),
             file_id: None,
         }],
         active_signature: 0,

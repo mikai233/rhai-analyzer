@@ -286,6 +286,109 @@ fn snapshot_infers_builtin_index_and_operator_semantics() {
 }
 
 #[test]
+fn snapshot_infers_dynamic_tag_property_types() {
+    let mut db = AnalyzerDatabase::default();
+    db.apply_change(ChangeSet::single_file(
+        "main.rhai",
+        r#"
+            let value = "hello";
+            let current_tag = value.tag;
+            value.tag = 123;
+            let bit = value.tag[1];
+            let bits = value.tag[1..=3];
+        "#,
+        DocumentVersion(1),
+    ));
+
+    let snapshot = db.snapshot();
+    assert_workspace_files_have_no_syntax_diagnostics(&snapshot);
+    let file_id = snapshot
+        .vfs()
+        .file_id(Path::new("main.rhai"))
+        .expect("expected file id");
+    let hir = snapshot.hir(file_id).expect("expected hir");
+
+    let current_tag = symbol_id_by_name(&hir, "current_tag", SymbolKind::Variable);
+    let bit = symbol_id_by_name(&hir, "bit", SymbolKind::Variable);
+    let bits = symbol_id_by_name(&hir, "bits", SymbolKind::Variable);
+
+    assert_eq!(
+        snapshot.inferred_symbol_type(file_id, current_tag),
+        Some(&TypeRef::Int)
+    );
+    assert_eq!(
+        snapshot.inferred_symbol_type(file_id, bit),
+        Some(&TypeRef::Bool)
+    );
+    assert_eq!(
+        snapshot.inferred_symbol_type(file_id, bits),
+        Some(&TypeRef::Int)
+    );
+}
+
+#[test]
+fn snapshot_prefers_map_tag_field_over_builtin_dynamic_tag_property() {
+    let mut db = AnalyzerDatabase::default();
+    db.apply_change(ChangeSet::single_file(
+        "main.rhai",
+        r#"
+            let user = #{ tag: "field-value", name: "Ada" };
+            let current = user.tag;
+        "#,
+        DocumentVersion(1),
+    ));
+
+    let snapshot = db.snapshot();
+    assert_workspace_files_have_no_syntax_diagnostics(&snapshot);
+    let file_id = snapshot
+        .vfs()
+        .file_id(Path::new("main.rhai"))
+        .expect("expected file id");
+    let hir = snapshot.hir(file_id).expect("expected hir");
+
+    let current = symbol_id_by_name(&hir, "current", SymbolKind::Variable);
+
+    assert_eq!(
+        snapshot.inferred_symbol_type(file_id, current),
+        Some(&TypeRef::Union(vec![
+            TypeRef::String,
+            TypeRef::Function(FunctionTypeRef {
+                params: Vec::new(),
+                ret: Box::new(TypeRef::Int),
+            }),
+        ]))
+    );
+}
+
+#[test]
+fn snapshot_prefers_map_tag_function_over_builtin_dynamic_tag_method() {
+    let mut db = AnalyzerDatabase::default();
+    db.apply_change(ChangeSet::single_file(
+        "main.rhai",
+        r#"
+            let user = #{ tag: || "field-fn", name: "Ada" };
+            let current = user.tag();
+        "#,
+        DocumentVersion(1),
+    ));
+
+    let snapshot = db.snapshot();
+    assert_workspace_files_have_no_syntax_diagnostics(&snapshot);
+    let file_id = snapshot
+        .vfs()
+        .file_id(Path::new("main.rhai"))
+        .expect("expected file id");
+    let hir = snapshot.hir(file_id).expect("expected hir");
+
+    let current = symbol_id_by_name(&hir, "current", SymbolKind::Variable);
+
+    assert_eq!(
+        snapshot.inferred_symbol_type(file_id, current),
+        Some(&TypeRef::String)
+    );
+}
+
+#[test]
 fn snapshot_infers_automatic_global_constants_from_inferred_types() {
     let mut db = AnalyzerDatabase::default();
     db.apply_change(ChangeSet::single_file(
