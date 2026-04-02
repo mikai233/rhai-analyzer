@@ -110,6 +110,91 @@ fn unused_diagnostics_are_published_as_warnings() {
 }
 
 #[test]
+fn constant_condition_diagnostics_are_published_as_warnings() {
+    let mut server = Server::new();
+    let uri = file_url("main.rhai");
+
+    let updates = server
+        .open_document(
+            uri,
+            1,
+            r#"
+                fn run() {
+                    if true {
+                        1;
+                    } else {
+                        2;
+                    }
+
+                    while false {
+                        3;
+                    }
+
+                    do {
+                        4;
+                    } while false;
+
+                    do {
+                        5;
+                    } until true;
+
+                    while true {
+                        break;
+                    }
+
+                    do {
+                        break;
+                    } while true;
+
+                    do {
+                        break;
+                    } until false;
+
+                    while true {
+                        loop {
+                            break;
+                        }
+                    }
+                }
+            "#,
+        )
+        .expect("expected open_document to succeed");
+
+    let diagnostics = updates
+        .iter()
+        .flat_map(|update| update.diagnostics.iter())
+        .filter(|diagnostic| {
+            diagnostic.code
+                == ProjectDiagnosticCode::Semantic(SemanticDiagnosticCode::ConstantCondition)
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(diagnostics.len(), 5, "{diagnostics:?}");
+    assert!(
+        diagnostics
+            .iter()
+            .all(|diagnostic| diagnostic.severity == DiagnosticSeverity::Warning)
+    );
+    assert!(
+        diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.message == "while condition is always true")
+            .count()
+            == 1
+    );
+    assert!(
+        diagnostics
+            .iter()
+            .all(|diagnostic| diagnostic.message != "do-while condition is always true")
+    );
+    assert!(
+        diagnostics
+            .iter()
+            .all(|diagnostic| diagnostic.message != "do-until condition is always false")
+    );
+}
+
+#[test]
 fn changing_importer_republishes_dependency_diagnostics_immediately() {
     let mut server = Server::new();
     let provider_uri = file_url("provider.rhai");

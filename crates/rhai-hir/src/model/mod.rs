@@ -10,11 +10,11 @@ pub use crate::model::diagnostics::{
 };
 pub use crate::model::expr::{
     ArrayExprInfo, AssignExprInfo, AssignmentOperator, BinaryExprInfo, BinaryOperator,
-    BlockExprInfo, CallSite, CallSiteId, ClosureExprInfo, ExpectedTypeSite, ExpectedTypeSource,
-    ExprId, ExprKind, ExprNode, ExternalSignatureIndex, ForExprInfo, FunctionInfo, IfExprInfo,
-    IndexExprInfo, LiteralInfo, LiteralKind, MemberAccess, ObjectFieldInfo, PathExprInfo,
-    SwitchArmInfo, SwitchExprInfo, TypeSlot, TypeSlotAssignments, TypeSlotId, UnaryExprInfo,
-    UnaryOperator,
+    BlockExprInfo, CallSite, CallSiteId, ClosureExprInfo, DoConditionKind, DoExprInfo,
+    ExpectedTypeSite, ExpectedTypeSource, ExprId, ExprKind, ExprNode, ExternalSignatureIndex,
+    ForExprInfo, FunctionInfo, IfExprInfo, IndexExprInfo, LiteralInfo, LiteralKind, MemberAccess,
+    ObjectFieldInfo, PathExprInfo, SwitchArmInfo, SwitchExprInfo, TypeSlot, TypeSlotAssignments,
+    TypeSlotId, UnaryExprInfo, UnaryOperator, WhileExprInfo,
 };
 pub use crate::model::flow::{
     ControlFlowEvent, ControlFlowKind, ControlFlowMergePoint, MergePointKind, MutationPathSegment,

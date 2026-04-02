@@ -6,6 +6,7 @@ pub enum SemanticDiagnosticKind {
     UnresolvedExport,
     InvalidExportTarget,
     InvalidImportModuleType,
+    ConstantCondition,
     UnresolvedName,
     DuplicateDefinition,
     InconsistentDocType,
@@ -14,6 +15,7 @@ pub enum SemanticDiagnosticKind {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum SemanticDiagnosticCode {
+    ConstantCondition,
     UnresolvedName,
     DuplicateDefinition,
     UnresolvedImportModule,

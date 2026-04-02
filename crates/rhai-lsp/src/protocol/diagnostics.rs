@@ -155,6 +155,7 @@ fn syntax_error_code_label(code: &SyntaxErrorCode) -> String {
 
 fn semantic_diagnostic_code_label(code: &SemanticDiagnosticCode) -> &'static str {
     match code {
+        SemanticDiagnosticCode::ConstantCondition => "constant-condition",
         SemanticDiagnosticCode::UnresolvedName => "unresolved-name",
         SemanticDiagnosticCode::DuplicateDefinition => "duplicate-definition",
         SemanticDiagnosticCode::UnresolvedImportModule => "unresolved-import-module",

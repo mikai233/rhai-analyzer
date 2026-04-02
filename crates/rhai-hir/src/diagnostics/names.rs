@@ -10,6 +10,7 @@ impl FileHir {
         let mut diagnostics = self.unresolved_import_export_diagnostics();
         diagnostics.extend(self.invalid_import_module_type_diagnostics());
         diagnostics.extend(self.invalid_export_target_diagnostics());
+        diagnostics.extend(self.constant_condition_diagnostics());
         diagnostics.extend(self.unresolved_name_diagnostics());
         diagnostics.extend(self.duplicate_definition_diagnostics());
         diagnostics.extend(self.doc_type_consistency_diagnostics());

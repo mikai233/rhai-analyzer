@@ -240,7 +240,9 @@ pub(crate) fn semantic_diagnostic_severity(
     kind: SemanticDiagnosticKind,
 ) -> ProjectDiagnosticSeverity {
     match kind {
-        SemanticDiagnosticKind::UnusedSymbol => ProjectDiagnosticSeverity::Warning,
+        SemanticDiagnosticKind::UnusedSymbol | SemanticDiagnosticKind::ConstantCondition => {
+            ProjectDiagnosticSeverity::Warning
+        }
         _ => ProjectDiagnosticSeverity::Error,
     }
 }

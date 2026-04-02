@@ -1,3 +1,4 @@
+mod control_flow;
 mod docs;
 mod exports;
 mod imports;

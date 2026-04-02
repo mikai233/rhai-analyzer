@@ -154,6 +154,27 @@ pub struct IfExprInfo {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct WhileExprInfo {
+    pub owner: ExprId,
+    pub condition: Option<ExprId>,
+    pub body: Option<BodyId>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum DoConditionKind {
+    While,
+    Until,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct DoExprInfo {
+    pub owner: ExprId,
+    pub condition_kind: Option<DoConditionKind>,
+    pub condition: Option<ExprId>,
+    pub body: Option<BodyId>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct SwitchExprInfo {
     pub owner: ExprId,
     pub scrutinee: Option<ExprId>,

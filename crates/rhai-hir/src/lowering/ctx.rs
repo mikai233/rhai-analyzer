@@ -57,6 +57,8 @@ impl<'a> LoweringContext<'a> {
                 array_exprs: Vec::new(),
                 block_exprs: Vec::new(),
                 if_exprs: Vec::new(),
+                while_exprs: Vec::new(),
+                do_exprs: Vec::new(),
                 switch_exprs: Vec::new(),
                 switch_arms: Vec::new(),
                 closure_exprs: Vec::new(),

@@ -3,10 +3,10 @@ use crate::lowering::ctx::{
 };
 use crate::model::{
     ArrayExprInfo, AssignExprInfo, AssignmentOperator, BinaryExprInfo, BinaryOperator,
-    BlockExprInfo, BodyId, BodyKind, ClosureExprInfo, ExprKind, ForExprInfo, IfExprInfo,
-    IndexExprInfo, LiteralInfo, LiteralKind, MemberAccess, MergePointKind, ObjectFieldInfo,
-    PathExprInfo, ReferenceKind, ScopeId, ScopeKind, SwitchExprInfo, SymbolKind, UnaryExprInfo,
-    UnaryOperator, ValueFlowKind,
+    BlockExprInfo, BodyId, BodyKind, ClosureExprInfo, DoConditionKind, DoExprInfo, ExprKind,
+    ForExprInfo, IfExprInfo, IndexExprInfo, LiteralInfo, LiteralKind, MemberAccess, MergePointKind,
+    ObjectFieldInfo, PathExprInfo, ReferenceKind, ScopeId, ScopeKind, SwitchExprInfo, SymbolKind,
+    UnaryExprInfo, UnaryOperator, ValueFlowKind, WhileExprInfo,
 };
 use rhai_syntax::{
     AstNode, BlockExpr, Expr, Item, Stmt, StringPart, SwitchArm, SwitchPatternList, TokenKind,
@@ -103,22 +103,31 @@ impl<'a> LoweringContext<'a> {
                 self.record_merge_point(MergePointKind::Switch, switch_expr.syntax().text_range());
             }
             Expr::While(while_expr) => {
-                if let Some(condition) = while_expr.condition() {
-                    self.lower_expr(condition, scope);
-                }
+                let condition = while_expr
+                    .condition()
+                    .map(|condition| self.lower_expr(condition, scope));
+                let mut body_id = None;
                 if let Some(body) = while_expr.body() {
                     let loop_scope =
                         self.new_scope(ScopeKind::Loop, body.syntax().text_range(), Some(scope));
-                    let body_id = self.new_body(
+                    let lowered_body = self.new_body(
                         BodyKind::Block,
                         body.syntax().text_range(),
                         loop_scope,
                         None,
                     );
                     self.with_loop(loop_scope, |this| {
-                        this.with_body(body_id, |this| this.lower_block_items(body, loop_scope))
+                        this.with_body(lowered_body, |this| {
+                            this.lower_block_items(body, loop_scope)
+                        })
                     });
+                    body_id = Some(lowered_body);
                 }
+                self.file.while_exprs.push(WhileExprInfo {
+                    owner: expr_id,
+                    condition,
+                    body: body_id,
+                });
                 self.record_merge_point(
                     MergePointKind::LoopIteration,
                     while_expr.syntax().text_range(),
@@ -189,23 +198,43 @@ impl<'a> LoweringContext<'a> {
                 );
             }
             Expr::Do(do_expr) => {
+                let mut body_id = None;
                 if let Some(body) = do_expr.body() {
                     let loop_scope =
                         self.new_scope(ScopeKind::Loop, body.syntax().text_range(), Some(scope));
-                    let body_id = self.new_body(
+                    let lowered_body = self.new_body(
                         BodyKind::Block,
                         body.syntax().text_range(),
                         loop_scope,
                         None,
                     );
                     self.with_loop(loop_scope, |this| {
-                        this.with_body(body_id, |this| this.lower_block_items(body, loop_scope))
+                        this.with_body(lowered_body, |this| {
+                            this.lower_block_items(body, loop_scope)
+                        })
                     });
+                    body_id = Some(lowered_body);
                 }
-                if let Some(condition) = do_expr.condition().and_then(|condition| condition.expr())
-                {
-                    self.lower_expr(condition, scope);
-                }
+                let (condition_kind, condition) = do_expr
+                    .condition()
+                    .map(|condition| {
+                        let kind = condition.keyword_token().and_then(|token| {
+                            match token.kind().token_kind() {
+                                Some(TokenKind::WhileKw) => Some(DoConditionKind::While),
+                                Some(TokenKind::UntilKw) => Some(DoConditionKind::Until),
+                                _ => None,
+                            }
+                        });
+                        let expr = condition.expr().map(|expr| self.lower_expr(expr, scope));
+                        (kind, expr)
+                    })
+                    .unwrap_or((None, None));
+                self.file.do_exprs.push(DoExprInfo {
+                    owner: expr_id,
+                    condition_kind,
+                    condition,
+                    body: body_id,
+                });
                 self.record_merge_point(
                     MergePointKind::LoopIteration,
                     do_expr.syntax().text_range(),

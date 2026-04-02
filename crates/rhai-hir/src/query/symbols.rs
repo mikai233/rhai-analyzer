@@ -27,6 +27,16 @@ impl FileHir {
         self.if_exprs.iter().find(|if_expr| if_expr.owner == expr)
     }
 
+    pub fn while_expr(&self, expr: ExprId) -> Option<&crate::WhileExprInfo> {
+        self.while_exprs
+            .iter()
+            .find(|while_expr| while_expr.owner == expr)
+    }
+
+    pub fn do_expr(&self, expr: ExprId) -> Option<&crate::DoExprInfo> {
+        self.do_exprs.iter().find(|do_expr| do_expr.owner == expr)
+    }
+
     pub fn switch_expr(&self, expr: ExprId) -> Option<&SwitchExprInfo> {
         self.switch_exprs
             .iter()

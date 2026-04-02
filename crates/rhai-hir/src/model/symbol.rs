@@ -4,9 +4,9 @@ use crate::docs::DocBlock;
 use crate::docs::DocBlockId;
 use crate::model::expr::{
     ArrayExprInfo, AssignExprInfo, BinaryExprInfo, BlockExprInfo, CallSite, CallSiteId,
-    ClosureExprInfo, ExpectedTypeSite, ExprNode, ForExprInfo, FunctionInfo, IfExprInfo,
+    ClosureExprInfo, DoExprInfo, ExpectedTypeSite, ExprNode, ForExprInfo, FunctionInfo, IfExprInfo,
     IndexExprInfo, LiteralInfo, MemberAccess, ObjectFieldInfo, PathExprInfo, SwitchArmInfo,
-    SwitchExprInfo, TypeSlot, UnaryExprInfo,
+    SwitchExprInfo, TypeSlot, UnaryExprInfo, WhileExprInfo,
 };
 use crate::model::flow::{SymbolMutation, SymbolRead, SymbolValueFlow};
 use crate::model::module::{ExportDirective, ImportDirective, NavigationTarget};
@@ -60,6 +60,8 @@ pub struct FileHir {
     pub array_exprs: Vec<ArrayExprInfo>,
     pub block_exprs: Vec<BlockExprInfo>,
     pub if_exprs: Vec<IfExprInfo>,
+    pub while_exprs: Vec<WhileExprInfo>,
+    pub do_exprs: Vec<DoExprInfo>,
     pub switch_exprs: Vec<SwitchExprInfo>,
     pub switch_arms: Vec<SwitchArmInfo>,
     pub closure_exprs: Vec<ClosureExprInfo>,
