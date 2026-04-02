@@ -1,6 +1,9 @@
 use rhai_hir::{ExternalSignatureIndex, FunctionTypeRef, TypeRef};
 
-use crate::builtin::signatures::helpers::builtin_global_function;
+use crate::builtin::signatures::docs::{BuiltinCallableOverloadDoc, BuiltinParamDoc};
+use crate::builtin::signatures::helpers::{
+    builtin_documented_overloaded_global_function, builtin_global_function,
+};
 use crate::types::HostFunction;
 
 pub(crate) fn register_builtin_global_functions(
@@ -9,30 +12,54 @@ pub(crate) fn register_builtin_global_functions(
     register_builtin_external_signatures(external_signatures);
 
     vec![
-        builtin_global_function(
+        builtin_documented_overloaded_global_function(
             "blob",
-            vec![
-                FunctionTypeRef {
-                    params: Vec::new(),
-                    ret: Box::new(TypeRef::Blob),
-                },
-                FunctionTypeRef {
-                    params: vec![TypeRef::Int],
-                    ret: Box::new(TypeRef::Blob),
-                },
-                FunctionTypeRef {
-                    params: vec![TypeRef::Int, TypeRef::Int],
-                    ret: Box::new(TypeRef::Blob),
-                },
-            ],
             "Create a new BLOB value, optionally with a specific length and initial byte value.",
-            &[
-                "let empty = blob();",
-                "// empty == []",
-                "let buffer = blob(4, 7);",
-                "// buffer == [7, 7, 7, 7]",
-                "let size = buffer.len();",
-                "// size == 4",
+            vec![
+                BuiltinCallableOverloadDoc {
+                    signature: FunctionTypeRef {
+                        params: Vec::new(),
+                        ret: Box::new(TypeRef::Blob),
+                    },
+                    summary: "Create an empty BLOB.",
+                    params: &[],
+                    examples: &["let empty = blob();", "// empty == []"],
+                },
+                BuiltinCallableOverloadDoc {
+                    signature: FunctionTypeRef {
+                        params: vec![TypeRef::Int],
+                        ret: Box::new(TypeRef::Blob),
+                    },
+                    summary: "Create a BLOB with a fixed length, filled with zero bytes.",
+                    params: &[BuiltinParamDoc {
+                        name: "len",
+                        description: "Number of bytes to allocate.",
+                    }],
+                    examples: &["let buffer = blob(4);", "// buffer == [0, 0, 0, 0]"],
+                },
+                BuiltinCallableOverloadDoc {
+                    signature: FunctionTypeRef {
+                        params: vec![TypeRef::Int, TypeRef::Int],
+                        ret: Box::new(TypeRef::Blob),
+                    },
+                    summary: "Create a BLOB with a fixed length, filled with the requested byte value.",
+                    params: &[
+                        BuiltinParamDoc {
+                            name: "len",
+                            description: "Number of bytes to allocate.",
+                        },
+                        BuiltinParamDoc {
+                            name: "value",
+                            description: "Byte value copied into every element of the BLOB.",
+                        },
+                    ],
+                    examples: &[
+                        "let buffer = blob(4, 7);",
+                        "// buffer == [7, 7, 7, 7]",
+                        "let size = buffer.len();",
+                        "// size == 4",
+                    ],
+                },
             ],
             "https://rhai.rs/book/language/blobs.html",
         ),
@@ -83,24 +110,56 @@ pub(crate) fn register_builtin_global_functions(
             ],
             "https://rhai.rs/book/language/variables.html",
         ),
-        builtin_global_function(
+        builtin_documented_overloaded_global_function(
             "is_def_fn",
-            vec![
-                FunctionTypeRef {
-                    params: vec![TypeRef::String, TypeRef::Int],
-                    ret: Box::new(TypeRef::Bool),
-                },
-                FunctionTypeRef {
-                    params: vec![TypeRef::String, TypeRef::String, TypeRef::Int],
-                    ret: Box::new(TypeRef::Bool),
-                },
-            ],
             "Check whether a function or typed method is currently available.",
-            &[
-                "let has_render = is_def_fn(\"render\", 1);",
-                "// has_render is true when a global render(value) function exists",
-                "let has_open = is_def_fn(\"open\", \"Widget\", 1);",
-                "// has_open is true when Widget.open(value) exists",
+            vec![
+                BuiltinCallableOverloadDoc {
+                    signature: FunctionTypeRef {
+                        params: vec![TypeRef::String, TypeRef::Int],
+                        ret: Box::new(TypeRef::Bool),
+                    },
+                    summary: "Check whether a global function with a given name and arity is available.",
+                    params: &[
+                        BuiltinParamDoc {
+                            name: "name",
+                            description: "Function name to look up.",
+                        },
+                        BuiltinParamDoc {
+                            name: "arity",
+                            description: "Number of arguments the global function must accept.",
+                        },
+                    ],
+                    examples: &[
+                        "let has_render = is_def_fn(\"render\", 1);",
+                        "// has_render is true when a global render(value) function exists",
+                    ],
+                },
+                BuiltinCallableOverloadDoc {
+                    signature: FunctionTypeRef {
+                        params: vec![TypeRef::String, TypeRef::String, TypeRef::Int],
+                        ret: Box::new(TypeRef::Bool),
+                    },
+                    summary: "Check whether a typed method with a given name and arity is available on a specific receiver type.",
+                    params: &[
+                        BuiltinParamDoc {
+                            name: "name",
+                            description: "Method name to look up.",
+                        },
+                        BuiltinParamDoc {
+                            name: "this_type",
+                            description: "Receiver type name that owns the method.",
+                        },
+                        BuiltinParamDoc {
+                            name: "arity",
+                            description: "Number of explicit call arguments the method must accept.",
+                        },
+                    ],
+                    examples: &[
+                        "let has_open = is_def_fn(\"open\", \"Widget\", 1);",
+                        "// has_open is true when Widget.open(value) exists",
+                    ],
+                },
             ],
             "https://rhai.rs/book/language/fn-namespaces.html",
         ),
@@ -181,26 +240,45 @@ pub(crate) fn register_builtin_global_functions(
             ],
             "https://rhai.rs/book/rust/engine.html",
         ),
-        builtin_global_function(
+        builtin_documented_overloaded_global_function(
             "parse_int",
-            vec![
-                FunctionTypeRef {
-                    params: vec![TypeRef::String],
-                    ret: Box::new(TypeRef::Int),
-                },
-                FunctionTypeRef {
-                    params: vec![TypeRef::String, TypeRef::Int],
-                    ret: Box::new(TypeRef::Int),
-                },
-            ],
             "Parse a string into an integer value, optionally using a custom radix.",
-            &[
-                "let answer = parse_int(\"42\");",
-                "// answer == 42",
-                "let hex = parse_int(\"ff\", 16);",
-                "// hex == 255",
-                "let binary = parse_int(\"1010\", 2);",
-                "// binary == 10",
+            vec![
+                BuiltinCallableOverloadDoc {
+                    signature: FunctionTypeRef {
+                        params: vec![TypeRef::String],
+                        ret: Box::new(TypeRef::Int),
+                    },
+                    summary: "Parse a string as a base-10 integer.",
+                    params: &[BuiltinParamDoc {
+                        name: "text",
+                        description: "String containing the integer representation to parse.",
+                    }],
+                    examples: &["let answer = parse_int(\"42\");", "// answer == 42"],
+                },
+                BuiltinCallableOverloadDoc {
+                    signature: FunctionTypeRef {
+                        params: vec![TypeRef::String, TypeRef::Int],
+                        ret: Box::new(TypeRef::Int),
+                    },
+                    summary: "Parse a string as an integer using a custom radix.",
+                    params: &[
+                        BuiltinParamDoc {
+                            name: "text",
+                            description: "String containing the integer representation to parse.",
+                        },
+                        BuiltinParamDoc {
+                            name: "radix",
+                            description: "Numeric base used to interpret the string, such as 2, 10, or 16.",
+                        },
+                    ],
+                    examples: &[
+                        "let hex = parse_int(\"ff\", 16);",
+                        "// hex == 255",
+                        "let binary = parse_int(\"1010\", 2);",
+                        "// binary == 10",
+                    ],
+                },
             ],
             "https://rhai.rs/book/language/num-fn.html",
         ),

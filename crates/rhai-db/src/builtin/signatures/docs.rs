@@ -1,5 +1,19 @@
 use rhai_hir::{FunctionTypeRef, TypeRef};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct BuiltinParamDoc<'a> {
+    pub name: &'a str,
+    pub description: &'a str,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct BuiltinCallableOverloadDoc<'a> {
+    pub signature: FunctionTypeRef,
+    pub summary: &'a str,
+    pub params: &'a [BuiltinParamDoc<'a>],
+    pub examples: &'a [&'a str],
+}
+
 pub(crate) fn builtin_global_docs(
     name: &str,
     signatures: &[FunctionTypeRef],
@@ -27,6 +41,102 @@ pub(crate) fn builtin_method_docs(
         summary,
         method_usage_lines(receiver_type, name, signatures),
         method_example_lines(receiver_type, name, signatures, examples),
+        reference_url,
+    )
+}
+
+pub(crate) fn builtin_method_overload_docs(
+    receiver_type: &str,
+    name: &str,
+    summary: &str,
+    overloads: &[BuiltinCallableOverloadDoc<'_>],
+    reference_url: &str,
+) -> String {
+    let usage_lines = overloads
+        .iter()
+        .map(|overload| {
+            invocation_from_param_docs(name, overload.params, Some(receiver_example(receiver_type)))
+        })
+        .collect::<Vec<_>>();
+    let example_lines = overloads
+        .iter()
+        .enumerate()
+        .flat_map(|(index, overload)| {
+            let mut lines = overload
+                .examples
+                .iter()
+                .map(|example| (*example).to_owned())
+                .collect::<Vec<_>>();
+            if index + 1 != overloads.len() && !lines.is_empty() {
+                lines.push(String::new());
+            }
+            lines
+        })
+        .collect::<Vec<_>>();
+    let overload_lines = overloads
+        .iter()
+        .map(|overload| {
+            render_overload_docs(
+                overload,
+                invocation_from_param_docs(
+                    name,
+                    overload.params,
+                    Some(receiver_example(receiver_type)),
+                )
+                .as_str(),
+            )
+        })
+        .collect::<Vec<_>>();
+
+    render_overloaded_callable_docs(
+        summary,
+        usage_lines,
+        example_lines,
+        overload_lines,
+        reference_url,
+    )
+}
+
+pub(crate) fn builtin_global_overload_docs(
+    name: &str,
+    summary: &str,
+    overloads: &[BuiltinCallableOverloadDoc<'_>],
+    reference_url: &str,
+) -> String {
+    let usage_lines = overloads
+        .iter()
+        .map(|overload| invocation_from_param_docs(name, overload.params, None))
+        .collect::<Vec<_>>();
+    let example_lines = overloads
+        .iter()
+        .enumerate()
+        .flat_map(|(index, overload)| {
+            let mut lines = overload
+                .examples
+                .iter()
+                .map(|example| (*example).to_owned())
+                .collect::<Vec<_>>();
+            if index + 1 != overloads.len() && !lines.is_empty() {
+                lines.push(String::new());
+            }
+            lines
+        })
+        .collect::<Vec<_>>();
+    let overload_lines = overloads
+        .iter()
+        .map(|overload| {
+            render_overload_docs(
+                overload,
+                invocation_from_param_docs(name, overload.params, None).as_str(),
+            )
+        })
+        .collect::<Vec<_>>();
+
+    render_overloaded_callable_docs(
+        summary,
+        usage_lines,
+        example_lines,
+        overload_lines,
         reference_url,
     )
 }
@@ -95,6 +205,40 @@ fn render_callable_docs(
             "## Usage\n```rhai\n{}\n```",
             usage_lines.join("\n")
         ));
+    }
+
+    if !example_lines.is_empty() {
+        sections.push(format!(
+            "## Examples\n```rhai\n{}\n```",
+            example_lines.join("\n")
+        ));
+    }
+
+    sections.push(format!(
+        "## Official Rhai Reference\n[Rhai Book]({reference_url})"
+    ));
+
+    sections.join("\n\n")
+}
+
+fn render_overloaded_callable_docs(
+    summary: &str,
+    usage_lines: Vec<String>,
+    example_lines: Vec<String>,
+    overload_lines: Vec<String>,
+    reference_url: &str,
+) -> String {
+    let mut sections = vec![summary.trim().to_owned()];
+
+    if !usage_lines.is_empty() {
+        sections.push(format!(
+            "## Usage\n```rhai\n{}\n```",
+            usage_lines.join("\n")
+        ));
+    }
+
+    if !overload_lines.is_empty() {
+        sections.push(format!("## Overloads\n{}", overload_lines.join("\n\n")));
     }
 
     if !example_lines.is_empty() {
@@ -218,6 +362,47 @@ fn invocation(name: &str, params: &[TypeRef], receiver: Option<&str>) -> String 
         Some(receiver) => format!("{receiver}.{name}({args})"),
         None => format!("{name}({args})"),
     }
+}
+
+fn invocation_from_param_docs(
+    name: &str,
+    params: &[BuiltinParamDoc<'_>],
+    receiver: Option<String>,
+) -> String {
+    let args = params
+        .iter()
+        .map(|param| param.name)
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    match receiver {
+        Some(receiver) => format!("{receiver}.{name}({args})"),
+        None => format!("{name}({args})"),
+    }
+}
+
+fn render_overload_docs(overload: &BuiltinCallableOverloadDoc<'_>, usage_line: &str) -> String {
+    let mut lines = vec![
+        format!("### `{usage_line}`"),
+        overload.summary.trim().to_owned(),
+    ];
+
+    if !overload.params.is_empty() {
+        lines.push(String::from("#### Parameters"));
+        lines.extend(
+            overload
+                .params
+                .iter()
+                .map(|param| format!("- `{}`: {}", param.name, param.description.trim())),
+        );
+    }
+
+    if !overload.examples.is_empty() {
+        lines.push(String::from("#### Example"));
+        lines.push(format!("```rhai\n{}\n```", overload.examples.join("\n")));
+    }
+
+    lines.join("\n")
 }
 
 fn assignment_or_statement(call: String, ret: &TypeRef) -> String {

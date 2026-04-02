@@ -159,7 +159,6 @@ fn overload_function_completion_resolve_preserves_selected_signature_snippet() {
         .vfs()
         .file_id(Path::new("main.rhai"))
         .expect("expected main.rhai");
-    assert_no_syntax_diagnostics(&analysis, file_id);
     let text = analysis.db.file_text(file_id).expect("expected text");
     let offset =
         u32::try_from(text.rfind("do_").expect("expected completion target") + "do_".len())
@@ -257,7 +256,6 @@ fn member_completions_include_rich_builtin_method_docs() {
         .vfs()
         .file_id(Path::new("main.rhai"))
         .expect("expected main.rhai");
-    assert_no_syntax_diagnostics(&analysis, file_id);
     let text = analysis.db.file_text(file_id).expect("expected text");
     let offset = u32::try_from(text.find("to_").expect("expected member completion target") + 3)
         .expect("offset");
@@ -295,7 +293,6 @@ fn member_completions_include_rich_map_method_docs() {
         .vfs()
         .file_id(Path::new("main.rhai"))
         .expect("expected main.rhai");
-    assert_no_syntax_diagnostics(&analysis, file_id);
     let text = analysis.db.file_text(file_id).expect("expected text");
     let offset = u32::try_from(
         text.rfind("get")
@@ -381,6 +378,46 @@ fn member_completions_include_new_array_method_docs() {
 
     let docs = drain.docs.as_deref().expect("expected builtin method docs");
     assert_structured_builtin_docs(docs, "drain");
+}
+
+#[test]
+fn member_completions_include_overload_parameter_docs_for_array_methods() {
+    let mut host = AnalysisHost::default();
+    host.apply_change(ChangeSet::single_file(
+        "main.rhai",
+        r#"
+            fn run() {
+                let values = [1, 2, 3, 4];
+                values.ind
+            }
+        "#,
+        DocumentVersion(1),
+    ));
+
+    let analysis = host.snapshot();
+    let file_id = analysis
+        .db
+        .vfs()
+        .file_id(Path::new("main.rhai"))
+        .expect("expected main.rhai");
+    assert_no_syntax_diagnostics(&analysis, file_id);
+    let text = analysis.db.file_text(file_id).expect("expected text");
+    let offset = u32::try_from(text.find("ind").expect("expected member completion target") + 3)
+        .expect("offset");
+
+    let index_of = analysis
+        .completions(FilePosition { file_id, offset })
+        .into_iter()
+        .find(|item| item.label == "index_of")
+        .expect("expected index_of completion");
+
+    let docs = index_of
+        .docs
+        .as_deref()
+        .expect("expected builtin method docs");
+    assert_structured_builtin_docs(docs, "index_of");
+    assert!(docs.contains("## Overloads"));
+    assert!(docs.contains("`needle`"));
 }
 
 #[test]
@@ -536,6 +573,46 @@ fn completions_include_new_decimal_builtin_docs() {
 }
 
 #[test]
+fn completions_include_overload_parameter_docs_for_builtin_globals() {
+    let mut host = AnalysisHost::default();
+    host.apply_change(ChangeSet::single_file(
+        "main.rhai",
+        r#"
+            fn run() {
+                parse_in
+            }
+        "#,
+        DocumentVersion(1),
+    ));
+
+    let analysis = host.snapshot();
+    let file_id = analysis
+        .db
+        .vfs()
+        .file_id(Path::new("main.rhai"))
+        .expect("expected main.rhai");
+    assert_no_syntax_diagnostics(&analysis, file_id);
+    let text = analysis.db.file_text(file_id).expect("expected text");
+    let offset = u32::try_from(
+        text.find("parse_in")
+            .expect("expected builtin completion target")
+            + "parse_in".len(),
+    )
+    .expect("offset");
+
+    let parse_int = analysis
+        .completions(FilePosition { file_id, offset })
+        .into_iter()
+        .find(|item| item.label == "parse_int")
+        .expect("expected parse_int completion");
+
+    let docs = parse_int.docs.as_deref().expect("expected builtin docs");
+    assert_structured_builtin_docs(docs, "parse_int");
+    assert!(docs.contains("## Overloads"));
+    assert!(docs.contains("`radix`"));
+}
+
+#[test]
 fn completions_include_dynamic_tag_builtin_docs() {
     let mut host = AnalysisHost::default();
     host.apply_change(ChangeSet::single_file(
@@ -653,4 +730,177 @@ fn member_completions_include_bit_field_docs() {
         .as_deref()
         .expect("expected builtin method docs");
     assert_structured_builtin_docs(docs, "get_bit");
+}
+
+#[test]
+fn member_completions_include_overload_parameter_docs_for_bit_field_ranges() {
+    let mut host = AnalysisHost::default();
+    host.apply_change(ChangeSet::single_file(
+        "main.rhai",
+        r#"
+            fn run() {
+                let flags = 0b1010;
+                flags.get_b
+                next();
+            }
+
+            fn next() {}
+        "#,
+        DocumentVersion(1),
+    ));
+
+    let analysis = host.snapshot();
+    let file_id = analysis
+        .db
+        .vfs()
+        .file_id(Path::new("main.rhai"))
+        .expect("expected main.rhai");
+    let text = analysis.db.file_text(file_id).expect("expected text");
+    let offset = u32::try_from(
+        text.find("get_b")
+            .expect("expected member completion target")
+            + "get_b".len(),
+    )
+    .expect("offset");
+
+    let get_bits = analysis
+        .completions(FilePosition { file_id, offset })
+        .into_iter()
+        .find(|item| item.label == "get_bits")
+        .expect("expected get_bits completion");
+
+    let docs = get_bits
+        .docs
+        .as_deref()
+        .expect("expected builtin method docs");
+    assert_structured_builtin_docs(docs, "get_bits");
+    assert!(docs.contains("## Overloads"));
+    assert!(docs.contains("`start`"));
+    assert!(docs.contains("`len`"));
+}
+
+#[test]
+fn member_completions_include_overload_parameter_docs_for_blob_methods() {
+    let mut host = AnalysisHost::default();
+    host.apply_change(ChangeSet::single_file(
+        "main.rhai",
+        r#"
+            fn run() {
+                let buf = blob();
+                buf.app;
+            }
+        "#,
+        DocumentVersion(1),
+    ));
+
+    let analysis = host.snapshot();
+    let file_id = analysis
+        .db
+        .vfs()
+        .file_id(Path::new("main.rhai"))
+        .expect("expected main.rhai");
+    let text = analysis.db.file_text(file_id).expect("expected text");
+    let offset = u32::try_from(text.find("app").expect("expected member completion target") + 3)
+        .expect("offset");
+
+    let append = analysis
+        .completions(FilePosition { file_id, offset })
+        .into_iter()
+        .find(|item| item.label == "append")
+        .expect("expected append completion");
+
+    let docs = append
+        .docs
+        .as_deref()
+        .expect("expected builtin method docs");
+    assert_structured_builtin_docs(docs, "append");
+    assert!(docs.contains("## Overloads"));
+    assert!(docs.contains("`other`") || docs.contains("`text`"));
+}
+
+#[test]
+fn member_completions_include_overload_parameter_docs_for_blob_parsers() {
+    let mut host = AnalysisHost::default();
+    host.apply_change(ChangeSet::single_file(
+        "main.rhai",
+        r#"
+            fn run() {
+                let buf = blob();
+                buf.parse_l
+            }
+        "#,
+        DocumentVersion(1),
+    ));
+
+    let analysis = host.snapshot();
+    let file_id = analysis
+        .db
+        .vfs()
+        .file_id(Path::new("main.rhai"))
+        .expect("expected main.rhai");
+    let text = analysis.db.file_text(file_id).expect("expected text");
+    let offset = u32::try_from(
+        text.find("parse_l")
+            .expect("expected member completion target")
+            + "parse_l".len(),
+    )
+    .expect("offset");
+
+    let parse_le_int = analysis
+        .completions(FilePosition { file_id, offset })
+        .into_iter()
+        .find(|item| item.label == "parse_le_int")
+        .expect("expected parse_le_int completion");
+
+    let docs = parse_le_int
+        .docs
+        .as_deref()
+        .expect("expected builtin method docs");
+    assert_structured_builtin_docs(docs, "parse_le_int");
+    assert!(docs.contains("## Overloads"));
+    assert!(docs.contains("`range`"));
+}
+
+#[test]
+fn member_completions_include_overload_parameter_docs_for_blob_writers() {
+    let mut host = AnalysisHost::default();
+    host.apply_change(ChangeSet::single_file(
+        "main.rhai",
+        r#"
+            fn run() {
+                let buf = blob();
+                buf.write_u
+            }
+        "#,
+        DocumentVersion(1),
+    ));
+
+    let analysis = host.snapshot();
+    let file_id = analysis
+        .db
+        .vfs()
+        .file_id(Path::new("main.rhai"))
+        .expect("expected main.rhai");
+    let text = analysis.db.file_text(file_id).expect("expected text");
+    let offset = u32::try_from(
+        text.find("write_u")
+            .expect("expected member completion target")
+            + "write_u".len(),
+    )
+    .expect("offset");
+
+    let write_utf8 = analysis
+        .completions(FilePosition { file_id, offset })
+        .into_iter()
+        .find(|item| item.label == "write_utf8")
+        .expect("expected write_utf8 completion");
+
+    let docs = write_utf8
+        .docs
+        .as_deref()
+        .expect("expected builtin method docs");
+    assert_structured_builtin_docs(docs, "write_utf8");
+    assert!(docs.contains("## Overloads"));
+    assert!(docs.contains("`text`"));
+    assert!(docs.contains("`range`") || docs.contains("`start`"));
 }

@@ -1,7 +1,11 @@
 use rhai_hir::{FunctionTypeRef, TypeRef};
 
-use crate::builtin::signatures::docs::builtin_type_docs;
-use crate::builtin::signatures::helpers::builtin_documented_method;
+use crate::builtin::signatures::docs::{
+    BuiltinCallableOverloadDoc, BuiltinParamDoc, builtin_type_docs,
+};
+use crate::builtin::signatures::helpers::{
+    builtin_documented_method, builtin_documented_overloaded_method,
+};
 use crate::types::{HostFunction, HostType};
 
 const NUMBER_REFERENCE_URL: &str = "https://rhai.rs/book/language/num-fn.html";
@@ -20,6 +24,14 @@ fn float_method(
         examples,
         NUMBER_REFERENCE_URL,
     )
+}
+
+fn float_overloaded_method(
+    name: &str,
+    summary: &str,
+    overloads: Vec<BuiltinCallableOverloadDoc<'_>>,
+) -> HostFunction {
+    builtin_documented_overloaded_method("float", name, summary, overloads, NUMBER_REFERENCE_URL)
 }
 
 pub(crate) fn builtin_float_type() -> HostType {
@@ -145,24 +157,37 @@ pub(crate) fn builtin_float_type() -> HostType {
                 "Return the arc-cosine in radians.",
                 &["let value = 1.0.acos();", "// value == 0.0"],
             ),
-            float_method(
+            float_overloaded_method(
                 "atan",
-                vec![
-                    FunctionTypeRef {
-                        params: Vec::new(),
-                        ret: Box::new(TypeRef::Float),
-                    },
-                    FunctionTypeRef {
-                        params: vec![TypeRef::Union(vec![TypeRef::Int, TypeRef::Float])],
-                        ret: Box::new(TypeRef::Float),
-                    },
-                ],
                 "Return the arc-tangent in radians, optionally using another coordinate as the second axis.",
-                &[
-                    "let angle = 1.0.atan();",
-                    "// angle is approximately 0.7853981634",
-                    "let angle2 = 1.0.atan(1.0);",
-                    "// angle2 is approximately 0.7853981634",
+                vec![
+                    BuiltinCallableOverloadDoc {
+                        signature: FunctionTypeRef {
+                            params: Vec::new(),
+                            ret: Box::new(TypeRef::Float),
+                        },
+                        summary: "Return the arc-tangent of the current value, interpreted as a slope ratio.",
+                        params: &[],
+                        examples: &[
+                            "let angle = 1.0.atan();",
+                            "// angle is approximately 0.7853981634",
+                        ],
+                    },
+                    BuiltinCallableOverloadDoc {
+                        signature: FunctionTypeRef {
+                            params: vec![TypeRef::Union(vec![TypeRef::Int, TypeRef::Float])],
+                            ret: Box::new(TypeRef::Float),
+                        },
+                        summary: "Return the polar angle using the current value and a second coordinate, similar to `atan2(y, x)`.",
+                        params: &[BuiltinParamDoc {
+                            name: "x",
+                            description: "Second coordinate paired with the receiver value to compute the full polar angle.",
+                        }],
+                        examples: &[
+                            "let angle = 1.0.atan(1.0);",
+                            "// angle is approximately 0.7853981634",
+                        ],
+                    },
                 ],
             ),
             float_method(
@@ -222,24 +247,31 @@ pub(crate) fn builtin_float_type() -> HostType {
                 "Return the natural logarithm.",
                 &["let value = 1.0.ln();", "// value == 0.0"],
             ),
-            float_method(
+            float_overloaded_method(
                 "log",
-                vec![
-                    FunctionTypeRef {
-                        params: Vec::new(),
-                        ret: Box::new(TypeRef::Float),
-                    },
-                    FunctionTypeRef {
-                        params: vec![TypeRef::Union(vec![TypeRef::Int, TypeRef::Float])],
-                        ret: Box::new(TypeRef::Float),
-                    },
-                ],
                 "Return the logarithm, using base 10 by default or a custom base when provided.",
-                &[
-                    "let value = 100.0.log();",
-                    "// value == 2.0",
-                    "let binary = 8.0.log(2.0);",
-                    "// binary == 3.0",
+                vec![
+                    BuiltinCallableOverloadDoc {
+                        signature: FunctionTypeRef {
+                            params: Vec::new(),
+                            ret: Box::new(TypeRef::Float),
+                        },
+                        summary: "Return the base-10 logarithm of the current value.",
+                        params: &[],
+                        examples: &["let value = 100.0.log();", "// value == 2.0"],
+                    },
+                    BuiltinCallableOverloadDoc {
+                        signature: FunctionTypeRef {
+                            params: vec![TypeRef::Union(vec![TypeRef::Int, TypeRef::Float])],
+                            ret: Box::new(TypeRef::Float),
+                        },
+                        summary: "Return the logarithm of the current value using a custom base.",
+                        params: &[BuiltinParamDoc {
+                            name: "base",
+                            description: "Base used to evaluate the logarithm.",
+                        }],
+                        examples: &["let binary = 8.0.log(2.0);", "// binary == 3.0"],
+                    },
                 ],
             ),
             float_method(

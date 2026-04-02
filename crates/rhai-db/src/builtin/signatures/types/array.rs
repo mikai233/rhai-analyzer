@@ -1,7 +1,11 @@
 use rhai_hir::{FunctionTypeRef, TypeRef};
 
-use crate::builtin::signatures::docs::builtin_type_docs;
-use crate::builtin::signatures::helpers::builtin_documented_method;
+use crate::builtin::signatures::docs::{
+    BuiltinCallableOverloadDoc, BuiltinParamDoc, builtin_type_docs,
+};
+use crate::builtin::signatures::helpers::{
+    builtin_documented_method, builtin_documented_overloaded_method,
+};
 use crate::types::{HostFunction, HostType};
 
 const ARRAY_REFERENCE_URL: &str = "https://rhai.rs/book/ref/arrays.html";
@@ -20,6 +24,14 @@ fn array_method(
         examples,
         ARRAY_REFERENCE_URL,
     )
+}
+
+fn array_overloaded_method(
+    name: &str,
+    summary: &str,
+    overloads: Vec<BuiltinCallableOverloadDoc<'_>>,
+) -> HostFunction {
+    builtin_documented_overloaded_method("array", name, summary, overloads, ARRAY_REFERENCE_URL)
 }
 
 pub(crate) fn builtin_array_type() -> HostType {
@@ -210,28 +222,79 @@ pub(crate) fn builtin_array_type() -> HostType {
                 "Check whether the array contains a value.",
                 &["let found = [1, 2, 3].contains(2);", "// found == true"],
             ),
-            array_method(
+            array_overloaded_method(
                 "index_of",
+                "Find the position of a value, or of the first element that satisfies a predicate callback.",
                 vec![
-                    FunctionTypeRef {
-                        params: vec![TypeRef::Any],
-                        ret: Box::new(TypeRef::Int),
+                    BuiltinCallableOverloadDoc {
+                        signature: FunctionTypeRef {
+                            params: vec![TypeRef::Any],
+                            ret: Box::new(TypeRef::Int),
+                        },
+                        summary: "Return the index of the first element equal to the requested value, or `-1` when it is absent.",
+                        params: &[BuiltinParamDoc {
+                            name: "needle",
+                            description: "Value to search for using Rhai equality semantics.",
+                        }],
+                        examples: &["let index = [1, 2, 3].index_of(2);", "// index == 1"],
                     },
-                    FunctionTypeRef {
-                        params: vec![TypeRef::Any, TypeRef::Int],
-                        ret: Box::new(TypeRef::Int),
+                    BuiltinCallableOverloadDoc {
+                        signature: FunctionTypeRef {
+                            params: vec![TypeRef::Any, TypeRef::Int],
+                            ret: Box::new(TypeRef::Int),
+                        },
+                        summary: "Return the index of the first matching value, starting from a given array offset.",
+                        params: &[
+                            BuiltinParamDoc {
+                                name: "needle",
+                                description: "Value to search for using Rhai equality semantics.",
+                            },
+                            BuiltinParamDoc {
+                                name: "start",
+                                description: "Array index where the search begins.",
+                            },
+                        ],
+                        examples: &["let index = [1, 2, 3, 2].index_of(2, 2);", "// index == 3"],
                     },
-                    FunctionTypeRef {
-                        params: vec![TypeRef::FnPtr],
-                        ret: Box::new(TypeRef::Int),
+                    BuiltinCallableOverloadDoc {
+                        signature: FunctionTypeRef {
+                            params: vec![TypeRef::FnPtr],
+                            ret: Box::new(TypeRef::Int),
+                        },
+                        summary: "Return the index of the first element accepted by a predicate callback, or `-1` when none match.",
+                        params: &[BuiltinParamDoc {
+                            name: "predicate",
+                            description: "Function pointer called for each element until it returns `true`.",
+                        }],
+                        examples: &[
+                            "fn is_even(value) { value % 2 == 0 }",
+                            "let index = [1, 3, 4, 7].index_of(Fn(\"is_even\"));",
+                            "// index == 2",
+                        ],
                     },
-                    FunctionTypeRef {
-                        params: vec![TypeRef::FnPtr, TypeRef::Int],
-                        ret: Box::new(TypeRef::Int),
+                    BuiltinCallableOverloadDoc {
+                        signature: FunctionTypeRef {
+                            params: vec![TypeRef::FnPtr, TypeRef::Int],
+                            ret: Box::new(TypeRef::Int),
+                        },
+                        summary: "Return the index of the first element accepted by a predicate callback, starting from a given array offset.",
+                        params: &[
+                            BuiltinParamDoc {
+                                name: "predicate",
+                                description: "Function pointer called for each element until it returns `true`.",
+                            },
+                            BuiltinParamDoc {
+                                name: "start",
+                                description: "Array index where the search begins.",
+                            },
+                        ],
+                        examples: &[
+                            "fn is_even(value) { value % 2 == 0 }",
+                            "let index = [2, 4, 6].index_of(Fn(\"is_even\"), 1);",
+                            "// index == 1",
+                        ],
                     },
                 ],
-                "Find the position of a value, or of the first element that satisfies a predicate callback.",
-                &["let index = [1, 2, 3].index_of(2);", "// index == 1"],
             ),
             array_method(
                 "pad",
@@ -246,31 +309,80 @@ pub(crate) fn builtin_array_type() -> HostType {
                     "// values == [1, 2, 0, 0]",
                 ],
             ),
-            array_method(
+            array_overloaded_method(
                 "extract",
-                vec![
-                    FunctionTypeRef {
-                        params: vec![TypeRef::Int],
-                        ret: Box::new(TypeRef::Array(Box::new(TypeRef::Any))),
-                    },
-                    FunctionTypeRef {
-                        params: vec![TypeRef::Int, TypeRef::Int],
-                        ret: Box::new(TypeRef::Array(Box::new(TypeRef::Any))),
-                    },
-                    FunctionTypeRef {
-                        params: vec![TypeRef::Range],
-                        ret: Box::new(TypeRef::Array(Box::new(TypeRef::Any))),
-                    },
-                    FunctionTypeRef {
-                        params: vec![TypeRef::RangeInclusive],
-                        ret: Box::new(TypeRef::Array(Box::new(TypeRef::Any))),
-                    },
-                ],
                 "Extract a portion of the array into a new array.",
-                &[
-                    "let values = [1, 2, 3, 4];",
-                    "let part = values.extract(1..3);",
-                    "// part == [2, 3]",
+                vec![
+                    BuiltinCallableOverloadDoc {
+                        signature: FunctionTypeRef {
+                            params: vec![TypeRef::Int],
+                            ret: Box::new(TypeRef::Array(Box::new(TypeRef::Any))),
+                        },
+                        summary: "Return the suffix starting at the requested array index.",
+                        params: &[BuiltinParamDoc {
+                            name: "start",
+                            description: "Array index where the extracted suffix begins.",
+                        }],
+                        examples: &[
+                            "let values = [1, 2, 3, 4];",
+                            "let part = values.extract(2);",
+                            "// part == [3, 4]",
+                        ],
+                    },
+                    BuiltinCallableOverloadDoc {
+                        signature: FunctionTypeRef {
+                            params: vec![TypeRef::Int, TypeRef::Int],
+                            ret: Box::new(TypeRef::Array(Box::new(TypeRef::Any))),
+                        },
+                        summary: "Return a slice using a starting index and an explicit element count.",
+                        params: &[
+                            BuiltinParamDoc {
+                                name: "start",
+                                description: "Array index where extraction begins.",
+                            },
+                            BuiltinParamDoc {
+                                name: "len",
+                                description: "Number of elements to copy into the new array.",
+                            },
+                        ],
+                        examples: &[
+                            "let values = [1, 2, 3, 4];",
+                            "let part = values.extract(1, 2);",
+                            "// part == [2, 3]",
+                        ],
+                    },
+                    BuiltinCallableOverloadDoc {
+                        signature: FunctionTypeRef {
+                            params: vec![TypeRef::Range],
+                            ret: Box::new(TypeRef::Array(Box::new(TypeRef::Any))),
+                        },
+                        summary: "Return a slice selected by an exclusive array range.",
+                        params: &[BuiltinParamDoc {
+                            name: "range",
+                            description: "Exclusive range of element indexes to copy.",
+                        }],
+                        examples: &[
+                            "let values = [1, 2, 3, 4];",
+                            "let part = values.extract(1..3);",
+                            "// part == [2, 3]",
+                        ],
+                    },
+                    BuiltinCallableOverloadDoc {
+                        signature: FunctionTypeRef {
+                            params: vec![TypeRef::RangeInclusive],
+                            ret: Box::new(TypeRef::Array(Box::new(TypeRef::Any))),
+                        },
+                        summary: "Return a slice selected by an inclusive array range.",
+                        params: &[BuiltinParamDoc {
+                            name: "range",
+                            description: "Inclusive range of element indexes to copy.",
+                        }],
+                        examples: &[
+                            "let values = [1, 2, 3, 4];",
+                            "let part = values.extract(1..=2);",
+                            "// part == [2, 3]",
+                        ],
+                    },
                 ],
             ),
             array_method(
@@ -287,111 +399,288 @@ pub(crate) fn builtin_array_type() -> HostType {
                     "// values == [3, 4]",
                 ],
             ),
-            array_method(
+            array_overloaded_method(
                 "drain",
-                vec![
-                    FunctionTypeRef {
-                        params: vec![TypeRef::FnPtr],
-                        ret: Box::new(TypeRef::Array(Box::new(TypeRef::Any))),
-                    },
-                    FunctionTypeRef {
-                        params: vec![TypeRef::Int, TypeRef::Int],
-                        ret: Box::new(TypeRef::Array(Box::new(TypeRef::Any))),
-                    },
-                    FunctionTypeRef {
-                        params: vec![TypeRef::Range],
-                        ret: Box::new(TypeRef::Array(Box::new(TypeRef::Any))),
-                    },
-                    FunctionTypeRef {
-                        params: vec![TypeRef::RangeInclusive],
-                        ret: Box::new(TypeRef::Array(Box::new(TypeRef::Any))),
-                    },
-                ],
                 "Remove a range of elements and return them as a new array.",
-                &[
-                    "let values = [1, 2, 3, 4];",
-                    "let removed = values.drain(1..3);",
-                    "// removed == [2, 3]",
-                    "// values == [1, 4]",
+                vec![
+                    BuiltinCallableOverloadDoc {
+                        signature: FunctionTypeRef {
+                            params: vec![TypeRef::FnPtr],
+                            ret: Box::new(TypeRef::Array(Box::new(TypeRef::Any))),
+                        },
+                        summary: "Remove every element accepted by a predicate callback and return the removed elements as a new array.",
+                        params: &[BuiltinParamDoc {
+                            name: "predicate",
+                            description: "Function pointer called for each element; matching elements are removed.",
+                        }],
+                        examples: &[
+                            "fn is_even(value) { value % 2 == 0 }",
+                            "let values = [1, 2, 3, 4];",
+                            "let removed = values.drain(Fn(\"is_even\"));",
+                            "// removed == [2, 4]",
+                            "// values == [1, 3]",
+                        ],
+                    },
+                    BuiltinCallableOverloadDoc {
+                        signature: FunctionTypeRef {
+                            params: vec![TypeRef::Int, TypeRef::Int],
+                            ret: Box::new(TypeRef::Array(Box::new(TypeRef::Any))),
+                        },
+                        summary: "Remove a fixed number of elements starting at an array index and return them as a new array.",
+                        params: &[
+                            BuiltinParamDoc {
+                                name: "start",
+                                description: "Array index where removal begins.",
+                            },
+                            BuiltinParamDoc {
+                                name: "len",
+                                description: "Number of elements to remove.",
+                            },
+                        ],
+                        examples: &[
+                            "let values = [1, 2, 3, 4];",
+                            "let removed = values.drain(1, 2);",
+                            "// removed == [2, 3]",
+                            "// values == [1, 4]",
+                        ],
+                    },
+                    BuiltinCallableOverloadDoc {
+                        signature: FunctionTypeRef {
+                            params: vec![TypeRef::Range],
+                            ret: Box::new(TypeRef::Array(Box::new(TypeRef::Any))),
+                        },
+                        summary: "Remove an exclusive range of elements and return them as a new array.",
+                        params: &[BuiltinParamDoc {
+                            name: "range",
+                            description: "Exclusive range of element indexes to remove.",
+                        }],
+                        examples: &[
+                            "let values = [1, 2, 3, 4];",
+                            "let removed = values.drain(1..3);",
+                            "// removed == [2, 3]",
+                            "// values == [1, 4]",
+                        ],
+                    },
+                    BuiltinCallableOverloadDoc {
+                        signature: FunctionTypeRef {
+                            params: vec![TypeRef::RangeInclusive],
+                            ret: Box::new(TypeRef::Array(Box::new(TypeRef::Any))),
+                        },
+                        summary: "Remove an inclusive range of elements and return them as a new array.",
+                        params: &[BuiltinParamDoc {
+                            name: "range",
+                            description: "Inclusive range of element indexes to remove.",
+                        }],
+                        examples: &[
+                            "let values = [1, 2, 3, 4];",
+                            "let removed = values.drain(1..=2);",
+                            "// removed == [2, 3]",
+                            "// values == [1, 4]",
+                        ],
+                    },
                 ],
             ),
-            array_method(
+            array_overloaded_method(
                 "retain",
-                vec![
-                    FunctionTypeRef {
-                        params: vec![TypeRef::FnPtr],
-                        ret: Box::new(TypeRef::Array(Box::new(TypeRef::Any))),
-                    },
-                    FunctionTypeRef {
-                        params: vec![TypeRef::Int, TypeRef::Int],
-                        ret: Box::new(TypeRef::Array(Box::new(TypeRef::Any))),
-                    },
-                    FunctionTypeRef {
-                        params: vec![TypeRef::Range],
-                        ret: Box::new(TypeRef::Array(Box::new(TypeRef::Any))),
-                    },
-                    FunctionTypeRef {
-                        params: vec![TypeRef::RangeInclusive],
-                        ret: Box::new(TypeRef::Array(Box::new(TypeRef::Any))),
-                    },
-                ],
                 "Retain selected elements in place and return the removed elements as a new array.",
-                &[
-                    "fn keep_even(x) { x % 2 == 0 }",
-                    "let values = [1, 2, 3, 4];",
-                    "let removed = values.retain(Fn(\"keep_even\"));",
-                    "// removed == [1, 3]",
-                    "// values == [2, 4]",
+                vec![
+                    BuiltinCallableOverloadDoc {
+                        signature: FunctionTypeRef {
+                            params: vec![TypeRef::FnPtr],
+                            ret: Box::new(TypeRef::Array(Box::new(TypeRef::Any))),
+                        },
+                        summary: "Keep only the elements accepted by a predicate callback and return the removed elements as a new array.",
+                        params: &[BuiltinParamDoc {
+                            name: "predicate",
+                            description: "Function pointer called for each element; matching elements stay in the array.",
+                        }],
+                        examples: &[
+                            "fn keep_even(x) { x % 2 == 0 }",
+                            "let values = [1, 2, 3, 4];",
+                            "let removed = values.retain(Fn(\"keep_even\"));",
+                            "// removed == [1, 3]",
+                            "// values == [2, 4]",
+                        ],
+                    },
+                    BuiltinCallableOverloadDoc {
+                        signature: FunctionTypeRef {
+                            params: vec![TypeRef::Int, TypeRef::Int],
+                            ret: Box::new(TypeRef::Array(Box::new(TypeRef::Any))),
+                        },
+                        summary: "Keep a contiguous array window in place and return all removed elements as a new array.",
+                        params: &[
+                            BuiltinParamDoc {
+                                name: "start",
+                                description: "Array index where the retained window begins.",
+                            },
+                            BuiltinParamDoc {
+                                name: "len",
+                                description: "Number of elements to keep.",
+                            },
+                        ],
+                        examples: &[
+                            "let values = [1, 2, 3, 4];",
+                            "let removed = values.retain(1, 2);",
+                            "// removed == [1, 4]",
+                            "// values == [2, 3]",
+                        ],
+                    },
+                    BuiltinCallableOverloadDoc {
+                        signature: FunctionTypeRef {
+                            params: vec![TypeRef::Range],
+                            ret: Box::new(TypeRef::Array(Box::new(TypeRef::Any))),
+                        },
+                        summary: "Keep an exclusive range of elements in place and return the removed elements as a new array.",
+                        params: &[BuiltinParamDoc {
+                            name: "range",
+                            description: "Exclusive range of element indexes to keep.",
+                        }],
+                        examples: &[
+                            "let values = [1, 2, 3, 4];",
+                            "let removed = values.retain(1..3);",
+                            "// removed == [1, 4]",
+                            "// values == [2, 3]",
+                        ],
+                    },
+                    BuiltinCallableOverloadDoc {
+                        signature: FunctionTypeRef {
+                            params: vec![TypeRef::RangeInclusive],
+                            ret: Box::new(TypeRef::Array(Box::new(TypeRef::Any))),
+                        },
+                        summary: "Keep an inclusive range of elements in place and return the removed elements as a new array.",
+                        params: &[BuiltinParamDoc {
+                            name: "range",
+                            description: "Inclusive range of element indexes to keep.",
+                        }],
+                        examples: &[
+                            "let values = [1, 2, 3, 4];",
+                            "let removed = values.retain(1..=2);",
+                            "// removed == [1, 4]",
+                            "// values == [2, 3]",
+                        ],
+                    },
                 ],
             ),
-            array_method(
+            array_overloaded_method(
                 "splice",
-                vec![
-                    FunctionTypeRef {
-                        params: vec![
-                            TypeRef::Int,
-                            TypeRef::Int,
-                            TypeRef::Array(Box::new(TypeRef::Any)),
-                        ],
-                        ret: Box::new(TypeRef::Array(Box::new(TypeRef::Any))),
-                    },
-                    FunctionTypeRef {
-                        params: vec![TypeRef::Range, TypeRef::Array(Box::new(TypeRef::Any))],
-                        ret: Box::new(TypeRef::Array(Box::new(TypeRef::Any))),
-                    },
-                    FunctionTypeRef {
-                        params: vec![
-                            TypeRef::RangeInclusive,
-                            TypeRef::Array(Box::new(TypeRef::Any)),
-                        ],
-                        ret: Box::new(TypeRef::Array(Box::new(TypeRef::Any))),
-                    },
-                ],
                 "Replace a range with new elements and return the removed elements.",
-                &[
-                    "let values = [1, 2, 3, 4];",
-                    "let removed = values.splice(1..3, [20, 30]);",
-                    "// removed == [2, 3]",
-                    "// values == [1, 20, 30, 4]",
+                vec![
+                    BuiltinCallableOverloadDoc {
+                        signature: FunctionTypeRef {
+                            params: vec![
+                                TypeRef::Int,
+                                TypeRef::Int,
+                                TypeRef::Array(Box::new(TypeRef::Any)),
+                            ],
+                            ret: Box::new(TypeRef::Array(Box::new(TypeRef::Any))),
+                        },
+                        summary: "Replace a fixed number of elements starting at an array index and return the removed elements.",
+                        params: &[
+                            BuiltinParamDoc {
+                                name: "start",
+                                description: "Array index where replacement begins.",
+                            },
+                            BuiltinParamDoc {
+                                name: "len",
+                                description: "Number of elements to replace.",
+                            },
+                            BuiltinParamDoc {
+                                name: "replacement",
+                                description: "Array of new elements inserted in place of the removed range.",
+                            },
+                        ],
+                        examples: &[
+                            "let values = [1, 2, 3, 4];",
+                            "let removed = values.splice(1, 2, [20, 30]);",
+                            "// removed == [2, 3]",
+                            "// values == [1, 20, 30, 4]",
+                        ],
+                    },
+                    BuiltinCallableOverloadDoc {
+                        signature: FunctionTypeRef {
+                            params: vec![TypeRef::Range, TypeRef::Array(Box::new(TypeRef::Any))],
+                            ret: Box::new(TypeRef::Array(Box::new(TypeRef::Any))),
+                        },
+                        summary: "Replace an exclusive range of elements and return the removed elements.",
+                        params: &[
+                            BuiltinParamDoc {
+                                name: "range",
+                                description: "Exclusive range of element indexes to replace.",
+                            },
+                            BuiltinParamDoc {
+                                name: "replacement",
+                                description: "Array of new elements inserted in place of the removed range.",
+                            },
+                        ],
+                        examples: &[
+                            "let values = [1, 2, 3, 4];",
+                            "let removed = values.splice(1..3, [20, 30]);",
+                            "// removed == [2, 3]",
+                            "// values == [1, 20, 30, 4]",
+                        ],
+                    },
+                    BuiltinCallableOverloadDoc {
+                        signature: FunctionTypeRef {
+                            params: vec![
+                                TypeRef::RangeInclusive,
+                                TypeRef::Array(Box::new(TypeRef::Any)),
+                            ],
+                            ret: Box::new(TypeRef::Array(Box::new(TypeRef::Any))),
+                        },
+                        summary: "Replace an inclusive range of elements and return the removed elements.",
+                        params: &[
+                            BuiltinParamDoc {
+                                name: "range",
+                                description: "Inclusive range of element indexes to replace.",
+                            },
+                            BuiltinParamDoc {
+                                name: "replacement",
+                                description: "Array of new elements inserted in place of the removed range.",
+                            },
+                        ],
+                        examples: &[
+                            "let values = [1, 2, 3, 4];",
+                            "let removed = values.splice(1..=2, [20, 30]);",
+                            "// removed == [2, 3]",
+                            "// values == [1, 20, 30, 4]",
+                        ],
+                    },
                 ],
             ),
-            array_method(
+            array_overloaded_method(
                 "dedup",
-                vec![
-                    FunctionTypeRef {
-                        params: Vec::new(),
-                        ret: Box::new(TypeRef::Unit),
-                    },
-                    FunctionTypeRef {
-                        params: vec![TypeRef::FnPtr],
-                        ret: Box::new(TypeRef::Unit),
-                    },
-                ],
                 "Remove consecutive duplicate elements in place.",
-                &[
-                    "let values = [1, 1, 2, 2, 3];",
-                    "values.dedup();",
-                    "// values == [1, 2, 3]",
+                vec![
+                    BuiltinCallableOverloadDoc {
+                        signature: FunctionTypeRef {
+                            params: Vec::new(),
+                            ret: Box::new(TypeRef::Unit),
+                        },
+                        summary: "Remove consecutive equal elements in place using Rhai equality semantics.",
+                        params: &[],
+                        examples: &[
+                            "let values = [1, 1, 2, 2, 3];",
+                            "values.dedup();",
+                            "// values == [1, 2, 3]",
+                        ],
+                    },
+                    BuiltinCallableOverloadDoc {
+                        signature: FunctionTypeRef {
+                            params: vec![TypeRef::FnPtr],
+                            ret: Box::new(TypeRef::Unit),
+                        },
+                        summary: "Remove consecutive duplicates in place using a custom comparison callback.",
+                        params: &[BuiltinParamDoc {
+                            name: "same",
+                            description: "Function pointer that returns `true` when two neighboring elements should be treated as duplicates.",
+                        }],
+                        examples: &[
+                            "fn same_parity(left, right) { left % 2 == right % 2 }",
+                            "let values = [1, 3, 2, 4, 5];",
+                            "values.dedup(Fn(\"same_parity\"));",
+                            "// values == [1, 2, 5]",
+                        ],
+                    },
                 ],
             ),
             array_method(
@@ -491,82 +780,184 @@ pub(crate) fn builtin_array_type() -> HostType {
                     "// all_positive == true",
                 ],
             ),
-            array_method(
+            array_overloaded_method(
                 "reduce",
-                vec![
-                    FunctionTypeRef {
-                        params: vec![TypeRef::FnPtr],
-                        ret: Box::new(TypeRef::Union(vec![TypeRef::Any, TypeRef::Unit])),
-                    },
-                    FunctionTypeRef {
-                        params: vec![TypeRef::FnPtr, TypeRef::Any],
-                        ret: Box::new(TypeRef::Any),
-                    },
-                ],
                 "Reduce the array into a single value using a callback.",
-                &[
-                    "fn add(total, value) { total + value }",
-                    "let values = [1, 2, 3];",
-                    "let sum = values.reduce(Fn(\"add\"), 0);",
-                    "// sum == 6",
+                vec![
+                    BuiltinCallableOverloadDoc {
+                        signature: FunctionTypeRef {
+                            params: vec![TypeRef::FnPtr],
+                            ret: Box::new(TypeRef::Union(vec![TypeRef::Any, TypeRef::Unit])),
+                        },
+                        summary: "Fold the array from left to right, using the first element as the initial accumulator.",
+                        params: &[BuiltinParamDoc {
+                            name: "reducer",
+                            description: "Function pointer called with the current accumulator and the next element.",
+                        }],
+                        examples: &[
+                            "fn add(total, value) { total + value }",
+                            "let values = [1, 2, 3];",
+                            "let sum = values.reduce(Fn(\"add\"));",
+                            "// sum == 6",
+                        ],
+                    },
+                    BuiltinCallableOverloadDoc {
+                        signature: FunctionTypeRef {
+                            params: vec![TypeRef::FnPtr, TypeRef::Any],
+                            ret: Box::new(TypeRef::Any),
+                        },
+                        summary: "Fold the array from left to right, starting from an explicit initial accumulator value.",
+                        params: &[
+                            BuiltinParamDoc {
+                                name: "reducer",
+                                description: "Function pointer called with the current accumulator and the next element.",
+                            },
+                            BuiltinParamDoc {
+                                name: "initial",
+                                description: "Initial accumulator value used before the first element is processed.",
+                            },
+                        ],
+                        examples: &[
+                            "fn add(total, value) { total + value }",
+                            "let values = [1, 2, 3];",
+                            "let sum = values.reduce(Fn(\"add\"), 0);",
+                            "// sum == 6",
+                        ],
+                    },
                 ],
             ),
-            array_method(
+            array_overloaded_method(
                 "reduce_rev",
-                vec![
-                    FunctionTypeRef {
-                        params: vec![TypeRef::FnPtr],
-                        ret: Box::new(TypeRef::Union(vec![TypeRef::Any, TypeRef::Unit])),
-                    },
-                    FunctionTypeRef {
-                        params: vec![TypeRef::FnPtr, TypeRef::Any],
-                        ret: Box::new(TypeRef::Any),
-                    },
-                ],
                 "Reduce the array from the end toward the beginning using a callback.",
-                &[
-                    "fn append(acc, value) { acc + value }",
-                    "let values = [\"a\", \"b\", \"c\"];",
-                    "let text = values.reduce_rev(Fn(\"append\"), \"\");",
-                    "// text == \"cba\"",
+                vec![
+                    BuiltinCallableOverloadDoc {
+                        signature: FunctionTypeRef {
+                            params: vec![TypeRef::FnPtr],
+                            ret: Box::new(TypeRef::Union(vec![TypeRef::Any, TypeRef::Unit])),
+                        },
+                        summary: "Fold the array from right to left, using the last element as the initial accumulator.",
+                        params: &[BuiltinParamDoc {
+                            name: "reducer",
+                            description: "Function pointer called with the current accumulator and the next element from the end.",
+                        }],
+                        examples: &[
+                            "fn append(acc, value) { acc + value }",
+                            "let values = [\"a\", \"b\", \"c\"];",
+                            "let text = values.reduce_rev(Fn(\"append\"));",
+                            "// text == \"cba\"",
+                        ],
+                    },
+                    BuiltinCallableOverloadDoc {
+                        signature: FunctionTypeRef {
+                            params: vec![TypeRef::FnPtr, TypeRef::Any],
+                            ret: Box::new(TypeRef::Any),
+                        },
+                        summary: "Fold the array from right to left, starting from an explicit initial accumulator value.",
+                        params: &[
+                            BuiltinParamDoc {
+                                name: "reducer",
+                                description: "Function pointer called with the current accumulator and the next element from the end.",
+                            },
+                            BuiltinParamDoc {
+                                name: "initial",
+                                description: "Initial accumulator value used before the last element is processed.",
+                            },
+                        ],
+                        examples: &[
+                            "fn append(acc, value) { acc + value }",
+                            "let values = [\"a\", \"b\", \"c\"];",
+                            "let text = values.reduce_rev(Fn(\"append\"), \"\");",
+                            "// text == \"cba\"",
+                        ],
+                    },
                 ],
             ),
-            array_method(
+            array_overloaded_method(
                 "find",
-                vec![
-                    FunctionTypeRef {
-                        params: vec![TypeRef::FnPtr],
-                        ret: Box::new(TypeRef::Union(vec![TypeRef::Any, TypeRef::Unit])),
-                    },
-                    FunctionTypeRef {
-                        params: vec![TypeRef::FnPtr, TypeRef::Int],
-                        ret: Box::new(TypeRef::Union(vec![TypeRef::Any, TypeRef::Unit])),
-                    },
-                ],
                 "Return the first element that satisfies a predicate callback.",
-                &[
-                    "fn is_even(x) { x % 2 == 0 }",
-                    "let value = [1, 3, 4, 7].find(Fn(\"is_even\"));",
-                    "// value == 4",
+                vec![
+                    BuiltinCallableOverloadDoc {
+                        signature: FunctionTypeRef {
+                            params: vec![TypeRef::FnPtr],
+                            ret: Box::new(TypeRef::Union(vec![TypeRef::Any, TypeRef::Unit])),
+                        },
+                        summary: "Return the first element accepted by a predicate callback, or `()` when none match.",
+                        params: &[BuiltinParamDoc {
+                            name: "predicate",
+                            description: "Function pointer called for each element until it returns `true`.",
+                        }],
+                        examples: &[
+                            "fn is_even(x) { x % 2 == 0 }",
+                            "let value = [1, 3, 4, 7].find(Fn(\"is_even\"));",
+                            "// value == 4",
+                        ],
+                    },
+                    BuiltinCallableOverloadDoc {
+                        signature: FunctionTypeRef {
+                            params: vec![TypeRef::FnPtr, TypeRef::Int],
+                            ret: Box::new(TypeRef::Union(vec![TypeRef::Any, TypeRef::Unit])),
+                        },
+                        summary: "Return the first element accepted by a predicate callback, starting from a given array offset.",
+                        params: &[
+                            BuiltinParamDoc {
+                                name: "predicate",
+                                description: "Function pointer called for each element until it returns `true`.",
+                            },
+                            BuiltinParamDoc {
+                                name: "start",
+                                description: "Array index where the search begins.",
+                            },
+                        ],
+                        examples: &[
+                            "fn is_even(x) { x % 2 == 0 }",
+                            "let value = [2, 4, 5, 6].find(Fn(\"is_even\"), 2);",
+                            "// value == 6",
+                        ],
+                    },
                 ],
             ),
-            array_method(
+            array_overloaded_method(
                 "find_map",
-                vec![
-                    FunctionTypeRef {
-                        params: vec![TypeRef::FnPtr],
-                        ret: Box::new(TypeRef::Union(vec![TypeRef::Any, TypeRef::Unit])),
-                    },
-                    FunctionTypeRef {
-                        params: vec![TypeRef::FnPtr, TypeRef::Int],
-                        ret: Box::new(TypeRef::Union(vec![TypeRef::Any, TypeRef::Unit])),
-                    },
-                ],
                 "Return the first non-unit value produced by the callback.",
-                &[
-                    "fn parse_even(x) { if x % 2 == 0 { x * 10 } else { () } }",
-                    "let value = [1, 3, 4, 7].find_map(Fn(\"parse_even\"));",
-                    "// value == 40",
+                vec![
+                    BuiltinCallableOverloadDoc {
+                        signature: FunctionTypeRef {
+                            params: vec![TypeRef::FnPtr],
+                            ret: Box::new(TypeRef::Union(vec![TypeRef::Any, TypeRef::Unit])),
+                        },
+                        summary: "Return the first non-unit value produced by a callback, or `()` when the callback never produces a value.",
+                        params: &[BuiltinParamDoc {
+                            name: "mapper",
+                            description: "Function pointer called for each element until it returns something other than `()`.",
+                        }],
+                        examples: &[
+                            "fn parse_even(x) { if x % 2 == 0 { x * 10 } else { () } }",
+                            "let value = [1, 3, 4, 7].find_map(Fn(\"parse_even\"));",
+                            "// value == 40",
+                        ],
+                    },
+                    BuiltinCallableOverloadDoc {
+                        signature: FunctionTypeRef {
+                            params: vec![TypeRef::FnPtr, TypeRef::Int],
+                            ret: Box::new(TypeRef::Union(vec![TypeRef::Any, TypeRef::Unit])),
+                        },
+                        summary: "Return the first non-unit value produced by a callback, starting from a given array offset.",
+                        params: &[
+                            BuiltinParamDoc {
+                                name: "mapper",
+                                description: "Function pointer called for each element until it returns something other than `()`.",
+                            },
+                            BuiltinParamDoc {
+                                name: "start",
+                                description: "Array index where the search begins.",
+                            },
+                        ],
+                        examples: &[
+                            "fn parse_even(x) { if x % 2 == 0 { x * 10 } else { () } }",
+                            "let value = [2, 4, 6].find_map(Fn(\"parse_even\"), 1);",
+                            "// value == 40",
+                        ],
+                    },
                 ],
             ),
             array_method(

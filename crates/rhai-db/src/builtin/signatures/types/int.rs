@@ -1,7 +1,11 @@
 use rhai_hir::{FunctionTypeRef, TypeRef};
 
-use crate::builtin::signatures::docs::builtin_type_docs;
-use crate::builtin::signatures::helpers::builtin_documented_method;
+use crate::builtin::signatures::docs::{
+    BuiltinCallableOverloadDoc, BuiltinParamDoc, builtin_type_docs,
+};
+use crate::builtin::signatures::helpers::{
+    builtin_documented_method, builtin_documented_overloaded_method,
+};
 use crate::types::{HostFunction, HostType};
 
 const NUMBER_REFERENCE_URL: &str = "https://rhai.rs/book/language/num-fn.html";
@@ -20,6 +24,14 @@ fn int_method(
         examples,
         NUMBER_REFERENCE_URL,
     )
+}
+
+fn int_overloaded_method(
+    name: &str,
+    summary: &str,
+    overloads: Vec<BuiltinCallableOverloadDoc<'_>>,
+) -> HostFunction {
+    builtin_documented_overloaded_method("int", name, summary, overloads, NUMBER_REFERENCE_URL)
 }
 
 pub(crate) fn builtin_int_type() -> HostType {
@@ -161,48 +173,134 @@ pub(crate) fn builtin_int_type() -> HostType {
                     "// cleared == 0b0010",
                 ],
             ),
-            int_method(
+            int_overloaded_method(
                 "get_bits",
-                vec![
-                    FunctionTypeRef {
-                        params: vec![TypeRef::Int, TypeRef::Int],
-                        ret: Box::new(TypeRef::Int),
-                    },
-                    FunctionTypeRef {
-                        params: vec![TypeRef::Range],
-                        ret: Box::new(TypeRef::Int),
-                    },
-                    FunctionTypeRef {
-                        params: vec![TypeRef::RangeInclusive],
-                        ret: Box::new(TypeRef::Int),
-                    },
-                ],
                 "Extract a range of bits and return them right-aligned as a new integer.",
-                &[
-                    "let middle = 0b110110.get_bits(1..4);",
-                    "// middle == 0b011",
+                vec![
+                    BuiltinCallableOverloadDoc {
+                        signature: FunctionTypeRef {
+                            params: vec![TypeRef::Int, TypeRef::Int],
+                            ret: Box::new(TypeRef::Int),
+                        },
+                        summary: "Extract a fixed number of bits starting at a zero-based bit offset.",
+                        params: &[
+                            BuiltinParamDoc {
+                                name: "start",
+                                description: "Zero-based index of the first bit to read, starting from the least-significant bit.",
+                            },
+                            BuiltinParamDoc {
+                                name: "len",
+                                description: "Number of bits to extract.",
+                            },
+                        ],
+                        examples: &[
+                            "let middle = 0b110110.get_bits(1, 3);",
+                            "// middle == 0b011",
+                        ],
+                    },
+                    BuiltinCallableOverloadDoc {
+                        signature: FunctionTypeRef {
+                            params: vec![TypeRef::Range],
+                            ret: Box::new(TypeRef::Int),
+                        },
+                        summary: "Extract bits selected by an exclusive bit range.",
+                        params: &[BuiltinParamDoc {
+                            name: "range",
+                            description: "Exclusive bit range to extract, starting from the least-significant bit.",
+                        }],
+                        examples: &[
+                            "let middle = 0b110110.get_bits(1..4);",
+                            "// middle == 0b011",
+                        ],
+                    },
+                    BuiltinCallableOverloadDoc {
+                        signature: FunctionTypeRef {
+                            params: vec![TypeRef::RangeInclusive],
+                            ret: Box::new(TypeRef::Int),
+                        },
+                        summary: "Extract bits selected by an inclusive bit range.",
+                        params: &[BuiltinParamDoc {
+                            name: "range",
+                            description: "Inclusive bit range to extract, starting from the least-significant bit.",
+                        }],
+                        examples: &[
+                            "let middle = 0b110110.get_bits(1..=3);",
+                            "// middle == 0b011",
+                        ],
+                    },
                 ],
             ),
-            int_method(
+            int_overloaded_method(
                 "set_bits",
-                vec![
-                    FunctionTypeRef {
-                        params: vec![TypeRef::Int, TypeRef::Int, TypeRef::Int],
-                        ret: Box::new(TypeRef::Int),
-                    },
-                    FunctionTypeRef {
-                        params: vec![TypeRef::Range, TypeRef::Int],
-                        ret: Box::new(TypeRef::Int),
-                    },
-                    FunctionTypeRef {
-                        params: vec![TypeRef::RangeInclusive, TypeRef::Int],
-                        ret: Box::new(TypeRef::Int),
-                    },
-                ],
                 "Return a new integer with a range of bits replaced by the supplied value.",
-                &[
-                    "let value = 0b110110.set_bits(1..4, 0b000);",
-                    "// value == 0b110000",
+                vec![
+                    BuiltinCallableOverloadDoc {
+                        signature: FunctionTypeRef {
+                            params: vec![TypeRef::Int, TypeRef::Int, TypeRef::Int],
+                            ret: Box::new(TypeRef::Int),
+                        },
+                        summary: "Replace a fixed number of bits starting at a zero-based bit offset and return the updated integer.",
+                        params: &[
+                            BuiltinParamDoc {
+                                name: "start",
+                                description: "Zero-based index of the first bit to replace, starting from the least-significant bit.",
+                            },
+                            BuiltinParamDoc {
+                                name: "len",
+                                description: "Number of bits to replace.",
+                            },
+                            BuiltinParamDoc {
+                                name: "value",
+                                description: "New bit pattern written into the selected range.",
+                            },
+                        ],
+                        examples: &[
+                            "let value = 0b110110.set_bits(1, 3, 0b000);",
+                            "// value == 0b110000",
+                        ],
+                    },
+                    BuiltinCallableOverloadDoc {
+                        signature: FunctionTypeRef {
+                            params: vec![TypeRef::Range, TypeRef::Int],
+                            ret: Box::new(TypeRef::Int),
+                        },
+                        summary: "Replace bits selected by an exclusive range and return the updated integer.",
+                        params: &[
+                            BuiltinParamDoc {
+                                name: "range",
+                                description: "Exclusive bit range to replace, starting from the least-significant bit.",
+                            },
+                            BuiltinParamDoc {
+                                name: "value",
+                                description: "New bit pattern written into the selected range.",
+                            },
+                        ],
+                        examples: &[
+                            "let value = 0b110110.set_bits(1..4, 0b000);",
+                            "// value == 0b110000",
+                        ],
+                    },
+                    BuiltinCallableOverloadDoc {
+                        signature: FunctionTypeRef {
+                            params: vec![TypeRef::RangeInclusive, TypeRef::Int],
+                            ret: Box::new(TypeRef::Int),
+                        },
+                        summary: "Replace bits selected by an inclusive range and return the updated integer.",
+                        params: &[
+                            BuiltinParamDoc {
+                                name: "range",
+                                description: "Inclusive bit range to replace, starting from the least-significant bit.",
+                            },
+                            BuiltinParamDoc {
+                                name: "value",
+                                description: "New bit pattern written into the selected range.",
+                            },
+                        ],
+                        examples: &[
+                            "let value = 0b110110.set_bits(1..=3, 0b000);",
+                            "// value == 0b110000",
+                        ],
+                    },
                 ],
             ),
             int_method(

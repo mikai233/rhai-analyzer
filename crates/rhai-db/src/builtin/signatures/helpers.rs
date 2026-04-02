@@ -1,6 +1,9 @@
 use rhai_hir::FunctionTypeRef;
 
-use crate::builtin::signatures::docs::{builtin_global_docs, builtin_method_docs};
+use crate::builtin::signatures::docs::{
+    BuiltinCallableOverloadDoc, builtin_global_docs, builtin_global_overload_docs,
+    builtin_method_docs, builtin_method_overload_docs,
+};
 use crate::types::{HostFunction, HostFunctionOverload};
 
 pub(crate) fn builtin_method(
@@ -39,6 +42,27 @@ pub(crate) fn builtin_documented_method(
     builtin_method(name, signatures, Some(docs))
 }
 
+pub(crate) fn builtin_documented_overloaded_method(
+    receiver_type: &str,
+    name: &str,
+    summary: &str,
+    overloads: Vec<BuiltinCallableOverloadDoc<'_>>,
+    reference_url: &str,
+) -> HostFunction {
+    let docs = builtin_method_overload_docs(
+        receiver_type,
+        name,
+        summary,
+        overloads.as_slice(),
+        reference_url,
+    );
+    let signatures = overloads
+        .into_iter()
+        .map(|overload| overload.signature)
+        .collect::<Vec<_>>();
+    builtin_method(name, signatures, Some(docs))
+}
+
 pub(crate) fn builtin_global_function(
     name: &str,
     signatures: Vec<FunctionTypeRef>,
@@ -63,4 +87,18 @@ pub(crate) fn builtin_global_function(
             })
             .collect(),
     }
+}
+
+pub(crate) fn builtin_documented_overloaded_global_function(
+    name: &str,
+    summary: &str,
+    overloads: Vec<BuiltinCallableOverloadDoc<'_>>,
+    reference_url: &str,
+) -> HostFunction {
+    let docs = builtin_global_overload_docs(name, summary, overloads.as_slice(), reference_url);
+    let signatures = overloads
+        .into_iter()
+        .map(|overload| overload.signature)
+        .collect::<Vec<_>>();
+    builtin_method(name, signatures, Some(docs))
 }

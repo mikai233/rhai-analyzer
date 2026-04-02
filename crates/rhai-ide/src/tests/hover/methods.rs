@@ -176,6 +176,75 @@ fn hover_supports_builtin_host_methods() {
     assert_structured_builtin_docs(docs, "to_blob");
     assert_eq!(hover.source, HoverSignatureSource::Declared);
 }
+
+#[test]
+fn hover_surfaces_overload_parameter_docs_for_builtin_string_methods() {
+    let mut host = AnalysisHost::default();
+    host.apply_change(ChangeSet::single_file(
+        "main.rhai",
+        r#"
+            fn run() {
+                "hello".chars;
+            }
+        "#,
+        DocumentVersion(1),
+    ));
+
+    let analysis = host.snapshot();
+    let file_id = analysis
+        .db
+        .vfs()
+        .file_id(Path::new("main.rhai"))
+        .expect("expected main.rhai");
+    assert_no_syntax_diagnostics(&analysis, file_id);
+    let text = analysis.db.file_text(file_id).expect("expected text");
+    let offset =
+        u32::try_from(text.find(".chars").expect("expected builtin method") + 2).expect("offset");
+
+    let hover = analysis
+        .hover(FilePosition { file_id, offset })
+        .expect("expected builtin method hover");
+
+    let docs = hover.docs.as_deref().expect("expected builtin docs");
+    assert_structured_builtin_docs(docs, "chars");
+    assert!(docs.contains("## Overloads"));
+    assert!(docs.contains("`start`"));
+    assert!(docs.contains("`len`"));
+}
+
+#[test]
+fn hover_surfaces_overload_parameter_docs_for_builtin_float_methods() {
+    let mut host = AnalysisHost::default();
+    host.apply_change(ChangeSet::single_file(
+        "main.rhai",
+        r#"
+            fn run() {
+                1.0.atan;
+            }
+        "#,
+        DocumentVersion(1),
+    ));
+
+    let analysis = host.snapshot();
+    let file_id = analysis
+        .db
+        .vfs()
+        .file_id(Path::new("main.rhai"))
+        .expect("expected main.rhai");
+    assert_no_syntax_diagnostics(&analysis, file_id);
+    let text = analysis.db.file_text(file_id).expect("expected text");
+    let offset =
+        u32::try_from(text.find(".atan").expect("expected builtin method") + 2).expect("offset");
+
+    let hover = analysis
+        .hover(FilePosition { file_id, offset })
+        .expect("expected builtin method hover");
+
+    let docs = hover.docs.as_deref().expect("expected builtin docs");
+    assert_structured_builtin_docs(docs, "atan");
+    assert!(docs.contains("## Overloads"));
+    assert!(docs.contains("`x`"));
+}
 #[test]
 fn hover_supports_builtin_universal_methods() {
     let mut host = AnalysisHost::default();
