@@ -401,15 +401,17 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
           tag="${{ needs.prepare-release.outputs.release_tag }}"
           asset="dist/release/rhai-analyzer.vsix"
 
-          if gh release view "$tag" >/dev/null 2>&1; then
-            gh release upload "$tag" "$asset" --clobber
+          if gh release view "$tag" --repo "$GH_REPO" >/dev/null 2>&1; then
+            gh release upload "$tag" "$asset" --repo "$GH_REPO" --clobber
           else
             args=(
+              --repo "$GH_REPO"
               "$tag"
               "$asset"
               --title "v${{ needs.prepare-release.outputs.release_version }}"
