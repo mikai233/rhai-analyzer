@@ -164,6 +164,10 @@ jobs:
         with:
           node-version: 24
 
+      - name: Install Rust toolchain
+        if: ${{ inputs.mode != 'package' }}
+        uses: dtolnay/rust-toolchain@stable
+
       - name: Apply version bump
         id: version
         if: ${{ inputs.mode != 'package' }}
@@ -181,6 +185,10 @@ jobs:
           echo "new_version=$(node -pe "JSON.parse(require('fs').readFileSync('version.json','utf8')).newVersion")" >> "$GITHUB_OUTPUT"
           echo "changed=$(node -pe "JSON.parse(require('fs').readFileSync('version.json','utf8')).changed")" >> "$GITHUB_OUTPUT"
 
+      - name: Sync Cargo.lock after version bump
+        if: ${{ inputs.mode != 'package' }}
+        run: cargo metadata --format-version 1 > /dev/null
+
       - name: Fail when version did not change
         if: ${{ inputs.mode != 'package' && steps.version.outputs.changed != 'true' }}
         run: |
@@ -195,7 +203,7 @@ jobs:
           version="${{ steps.version.outputs.new_version }}"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add Cargo.toml clients/vscode/package.json clients/vscode/package-lock.json
+          git add Cargo.toml Cargo.lock clients/vscode/package.json clients/vscode/package-lock.json
           git commit -m "chore(release): cut v$version"
           git tag "v$version"
           git push origin "HEAD:${{ github.ref_name }}"
