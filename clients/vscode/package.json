@@ -2,7 +2,7 @@
   "name": "rhai-analyzer",
   "displayName": "Rhai Analyzer",
   "description": "Language support for Rhai powered by the rhai-analyzer LSP server.",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "publisher": "mikai233",
   "license": "MIT OR Apache-2.0",
   "icon": "icon.png",
