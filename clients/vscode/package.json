@@ -6,9 +6,13 @@
   "publisher": "mikai233",
   "license": "MIT OR Apache-2.0",
   "icon": "icon.png",
+  "homepage": "https://github.com/mikai233/rhai-analyzer",
+  "bugs": {
+    "url": "https://github.com/mikai233/rhai-analyzer/issues"
+  },
   "repository": {
     "type": "git",
-    "url": "https://github.com/local/rhai-analyzer.git"
+    "url": "https://github.com/mikai233/rhai-analyzer.git"
   },
   "engines": {
     "vscode": "^1.96.0"

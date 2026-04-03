@@ -1,7 +1,3 @@
-<p align="center">
-  <img src="./icon.png" width="128" alt="Rhai Analyzer icon" />
-</p>
-
 # Rhai Analyzer
 
 Rhai language support for Visual Studio Code, powered by the `rhai-analyzer` language server.
