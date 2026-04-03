@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::db::{AnalyzerDatabase, DatabaseSnapshot};
 use crate::infer::{ImportedMethodSignature, ImportedModuleMember};
@@ -216,7 +216,8 @@ impl DatabaseSnapshot {
         file_id: FileId,
         module_path: &[String],
     ) -> Vec<ImportedModuleCompletion> {
-        let mut completions = HashMap::<String, ImportedModuleCompletion>::new();
+        let mut completions = Vec::<ImportedModuleCompletion>::new();
+        let mut completion_names = HashSet::<String>::new();
         let explicit_global_alias = has_import_alias_named(self, file_id, "global");
         let origin_path = resolve_linked_import_origin_path(self, file_id, module_path)
             .unwrap_or_else(|| module_path.to_vec());
@@ -239,18 +240,16 @@ impl DatabaseSnapshot {
                 let Some(name) = export.export.exported_name.clone() else {
                     continue;
                 };
-                completions.insert(
-                    name.clone(),
-                    ImportedModuleCompletion {
-                        name,
-                        kind: identity.kind,
-                        origin: Some(origin_path.join("::")),
-                        file_id: Some(export.file_id),
-                        symbol: Some(identity.symbol),
-                        annotation,
-                        docs,
-                    },
-                );
+                completion_names.insert(name.clone());
+                completions.push(ImportedModuleCompletion {
+                    name,
+                    kind: identity.kind,
+                    origin: Some(origin_path.join("::")),
+                    file_id: Some(export.file_id),
+                    symbol: Some(identity.symbol),
+                    annotation,
+                    docs,
+                });
             }
 
             let provider_hir = self.hir(linked_import.provider_file_id);
@@ -265,27 +264,25 @@ impl DatabaseSnapshot {
                     .as_ref()
                     .map(|hir| hir.symbol(alias_symbol).name.clone())
                     .unwrap_or_default();
-                if name.is_empty() {
+                if name.is_empty() || completion_names.contains(name.as_str()) {
                     continue;
                 }
-                completions
-                    .entry(name.clone())
-                    .or_insert(ImportedModuleCompletion {
-                        name,
-                        kind: rhai_hir::SymbolKind::ImportAlias,
-                        origin: Some(
-                            nested_linked_import_origin_path(&origin_path, nested).join("::"),
-                        ),
-                        file_id: None,
-                        symbol: None,
-                        annotation: None,
-                        docs: None,
-                    });
+                completion_names.insert(name.clone());
+                completions.push(ImportedModuleCompletion {
+                    name,
+                    kind: rhai_hir::SymbolKind::ImportAlias,
+                    origin: Some(nested_linked_import_origin_path(&origin_path, nested).join("::")),
+                    file_id: None,
+                    symbol: None,
+                    annotation: None,
+                    docs: None,
+                });
             }
         }
 
-        collect_host_module_completions(self, file_id, module_path, &mut completions);
-        collect_inline_module_completions(self, file_id, module_path, &mut completions);
+        let mut fallback_completions = HashMap::<String, ImportedModuleCompletion>::new();
+        collect_host_module_completions(self, file_id, module_path, &mut fallback_completions);
+        collect_inline_module_completions(self, file_id, module_path, &mut fallback_completions);
         if module_path
             .first()
             .is_some_and(|segment| segment == "global")
@@ -295,13 +292,31 @@ impl DatabaseSnapshot {
                 self,
                 file_id,
                 module_path,
-                &mut completions,
+                &mut fallback_completions,
             );
         }
 
-        let mut values = completions.into_values().collect::<Vec<_>>();
-        values.sort_by(|left, right| left.name.cmp(&right.name));
-        values
+        completions.extend(
+            fallback_completions
+                .into_values()
+                .filter(|completion| !completion_names.contains(completion.name.as_str())),
+        );
+        completions.sort_by(|left, right| {
+            left.name
+                .cmp(&right.name)
+                .then_with(|| left.origin.cmp(&right.origin))
+                .then_with(|| {
+                    left.file_id
+                        .map(|file_id| file_id.0)
+                        .cmp(&right.file_id.map(|file_id| file_id.0))
+                })
+                .then_with(|| {
+                    left.symbol
+                        .map(|symbol| symbol.0)
+                        .cmp(&right.symbol.map(|symbol| symbol.0))
+                })
+        });
+        completions
     }
 }
 

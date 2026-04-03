@@ -26,6 +26,24 @@ impl FileHir {
             .collect()
     }
 
+    pub fn completion_symbols_at_cursor(&self, offset: TextSize) -> Vec<CompletionSymbol> {
+        self.visible_symbols_with_scope_distance_at_cursor(offset)
+            .into_iter()
+            .map(|(symbol_id, scope_distance)| {
+                let symbol = self.symbol(symbol_id);
+                CompletionSymbol {
+                    symbol: symbol_id,
+                    name: symbol.name.clone(),
+                    kind: symbol.kind,
+                    range: symbol.range,
+                    scope_distance,
+                    docs: symbol.docs,
+                    annotation: symbol.annotation.clone(),
+                }
+            })
+            .collect()
+    }
+
     pub fn project_completion_symbols_at(
         &self,
         offset: TextSize,
@@ -33,6 +51,24 @@ impl FileHir {
     ) -> Vec<WorkspaceSymbol> {
         let local_names = self
             .visible_symbols_at(offset)
+            .into_iter()
+            .map(|symbol| self.symbol(symbol).name.clone())
+            .collect::<HashSet<_>>();
+
+        workspace
+            .iter()
+            .filter(|symbol| !local_names.contains(symbol.name.as_str()))
+            .cloned()
+            .collect()
+    }
+
+    pub fn project_completion_symbols_at_cursor(
+        &self,
+        offset: TextSize,
+        workspace: &[WorkspaceSymbol],
+    ) -> Vec<WorkspaceSymbol> {
+        let local_names = self
+            .visible_symbols_at_cursor(offset)
             .into_iter()
             .map(|symbol| self.symbol(symbol).name.clone())
             .collect::<HashSet<_>>();

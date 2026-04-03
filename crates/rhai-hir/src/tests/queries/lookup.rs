@@ -127,6 +127,21 @@ fn visible_symbol_queries_track_scope_distance() {
     assert_eq!(inner_distance, 0);
     assert_eq!(outer_distance, 1);
 }
+
+#[test]
+fn cursor_lookup_helpers_treat_end_of_file_as_adjacent_to_last_scope() {
+    let source = "let name = \"mikai233\";\nn";
+    let parse = parse_valid(source);
+    let hir = lower_file(&parse);
+    let eof_offset = TextSize::from(u32::try_from(source.len()).expect("expected offset to fit"));
+
+    assert_eq!(hir.find_scope_at(eof_offset), None);
+
+    let scope_id = hir
+        .find_scope_for_cursor(eof_offset)
+        .expect("expected cursor scope at end of file");
+    assert_eq!(hir.scope(scope_id).kind, ScopeKind::File);
+}
 #[test]
 fn offset_based_query_helpers_support_navigation_workflows() {
     let source = r#"

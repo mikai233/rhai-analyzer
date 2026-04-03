@@ -24,6 +24,13 @@ impl FileHir {
         }
     }
 
+    pub fn enclosing_function_symbol_for_cursor(&self, offset: TextSize) -> Option<SymbolId> {
+        self.enclosing_function_symbol_at(offset).or_else(|| {
+            self.previous_cursor_offset(offset)
+                .and_then(|offset| self.enclosing_function_symbol_at(offset))
+        })
+    }
+
     pub fn this_type_at(&self, offset: TextSize) -> Option<TypeRef> {
         let function = self.enclosing_function_symbol_at(offset)?;
         Some(
@@ -31,6 +38,13 @@ impl FileHir {
                 .and_then(|info| info.this_type.clone())
                 .unwrap_or(TypeRef::Unknown),
         )
+    }
+
+    pub fn this_type_for_cursor(&self, offset: TextSize) -> Option<TypeRef> {
+        self.this_type_at(offset).or_else(|| {
+            self.previous_cursor_offset(offset)
+                .and_then(|offset| self.this_type_at(offset))
+        })
     }
 
     pub fn call_at_offset(&self, offset: TextSize) -> Option<CallSiteId> {
@@ -44,6 +58,13 @@ impl FileHir {
             })
             .min_by_key(|(_, len)| *len)
             .map(|(id, _)| id)
+    }
+
+    pub fn call_at_cursor(&self, offset: TextSize) -> Option<CallSiteId> {
+        self.call_at_offset(offset).or_else(|| {
+            self.previous_cursor_offset(offset)
+                .and_then(|offset| self.call_at_offset(offset))
+        })
     }
 
     pub fn parameter_hint_at(&self, offset: TextSize) -> Option<ParameterHint> {
@@ -84,9 +105,23 @@ impl FileHir {
         })
     }
 
+    pub fn parameter_hint_at_cursor(&self, offset: TextSize) -> Option<ParameterHint> {
+        self.parameter_hint_at(offset).or_else(|| {
+            self.previous_cursor_offset(offset)
+                .and_then(|offset| self.parameter_hint_at(offset))
+        })
+    }
+
     pub fn active_parameter_at_offset(&self, offset: TextSize) -> Option<usize> {
         let call_id = self.call_at_offset(offset)?;
         self.active_parameter_index(self.call(call_id), offset)
+    }
+
+    pub fn active_parameter_at_cursor(&self, offset: TextSize) -> Option<usize> {
+        self.active_parameter_at_offset(offset).or_else(|| {
+            self.previous_cursor_offset(offset)
+                .and_then(|offset| self.active_parameter_at_offset(offset))
+        })
     }
 
     pub(crate) fn caller_scope_arg_offset(&self, call: &CallSite) -> usize {

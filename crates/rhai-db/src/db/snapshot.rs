@@ -262,6 +262,24 @@ impl DatabaseSnapshot {
         call.arg_ranges.len().checked_sub(arg_offset)
     }
 
+    pub fn call_argument_count_for_cursor(
+        &self,
+        file_id: FileId,
+        offset: TextSize,
+    ) -> Option<usize> {
+        let hir = self.hir(file_id)?;
+        let call_id = hir.call_at_cursor(offset)?;
+        let call = hir.call(call_id);
+        let arg_offset = usize::from(
+            call.caller_scope
+                && call
+                    .callee_reference
+                    .map(|reference| hir.reference(reference).name.as_str())
+                    == Some("call"),
+        );
+        call.arg_ranges.len().checked_sub(arg_offset)
+    }
+
     pub fn call_argument_types_at(
         &self,
         file_id: FileId,
@@ -277,9 +295,33 @@ impl DatabaseSnapshot {
         ))
     }
 
+    pub fn call_argument_types_for_cursor(
+        &self,
+        file_id: FileId,
+        offset: TextSize,
+    ) -> Option<Vec<Option<TypeRef>>> {
+        let hir = self.hir(file_id)?;
+        let inference = self.type_inference(file_id)?;
+        let call_id = hir.call_at_cursor(offset)?;
+        Some(effective_call_argument_types(
+            hir.as_ref(),
+            inference,
+            hir.call(call_id),
+        ))
+    }
+
     pub fn active_parameter_index_at(&self, file_id: FileId, offset: TextSize) -> Option<usize> {
         let hir = self.hir(file_id)?;
         hir.active_parameter_at_offset(offset)
+    }
+
+    pub fn active_parameter_index_for_cursor(
+        &self,
+        file_id: FileId,
+        offset: TextSize,
+    ) -> Option<usize> {
+        let hir = self.hir(file_id)?;
+        hir.active_parameter_at_cursor(offset)
     }
 
     pub fn query_support(&self, file_id: FileId) -> Option<&PerFileQuerySupport> {

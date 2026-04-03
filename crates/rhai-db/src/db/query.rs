@@ -58,18 +58,7 @@ impl DatabaseSnapshot {
         let Some(analysis) = self.analysis.get(&file_id) else {
             return Vec::new();
         };
-        let reference_offset = analysis
-            .hir
-            .reference_at_offset(offset)
-            .map(|_| offset)
-            .or_else(|| {
-                let previous = u32::from(offset).checked_sub(1).map(TextSize::from)?;
-                analysis.hir.reference_at_offset(previous).map(|_| previous)
-            });
-        let Some(reference_offset) = reference_offset else {
-            return Vec::new();
-        };
-        let Some(reference_id) = analysis.hir.reference_at_offset(reference_offset) else {
+        let Some(reference_id) = analysis.hir.reference_at_cursor(offset) else {
             return Vec::new();
         };
         let reference = analysis.hir.reference(reference_id);
@@ -278,9 +267,12 @@ impl DatabaseSnapshot {
                 .cmp(&right.import_cost)
                 .then_with(|| left.module_name.cmp(&right.module_name))
                 .then_with(|| left.provider_file_id.0.cmp(&right.provider_file_id.0))
+                .then_with(|| left.symbol.0.cmp(&right.symbol.0))
         });
         candidates.dedup_by(|left, right| {
-            left.provider_file_id == right.provider_file_id && left.alias == right.alias
+            left.provider_file_id == right.provider_file_id
+                && left.alias == right.alias
+                && left.symbol == right.symbol
         });
         candidates
     }
@@ -401,9 +393,12 @@ impl DatabaseSnapshot {
                 .cmp(&right.import_cost)
                 .then_with(|| left.module_name.cmp(&right.module_name))
                 .then_with(|| left.provider_file_id.0.cmp(&right.provider_file_id.0))
+                .then_with(|| left.symbol.0.cmp(&right.symbol.0))
         });
         candidates.dedup_by(|left, right| {
-            left.provider_file_id == right.provider_file_id && left.alias == right.alias
+            left.provider_file_id == right.provider_file_id
+                && left.alias == right.alias
+                && left.symbol == right.symbol
         });
         candidates
     }
@@ -520,12 +515,12 @@ fn visible_completion_symbols(
     offset: TextSize,
 ) -> Vec<CompletionSymbol> {
     let Some(query_support) = analysis.query_support.as_ref() else {
-        return analysis.hir.completion_symbols_at(offset);
+        return analysis.hir.completion_symbols_at_cursor(offset);
     };
 
     analysis
         .hir
-        .visible_symbols_with_scope_distance_at(offset)
+        .visible_symbols_with_scope_distance_at_cursor(offset)
         .into_iter()
         .filter_map(|(symbol, scope_distance)| {
             query_support
@@ -631,7 +626,7 @@ fn fallback_member_completion_at(
     if let Some(receiver_name) = incomplete_member_receiver_name(snapshot, file_id, offset)
         && let Some(symbol) = analysis
             .hir
-            .visible_symbols_at(offset)
+            .visible_symbols_at_cursor(offset)
             .into_iter()
             .rev()
             .find(|symbol| analysis.hir.symbol(*symbol).name == receiver_name)

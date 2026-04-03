@@ -127,6 +127,81 @@ fn completions_filter_module_qualified_import_members_by_prefix() {
 
     assert!(world_index < helper_index);
 }
+
+#[test]
+fn completions_preserve_imported_module_function_overloads() {
+    let mut host = AnalysisHost::default();
+    host.apply_change(ChangeSet {
+        files: vec![
+            rhai_db::FileChange {
+                path: "demo.rhai".into(),
+                text: r#"
+                    /// @return bool
+                    fn connect() {
+                        true
+                    }
+
+                    /// @param url string
+                    /// @return bool
+                    fn connect(url) {
+                        !url.is_empty()
+                    }
+                "#
+                .to_owned(),
+                version: DocumentVersion(1),
+            },
+            rhai_db::FileChange {
+                path: "main.rhai".into(),
+                text: r#"
+                    import "demo" as demo;
+
+                    fn run() {
+                        demo::co
+                    }
+                "#
+                .to_owned(),
+                version: DocumentVersion(1),
+            },
+        ],
+        removed_files: Vec::new(),
+        project: None,
+    });
+
+    let analysis = host.snapshot();
+    let file_id = analysis
+        .db
+        .vfs()
+        .file_id(Path::new("main.rhai"))
+        .expect("expected main.rhai");
+    let text = analysis.db.file_text(file_id).expect("expected text");
+    let offset = u32::try_from(
+        text.find("demo::co").expect("expected completion target") + "demo::co".len(),
+    )
+    .expect("offset");
+
+    let completions = analysis.completions(FilePosition { file_id, offset });
+    let connect_overloads = completions
+        .iter()
+        .filter(|item| item.label == "connect" && item.source == CompletionItemSource::Module)
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        connect_overloads.len(),
+        2,
+        "expected both imported module connect overloads, got {completions:?}"
+    );
+    assert!(
+        connect_overloads
+            .iter()
+            .any(|item| item.detail.as_deref() == Some("fun() -> bool"))
+    );
+    assert!(
+        connect_overloads
+            .iter()
+            .any(|item| item.detail.as_deref() == Some("fun(string) -> bool"))
+    );
+}
+
 #[test]
 fn completions_do_not_appear_for_single_colon_module_path_prefix() {
     let mut host = AnalysisHost::default();
@@ -287,6 +362,79 @@ fn auto_import_completions_reuse_existing_module_aliases() {
             .map(|edit| edit.additional_edits.len()),
         Some(0)
     );
+}
+
+#[test]
+fn auto_import_completions_preserve_function_overloads() {
+    let mut host = AnalysisHost::default();
+    host.apply_change(ChangeSet {
+        files: vec![
+            rhai_db::FileChange {
+                path: "provider.rhai".into(),
+                text: r#"
+                    /// @return bool
+                    fn connect() {
+                        true
+                    }
+
+                    /// @param url string
+                    /// @return bool
+                    fn connect(url) {
+                        !url.is_empty()
+                    }
+                "#
+                .to_owned(),
+                version: DocumentVersion(1),
+            },
+            rhai_db::FileChange {
+                path: "consumer.rhai".into(),
+                text: "fn run() { conn }".to_owned(),
+                version: DocumentVersion(1),
+            },
+        ],
+        removed_files: Vec::new(),
+        project: None,
+    });
+
+    let analysis = host.snapshot();
+    let file_id = analysis
+        .db
+        .vfs()
+        .file_id(Path::new("consumer.rhai"))
+        .expect("expected consumer.rhai");
+    let text = analysis.db.file_text(file_id).expect("expected text");
+    let offset =
+        u32::try_from(text.find("conn").expect("expected completion prefix") + "conn".len())
+            .expect("offset");
+
+    let completions = analysis.completions(FilePosition { file_id, offset });
+    let connect_overloads = completions
+        .iter()
+        .filter(|item| item.label == "connect" && item.source == CompletionItemSource::AutoImport)
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        connect_overloads.len(),
+        2,
+        "expected both connect overload completions, got {completions:?}"
+    );
+    assert!(
+        connect_overloads
+            .iter()
+            .any(|item| item.detail.as_deref() == Some("fun() -> bool"))
+    );
+    assert!(
+        connect_overloads
+            .iter()
+            .any(|item| item.detail.as_deref() == Some("fun(string) -> bool"))
+    );
+    assert!(connect_overloads.iter().any(|item| {
+        item.text_edit.as_ref().map(|edit| edit.new_text.as_str()) == Some("provider::connect()$0")
+    }));
+    assert!(connect_overloads.iter().any(|item| {
+        item.text_edit.as_ref().map(|edit| edit.new_text.as_str())
+            == Some("provider::connect(${1:url})$0")
+    }));
 }
 
 #[test]
@@ -473,7 +621,6 @@ fn auto_import_callable_completions_insert_module_qualified_snippets() {
                 path: "provider.rhai".into(),
                 text: r#"
                     fn connect() {}
-                    export connect as connect;
                 "#
                 .to_owned(),
                 version: DocumentVersion(1),

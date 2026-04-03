@@ -292,3 +292,108 @@ fn auto_import_candidates_allocate_non_conflicting_aliases() {
         "\nimport \"provider\" as provider_1;"
     );
 }
+
+#[test]
+fn auto_import_candidates_preserve_workspace_function_overloads() {
+    let mut db = AnalyzerDatabase::default();
+    db.apply_change(ChangeSet {
+        files: vec![
+            FileChange {
+                path: "provider.rhai".into(),
+                text: r#"
+                    fn connect() {}
+                    fn connect(url) {}
+                "#
+                .to_owned(),
+                version: DocumentVersion(1),
+            },
+            FileChange {
+                path: "consumer.rhai".into(),
+                text: "fn run() { conn }".to_owned(),
+                version: DocumentVersion(1),
+            },
+        ],
+        removed_files: Vec::new(),
+        project: None,
+    });
+
+    let snapshot = db.snapshot();
+    assert_workspace_files_have_no_syntax_diagnostics(&snapshot);
+    let consumer = snapshot
+        .vfs()
+        .file_id(Path::new("consumer.rhai"))
+        .expect("expected consumer.rhai");
+    let consumer_text = snapshot
+        .file_text(consumer)
+        .expect("expected consumer text");
+
+    let candidates = snapshot.auto_import_candidates(consumer, offset_in(&consumer_text, "conn"));
+    let connect_candidates = candidates
+        .iter()
+        .filter(|candidate| candidate.name == "connect")
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        connect_candidates.len(),
+        2,
+        "expected both connect overloads, got {candidates:?}"
+    );
+    assert_ne!(connect_candidates[0].symbol, connect_candidates[1].symbol);
+    assert!(
+        connect_candidates
+            .iter()
+            .all(|candidate| candidate.qualified_reference_text == "provider::connect")
+    );
+}
+
+#[test]
+fn imported_module_completions_preserve_workspace_function_overloads() {
+    let mut db = AnalyzerDatabase::default();
+    db.apply_change(ChangeSet {
+        files: vec![
+            FileChange {
+                path: "demo.rhai".into(),
+                text: r#"
+                    fn connect() {}
+                    fn connect(url) {}
+                "#
+                .to_owned(),
+                version: DocumentVersion(1),
+            },
+            FileChange {
+                path: "main.rhai".into(),
+                text: r#"
+                    import "demo" as demo;
+
+                    fn run() {
+                        demo::conn
+                    }
+                "#
+                .to_owned(),
+                version: DocumentVersion(1),
+            },
+        ],
+        removed_files: Vec::new(),
+        project: None,
+    });
+
+    let snapshot = db.snapshot();
+    assert_workspace_files_have_no_syntax_diagnostics(&snapshot);
+    let main = snapshot
+        .vfs()
+        .file_id(Path::new("main.rhai"))
+        .expect("expected main.rhai");
+
+    let completions = snapshot.imported_module_completions(main, &[String::from("demo")]);
+    let connect_completions = completions
+        .iter()
+        .filter(|completion| completion.name == "connect")
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        connect_completions.len(),
+        2,
+        "expected both imported connect overloads, got {completions:?}"
+    );
+    assert_ne!(connect_completions[0].symbol, connect_completions[1].symbol);
+}

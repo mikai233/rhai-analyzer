@@ -16,7 +16,7 @@ pub(crate) fn signature_help(
     offset: TextSize,
 ) -> Option<SignatureHelp> {
     let hir = snapshot.hir(file_id)?;
-    let call_id = hir.call_at_offset(offset)?;
+    let call_id = hir.call_at_cursor(offset)?;
     let call = hir.call(call_id);
     let active_parameter = active_parameter_index(hir.as_ref(), call, offset)?;
 
@@ -29,7 +29,7 @@ pub(crate) fn signature_help(
         ));
     }
 
-    if let Some(parameter_hint) = hir.parameter_hint_at(offset) {
+    if let Some(parameter_hint) = hir.parameter_hint_at_cursor(offset) {
         return Some(signature_help_from_parameter_hint(
             file_id,
             hir.as_ref(),

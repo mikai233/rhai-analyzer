@@ -5,6 +5,8 @@ mod ranking;
 mod snippets;
 mod workspace;
 
+use std::collections::HashSet;
+
 use rhai_db::{DatabaseSnapshot, SignatureMatchQuality, signature_match_quality};
 use rhai_hir::{SymbolKind, TypeRef};
 use rhai_syntax::{TextRange, TextSize};
@@ -123,9 +125,12 @@ fn completion_items(
 
     let query_offset = TextSize::from(context.query_offset as u32);
     let expected_type = snapshot.expected_type_at(position.file_id, query_offset);
-    let call_argument_count = snapshot.call_argument_count_at(position.file_id, query_offset);
-    let call_argument_types = snapshot.call_argument_types_at(position.file_id, query_offset);
-    let active_parameter_index = snapshot.active_parameter_index_at(position.file_id, query_offset);
+    let call_argument_count =
+        snapshot.call_argument_count_for_cursor(position.file_id, query_offset);
+    let call_argument_types =
+        snapshot.call_argument_types_for_cursor(position.file_id, query_offset);
+    let active_parameter_index =
+        snapshot.active_parameter_index_for_cursor(position.file_id, query_offset);
     let call_context = CompletionCallContext {
         argument_count: call_argument_count,
         argument_types: call_argument_types.as_deref(),
@@ -200,7 +205,10 @@ fn completion_items(
                     insert_format,
                     file_id: None,
                     exported: true,
-                    resolve_data: None,
+                    resolve_data: Some(CompletionResolveData {
+                        file_id: position.file_id,
+                        offset: position.offset,
+                    }),
                 }
             })
             .collect::<Vec<_>>();
@@ -292,7 +300,10 @@ fn completion_items(
                         insert_format,
                         file_id: Some(candidate.provider_file_id),
                         exported: true,
-                        resolve_data: None,
+                        resolve_data: Some(CompletionResolveData {
+                            file_id: position.file_id,
+                            offset: position.offset,
+                        }),
                     }
                 }),
         );
@@ -310,6 +321,21 @@ fn completion_items(
 
     let mut items = Vec::new();
     let hir = snapshot.hir(position.file_id);
+    let auto_import_candidates = snapshot
+        .auto_import_candidates(position.file_id, query_offset)
+        .into_iter()
+        .filter(|candidate| {
+            context.prefix.is_empty()
+                || candidate
+                    .name
+                    .to_ascii_lowercase()
+                    .contains(context.prefix.to_ascii_lowercase().as_str())
+        })
+        .collect::<Vec<_>>();
+    let auto_import_targets = auto_import_candidates
+        .iter()
+        .map(|candidate| (candidate.provider_file_id, candidate.name.clone()))
+        .collect::<HashSet<_>>();
 
     items.extend(postfix_completion_items(&context));
 
@@ -393,172 +419,177 @@ fn completion_items(
             }
         }));
 
-        items.extend(inputs.project_symbols.iter().map(|symbol| {
-            let (detail, docs, annotation, origin) =
-                workspace_completion_metadata(snapshot, symbol, detail_level);
-            let parameter_names = callable_parameter_names(
-                snapshot,
-                symbol.file_id,
-                symbol.symbol.symbol,
-                annotation.as_ref(),
-            );
-            let text_edit = callable_completion_text_edit(
-                &context,
-                symbol.symbol.name.as_str(),
-                annotation.as_ref(),
-                CompletionItemKind::Symbol(symbol.symbol.kind),
-                parameter_names.as_deref(),
-            );
-            let insert_format = if text_edit.is_some() {
-                CompletionInsertFormat::Snippet
-            } else {
-                CompletionInsertFormat::PlainText
-            };
-
-            CompletionItem {
-                label: symbol.symbol.name.clone(),
-                kind: CompletionItemKind::Symbol(symbol.symbol.kind),
-                source: CompletionItemSource::Project,
-                relevance: CompletionRelevance {
-                    name_match: completion_name_match(symbol.symbol.name.as_str(), &context),
-                    callable_match: completion_callable_match(
-                        &context,
-                        annotation.as_ref(),
-                        CompletionItemKind::Symbol(symbol.symbol.kind),
-                    ),
-                    callable_arity_match: completion_callable_arity_match(
-                        &context,
-                        annotation.as_ref(),
-                        call_context.argument_count,
-                    ),
-                    callable_signature_match: completion_callable_signature_match(
-                        &context,
-                        annotation.as_ref(),
-                        call_context.argument_types,
-                    ),
-                    active_parameter_match: completion_active_parameter_match(
-                        &context,
-                        annotation.as_ref(),
-                        call_context,
-                    ),
-                    type_match: completion_type_match(expected_type.as_ref(), annotation.as_ref()),
-                    ..CompletionRelevance::default()
-                },
-                origin,
-                sort_text: String::new(),
-                detail,
-                docs,
-                filter_text: None,
-                text_edit,
-                insert_format,
-                file_id: Some(symbol.file_id),
-                exported: symbol.symbol.exported,
-                resolve_data: Some(CompletionResolveData {
-                    file_id: position.file_id,
-                    offset: position.offset,
-                }),
-            }
-        }));
-
         items.extend(
-            snapshot
-                .auto_import_candidates(position.file_id, query_offset)
-                .into_iter()
-                .filter(|candidate| {
-                    context.prefix.is_empty()
-                        || candidate
-                            .name
-                            .to_ascii_lowercase()
-                            .contains(context.prefix.to_ascii_lowercase().as_str())
+            inputs
+                .project_symbols
+                .iter()
+                .filter(|symbol| {
+                    !auto_import_targets.contains(&(symbol.file_id, symbol.symbol.name.clone()))
                 })
-                .map(|candidate| {
+                .map(|symbol| {
+                    let (detail, docs, annotation, origin) =
+                        workspace_completion_metadata(snapshot, symbol, detail_level);
                     let parameter_names = callable_parameter_names(
                         snapshot,
-                        candidate.provider_file_id,
-                        candidate.symbol,
-                        candidate.annotation.as_ref(),
+                        symbol.file_id,
+                        symbol.symbol.symbol,
+                        annotation.as_ref(),
                     );
-                    let mut text_edit = callable_completion_text_edit_with_base_text(
+                    let text_edit = callable_completion_text_edit(
                         &context,
-                        candidate.qualified_reference_text.as_str(),
-                        candidate.annotation.as_ref(),
-                        CompletionItemKind::Symbol(candidate.kind),
+                        symbol.symbol.name.as_str(),
+                        annotation.as_ref(),
+                        CompletionItemKind::Symbol(symbol.symbol.kind),
                         parameter_names.as_deref(),
-                    )
-                    .unwrap_or_else(|| crate::CompletionTextEdit {
-                        replace_range: candidate.replace_range,
-                        insert_range: Some(context.replace_range),
-                        new_text: candidate.qualified_reference_text.clone(),
-                        additional_edits: Vec::new(),
-                    });
-                    if !candidate.insert_text.is_empty() {
-                        text_edit.additional_edits.push(TextEdit::insert(
-                            candidate.insertion_offset,
-                            candidate.insert_text.clone(),
-                        ));
-                    }
-                    let insert_format = if candidate
-                        .annotation
-                        .as_ref()
-                        .is_some_and(|annotation| matches!(annotation, TypeRef::Function(_)))
-                        || matches!(candidate.kind, SymbolKind::Function)
-                    {
+                    );
+                    let insert_format = if text_edit.is_some() {
                         CompletionInsertFormat::Snippet
                     } else {
                         CompletionInsertFormat::PlainText
                     };
 
                     CompletionItem {
-                        label: candidate.name.clone(),
-                        kind: CompletionItemKind::Symbol(candidate.kind),
-                        source: CompletionItemSource::AutoImport,
+                        label: symbol.symbol.name.clone(),
+                        kind: CompletionItemKind::Symbol(symbol.symbol.kind),
+                        source: CompletionItemSource::Project,
                         relevance: CompletionRelevance {
-                            requires_import: !candidate.insert_text.is_empty(),
-                            import_cost: Some(candidate.import_cost),
-                            name_match: completion_name_match(candidate.name.as_str(), &context),
+                            name_match: completion_name_match(
+                                symbol.symbol.name.as_str(),
+                                &context,
+                            ),
                             callable_match: completion_callable_match(
                                 &context,
-                                candidate.annotation.as_ref(),
-                                CompletionItemKind::Symbol(candidate.kind),
+                                annotation.as_ref(),
+                                CompletionItemKind::Symbol(symbol.symbol.kind),
                             ),
                             callable_arity_match: completion_callable_arity_match(
                                 &context,
-                                candidate.annotation.as_ref(),
+                                annotation.as_ref(),
                                 call_context.argument_count,
                             ),
                             callable_signature_match: completion_callable_signature_match(
                                 &context,
-                                candidate.annotation.as_ref(),
+                                annotation.as_ref(),
                                 call_context.argument_types,
                             ),
                             active_parameter_match: completion_active_parameter_match(
                                 &context,
-                                candidate.annotation.as_ref(),
+                                annotation.as_ref(),
                                 call_context,
                             ),
                             type_match: completion_type_match(
                                 expected_type.as_ref(),
-                                candidate.annotation.as_ref(),
+                                annotation.as_ref(),
                             ),
                             ..CompletionRelevance::default()
                         },
-                        origin: Some(candidate.module_name.clone()),
+                        origin,
                         sort_text: String::new(),
-                        detail: candidate.annotation.as_ref().map(format_type_ref),
-                        docs: if matches!(detail_level, CompletionDetailLevel::Full) {
-                            candidate.docs.clone()
-                        } else {
-                            None
-                        },
-                        filter_text: Some(candidate.name.clone()),
-                        text_edit: Some(text_edit),
+                        detail,
+                        docs,
+                        filter_text: None,
+                        text_edit,
                         insert_format,
-                        file_id: Some(candidate.provider_file_id),
-                        exported: true,
-                        resolve_data: None,
+                        file_id: Some(symbol.file_id),
+                        exported: symbol.symbol.exported,
+                        resolve_data: Some(CompletionResolveData {
+                            file_id: position.file_id,
+                            offset: position.offset,
+                        }),
                     }
                 }),
         );
+
+        items.extend(auto_import_candidates.into_iter().map(|candidate| {
+            let parameter_names = callable_parameter_names(
+                snapshot,
+                candidate.provider_file_id,
+                candidate.symbol,
+                candidate.annotation.as_ref(),
+            );
+            let mut text_edit = callable_completion_text_edit_with_base_text(
+                &context,
+                candidate.qualified_reference_text.as_str(),
+                candidate.annotation.as_ref(),
+                CompletionItemKind::Symbol(candidate.kind),
+                parameter_names.as_deref(),
+            )
+            .unwrap_or_else(|| crate::CompletionTextEdit {
+                replace_range: candidate.replace_range,
+                insert_range: Some(context.replace_range),
+                new_text: candidate.qualified_reference_text.clone(),
+                additional_edits: Vec::new(),
+            });
+            if !candidate.insert_text.is_empty() {
+                text_edit.additional_edits.push(TextEdit::insert(
+                    candidate.insertion_offset,
+                    candidate.insert_text.clone(),
+                ));
+            }
+            let insert_format = if candidate
+                .annotation
+                .as_ref()
+                .is_some_and(|annotation| matches!(annotation, TypeRef::Function(_)))
+                || matches!(candidate.kind, SymbolKind::Function)
+            {
+                CompletionInsertFormat::Snippet
+            } else {
+                CompletionInsertFormat::PlainText
+            };
+
+            CompletionItem {
+                label: candidate.name.clone(),
+                kind: CompletionItemKind::Symbol(candidate.kind),
+                source: CompletionItemSource::AutoImport,
+                relevance: CompletionRelevance {
+                    requires_import: !candidate.insert_text.is_empty(),
+                    import_cost: Some(candidate.import_cost),
+                    name_match: completion_name_match(candidate.name.as_str(), &context),
+                    callable_match: completion_callable_match(
+                        &context,
+                        candidate.annotation.as_ref(),
+                        CompletionItemKind::Symbol(candidate.kind),
+                    ),
+                    callable_arity_match: completion_callable_arity_match(
+                        &context,
+                        candidate.annotation.as_ref(),
+                        call_context.argument_count,
+                    ),
+                    callable_signature_match: completion_callable_signature_match(
+                        &context,
+                        candidate.annotation.as_ref(),
+                        call_context.argument_types,
+                    ),
+                    active_parameter_match: completion_active_parameter_match(
+                        &context,
+                        candidate.annotation.as_ref(),
+                        call_context,
+                    ),
+                    type_match: completion_type_match(
+                        expected_type.as_ref(),
+                        candidate.annotation.as_ref(),
+                    ),
+                    ..CompletionRelevance::default()
+                },
+                origin: Some(candidate.module_name.clone()),
+                sort_text: String::new(),
+                detail: candidate.annotation.as_ref().map(format_type_ref),
+                docs: if matches!(detail_level, CompletionDetailLevel::Full) {
+                    candidate.docs.clone()
+                } else {
+                    None
+                },
+                filter_text: Some(candidate.name.clone()),
+                text_edit: Some(text_edit),
+                insert_format,
+                file_id: Some(candidate.provider_file_id),
+                exported: true,
+                resolve_data: Some(CompletionResolveData {
+                    file_id: position.file_id,
+                    offset: position.offset,
+                }),
+            }
+        }));
 
         let existing_labels = items
             .iter()

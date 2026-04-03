@@ -6,6 +6,10 @@ use crate::model::{ExprId, FileHir, ReferenceId, ScopeId, ScopeKind, SymbolId, S
 
 impl FileHir {
     pub fn find_scope_at(&self, offset: TextSize) -> Option<ScopeId> {
+        self.find_scope_containing(offset)
+    }
+
+    fn find_scope_containing(&self, offset: TextSize) -> Option<ScopeId> {
         self.scopes
             .iter()
             .enumerate()
@@ -17,6 +21,13 @@ impl FileHir {
             })
             .min_by_key(|(_, len)| *len)
             .map(|(id, _)| id)
+    }
+
+    pub fn find_scope_for_cursor(&self, offset: TextSize) -> Option<ScopeId> {
+        self.find_scope_at(offset).or_else(|| {
+            self.previous_cursor_offset(offset)
+                .and_then(|offset| self.find_scope_at(offset))
+        })
     }
 
     pub fn symbol_at(&self, range: TextRange) -> Option<SymbolId> {
@@ -60,6 +71,13 @@ impl FileHir {
             .map(|(id, _)| id)
     }
 
+    pub fn expr_at_cursor(&self, offset: TextSize) -> Option<ExprId> {
+        self.expr_at_offset(offset).or_else(|| {
+            self.previous_cursor_offset(offset)
+                .and_then(|offset| self.expr_at_offset(offset))
+        })
+    }
+
     pub fn reference_at(&self, range: TextRange) -> Option<ReferenceId> {
         self.references
             .iter()
@@ -81,6 +99,13 @@ impl FileHir {
             .map(|(id, _)| id)
     }
 
+    pub fn reference_at_cursor(&self, offset: TextSize) -> Option<ReferenceId> {
+        self.reference_at_offset(offset).or_else(|| {
+            self.previous_cursor_offset(offset)
+                .and_then(|offset| self.reference_at_offset(offset))
+        })
+    }
+
     pub fn references_at_offset(&self, offset: TextSize) -> Vec<ReferenceId> {
         if let Some(reference) = self.reference_at_offset(offset) {
             if let Some(target) = self.definition_of(reference) {
@@ -98,6 +123,13 @@ impl FileHir {
 
     pub fn visible_symbols_at(&self, offset: TextSize) -> Vec<SymbolId> {
         self.visible_symbols_with_scope_distance_at(offset)
+            .into_iter()
+            .map(|(symbol, _)| symbol)
+            .collect()
+    }
+
+    pub fn visible_symbols_at_cursor(&self, offset: TextSize) -> Vec<SymbolId> {
+        self.visible_symbols_with_scope_distance_at_cursor(offset)
             .into_iter()
             .map(|(symbol, _)| symbol)
             .collect()
@@ -139,6 +171,19 @@ impl FileHir {
         visible
     }
 
+    pub fn visible_symbols_with_scope_distance_at_cursor(
+        &self,
+        offset: TextSize,
+    ) -> Vec<(SymbolId, u8)> {
+        self.find_scope_at(offset)
+            .map(|_| self.visible_symbols_with_scope_distance_at(offset))
+            .or_else(|| {
+                self.previous_cursor_offset(offset)
+                    .map(|offset| self.visible_symbols_with_scope_distance_at(offset))
+            })
+            .unwrap_or_default()
+    }
+
     pub(crate) fn symbol_is_visible_at(
         &self,
         symbol: SymbolId,
@@ -154,5 +199,11 @@ impl FileHir {
                     && symbol.range.start() <= offset);
         }
         matches!(symbol.kind, SymbolKind::Function) || symbol.range.start() <= offset
+    }
+
+    pub(crate) fn previous_cursor_offset(&self, offset: TextSize) -> Option<TextSize> {
+        let root_end = self.root_range.end();
+        let offset = offset.min(root_end);
+        u32::from(offset).checked_sub(1).map(TextSize::from)
     }
 }

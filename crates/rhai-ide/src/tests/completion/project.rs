@@ -5,7 +5,7 @@ use rhai_project::ProjectConfig;
 use rhai_vfs::DocumentVersion;
 
 use crate::tests::assert_no_syntax_diagnostics;
-use crate::{AnalysisHost, CompletionInsertFormat, CompletionItemSource, FilePosition};
+use crate::{AnalysisHost, CompletionItemSource, FilePosition};
 
 #[test]
 fn completions_merge_visible_project_and_member_results() {
@@ -261,8 +261,8 @@ fn project_completions_fall_back_to_inferred_symbol_signatures() {
     });
     let echo = echo_completions
         .iter()
-        .find(|item| item.label == "echo" && item.source == CompletionItemSource::Project)
-        .expect("expected project echo completion");
+        .find(|item| item.label == "echo" && item.source == CompletionItemSource::AutoImport)
+        .expect("expected auto import echo completion");
     assert_eq!(echo.detail.as_deref(), Some("fun() -> string"));
 
     let value_offset = u32::try_from(text.rfind("va").expect("expected value prefix") + "va".len())
@@ -273,13 +273,13 @@ fn project_completions_fall_back_to_inferred_symbol_signatures() {
     });
     let value = value_completions
         .iter()
-        .find(|item| item.label == "value" && item.source == CompletionItemSource::Project)
-        .expect("expected project value completion");
+        .find(|item| item.label == "value" && item.source == CompletionItemSource::AutoImport)
+        .expect("expected auto import value completion");
     assert_eq!(value.detail.as_deref(), Some("string"));
 }
 
 #[test]
-fn project_callable_completions_insert_snippets_for_exported_functions() {
+fn project_completions_hide_bare_duplicates_when_auto_import_is_available() {
     let mut host = AnalysisHost::default();
     host.apply_change(ChangeSet {
         files: vec![
@@ -297,7 +297,6 @@ fn project_callable_completions_insert_snippets_for_exported_functions() {
                 path: "provider.rhai".into(),
                 text: r#"
                     fn connect() {}
-                    export connect as connect;
                 "#
                 .to_owned(),
                 version: DocumentVersion(1),
@@ -319,20 +318,13 @@ fn project_callable_completions_insert_snippets_for_exported_functions() {
         .expect("offset");
 
     let completions = analysis.completions(FilePosition { file_id, offset });
-    let connect = completions
-        .iter()
-        .find(|item| item.label == "connect" && item.source == CompletionItemSource::Project)
-        .expect("expected project connect completion");
-
-    assert_eq!(connect.origin.as_deref(), Some("provider"));
-    assert_eq!(connect.detail.as_deref(), Some("fun() -> unknown"));
-    assert_eq!(connect.insert_format, CompletionInsertFormat::Snippet);
     assert_eq!(
-        connect
-            .text_edit
-            .as_ref()
-            .map(|edit| edit.new_text.as_str()),
-        Some("connect()$0")
+        completions
+            .iter()
+            .filter(|item| item.label == "connect")
+            .map(|item| item.source)
+            .collect::<Vec<_>>(),
+        vec![CompletionItemSource::AutoImport]
     );
 }
 
@@ -628,11 +620,11 @@ fn completions_prioritize_project_type_matches_from_expected_context() {
     let completions = analysis.completions(FilePosition { file_id, offset });
     let stack_index = completions
         .iter()
-        .position(|item| item.label == "stack" && item.source == CompletionItemSource::Project)
+        .position(|item| item.label == "stack" && item.source == CompletionItemSource::AutoImport)
         .expect("expected stack completion");
     let story_index = completions
         .iter()
-        .position(|item| item.label == "story" && item.source == CompletionItemSource::Project)
+        .position(|item| item.label == "story" && item.source == CompletionItemSource::AutoImport)
         .expect("expected story completion");
 
     assert!(
@@ -733,11 +725,11 @@ fn completions_prioritize_project_callables_in_call_context() {
     let completions = analysis.completions(FilePosition { file_id, offset });
     let helper_index = completions
         .iter()
-        .position(|item| item.label == "helper" && item.source == CompletionItemSource::Project)
+        .position(|item| item.label == "helper" && item.source == CompletionItemSource::AutoImport)
         .expect("expected helper completion");
     let helium_index = completions
         .iter()
-        .position(|item| item.label == "helium" && item.source == CompletionItemSource::Project)
+        .position(|item| item.label == "helium" && item.source == CompletionItemSource::AutoImport)
         .expect("expected helium completion");
 
     assert!(
@@ -842,18 +834,18 @@ fn completions_prioritize_zero_arg_project_callables_in_immediate_call_context()
     let completions = analysis.completions(FilePosition { file_id, offset });
     let helper_index = completions
         .iter()
-        .position(|item| item.label == "helper" && item.source == CompletionItemSource::Project)
+        .position(|item| item.label == "helper" && item.source == CompletionItemSource::AutoImport)
         .expect("expected helper completion");
     let helper_with_index = completions
         .iter()
         .position(|item| {
-            item.label == "helper_with" && item.source == CompletionItemSource::Project
+            item.label == "helper_with" && item.source == CompletionItemSource::AutoImport
         })
         .expect("expected helper_with completion");
 
     assert!(
         helper_index < helper_with_index,
-        "expected zero-arg project callable to outrank arity-mismatched one in call context: {completions:?}"
+        "expected zero-arg auto import callable to outrank arity-mismatched one in call context: {completions:?}"
     );
 }
 
@@ -955,12 +947,12 @@ fn completions_prioritize_matching_project_callable_arity_when_arguments_exist()
     let completions = analysis.completions(FilePosition { file_id, offset });
     let helper_index = completions
         .iter()
-        .position(|item| item.label == "helper" && item.source == CompletionItemSource::Project)
+        .position(|item| item.label == "helper" && item.source == CompletionItemSource::AutoImport)
         .expect("expected helper completion");
     let helper_with_index = completions
         .iter()
         .position(|item| {
-            item.label == "helper_with" && item.source == CompletionItemSource::Project
+            item.label == "helper_with" && item.source == CompletionItemSource::AutoImport
         })
         .expect("expected helper_with completion");
 
@@ -1078,12 +1070,14 @@ fn completions_prioritize_project_callable_argument_type_matches() {
     let completions = analysis.completions(FilePosition { file_id, offset });
     let helper_int_index = completions
         .iter()
-        .position(|item| item.label == "helper_int" && item.source == CompletionItemSource::Project)
+        .position(|item| {
+            item.label == "helper_int" && item.source == CompletionItemSource::AutoImport
+        })
         .expect("expected helper_int completion");
     let helper_string_index = completions
         .iter()
         .position(|item| {
-            item.label == "helper_string" && item.source == CompletionItemSource::Project
+            item.label == "helper_string" && item.source == CompletionItemSource::AutoImport
         })
         .expect("expected helper_string completion");
 
