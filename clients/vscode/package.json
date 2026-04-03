@@ -3,8 +3,9 @@
   "displayName": "Rhai Analyzer",
   "description": "Language support for Rhai powered by the rhai-analyzer LSP server.",
   "version": "0.1.0",
-  "publisher": "local",
+  "publisher": "mikai233",
   "license": "MIT OR Apache-2.0",
+  "icon": "icon.png",
   "repository": {
     "type": "git",
     "url": "https://github.com/local/rhai-analyzer.git"
@@ -27,6 +28,7 @@
     "server/**/*",
     "language-configuration.json",
     "LICENSE",
+    "icon.png",
     "README.md",
     "package.json",
     "syntaxes/**/*.json",
@@ -178,9 +180,10 @@
     "bundle": "node ./scripts/build-extension.mjs",
     "build": "npm run typecheck && npm run bundle",
     "watch": "node ./scripts/build-extension.mjs --watch",
-    "vscode:prepublish": "npm run build",
+    "vscode:prepublish": "node ./scripts/vscode-prepublish.mjs",
     "prepare-server": "node ./scripts/prepare-server.mjs",
-    "package": "npm run build && npm run prepare-server && node ./scripts/package-extension.mjs"
+    "prepare-server:release": "node ./scripts/prepare-server.mjs --local-release-only",
+    "package": "npm run build && cargo build --release -p rhai-lsp && npm run prepare-server:release && node ./scripts/package-extension.mjs"
   },
   "dependencies": {
     "detect-libc": "^2.1.2",

@@ -10,6 +10,7 @@ const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const clientRoot = path.resolve(scriptDir, "..");
 const repoRoot = path.resolve(clientRoot, "..", "..");
 const serverDir = path.join(clientRoot, "server");
+const localReleaseOnly = process.argv.includes("--local-release-only");
 
 fs.rmSync(serverDir, { recursive: true, force: true });
 fs.mkdirSync(serverDir, { recursive: true });
@@ -28,6 +29,10 @@ fs.writeFileSync(
 console.log(`Staged Rhai LSP server binaries for: ${bundledTargets.join(", ")}`);
 
 function stageBundledServers() {
+    if (localReleaseOnly) {
+        return stageLocalReleaseServer();
+    }
+
     const stagedTargets = [];
     const serverManifest = process.env.RHAI_SERVER_MANIFEST?.trim();
     if (serverManifest) {
@@ -76,28 +81,7 @@ function stageBundledServers() {
         process.exit(1);
     }
 
-    const executable = executableNameForTarget(target);
-    const explicitServer = process.env.RHAI_SERVER_PATH?.trim();
-    const candidates = [
-        explicitServer,
-        path.join(repoRoot, "target", "release", executable),
-        path.join(repoRoot, "target", "debug", executable),
-    ].filter(Boolean);
-
-    const serverPath = candidates.find((candidate) => fs.existsSync(candidate));
-    if (!serverPath) {
-        console.error("Could not locate a built rhai-lsp executable.");
-        for (const candidate of candidates) {
-            console.error(`Looked for: ${candidate}`);
-        }
-        console.error(
-            "Build the server first with `cargo build -p rhai-lsp` or `cargo build --release -p rhai-lsp`, or set RHAI_SERVER_PATH.",
-        );
-        process.exit(1);
-    }
-
-    stageServerBinary(target, serverPath);
-    return [target];
+    return stageLocalServerWithFallback(target);
 }
 
 function normalizeManifestEntries(entries) {
@@ -120,6 +104,55 @@ function stageServerBinary(target, source) {
     const destinationDir = path.join(serverDir, target);
     fs.mkdirSync(destinationDir, { recursive: true });
     fs.copyFileSync(source, path.join(destinationDir, executableNameForTarget(target)));
+}
+
+function stageLocalReleaseServer() {
+    const target = currentVsCodeTarget();
+    if (!target) {
+        console.error(
+            `Unsupported host platform for local server staging: ${process.platform}-${process.arch}`,
+        );
+        process.exit(1);
+    }
+
+    const executable = executableNameForTarget(target);
+    const releasePath = path.join(repoRoot, "target", "release", executable);
+    if (!fs.existsSync(releasePath)) {
+        console.error("Could not locate the release-built rhai-lsp executable.");
+        console.error(`Looked for: ${releasePath}`);
+        console.error(
+            "Build the server first with `cargo build --release -p rhai-lsp`.",
+        );
+        process.exit(1);
+    }
+
+    stageServerBinary(target, releasePath);
+    return [target];
+}
+
+function stageLocalServerWithFallback(target) {
+    const executable = executableNameForTarget(target);
+    const explicitServer = process.env.RHAI_SERVER_PATH?.trim();
+    const candidates = [
+        explicitServer,
+        path.join(repoRoot, "target", "release", executable),
+        path.join(repoRoot, "target", "debug", executable),
+    ].filter(Boolean);
+
+    const serverPath = candidates.find((candidate) => fs.existsSync(candidate));
+    if (!serverPath) {
+        console.error("Could not locate a built rhai-lsp executable.");
+        for (const candidate of candidates) {
+            console.error(`Looked for: ${candidate}`);
+        }
+        console.error(
+            "Build the server first with `cargo build -p rhai-lsp` or `cargo build --release -p rhai-lsp`, or set RHAI_SERVER_PATH.",
+        );
+        process.exit(1);
+    }
+
+    stageServerBinary(target, serverPath);
+    return [target];
 }
 
 function currentVsCodeTarget() {

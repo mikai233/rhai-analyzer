@@ -1,41 +1,66 @@
-# VSCode Client
+<p align="center">
+  <img src="./icon.png" width="128" alt="Rhai Analyzer icon" />
+</p>
 
-This directory contains the Visual Studio Code frontend for `rhai-analyzer`.
+# Rhai Analyzer
 
-The extension is intentionally lightweight. It is responsible for:
+Rhai language support for Visual Studio Code, powered by the `rhai-analyzer` language server.
 
-- locating or connecting to `rhai-lsp`
-- starting and restarting the language client
-- forwarding editor configuration to the backend
-- contributing VSCode-specific assets such as grammar files, language configuration, and snippets
+## Overview
 
-Language semantics, diagnostics, formatting, and type inference remain in the Rust backend.
+Rhai Analyzer brings editor tooling for the Rhai scripting language to Visual Studio Code. The extension starts and manages `rhai-lsp`, contributes Rhai language assets to VS Code, and exposes language features backed by the Rust analysis engine.
 
-## Feature Summary
+The extension is designed to stay aligned with real Rhai syntax and semantics rather than a simplified editor-specific dialect.
 
-The current client provides:
+## Features
 
-- local development discovery for `rhai-lsp` under `target/debug`
-- packaged server discovery under `server/` inside the extension bundle
-- explicit server-path configuration
-- `stdio` transport for normal editor use
-- TCP transport for local protocol debugging
-- restart command integration
-- output and trace channels for server diagnostics
-- TextMate-based baseline syntax highlighting for Rhai files
-- Markdown fenced-code Rhai highlighting
-- snippet support for common Rhai constructs
-- automatic rebuild hooks for extension-host debugging
+- Semantic diagnostics for Rhai source files
+- Hover information and signature help
+- Go to definition, find references, and rename
+- Code completion, including project and module symbols
+- Inlay hints for variables, parameters, and return types
+- Document formatting powered by the shared `rhai-fmt` formatter
+- Semantic tokens, document symbols, workspace symbols, and folding ranges
+- Call hierarchy, document highlights, and code actions
+- Baseline syntax highlighting, Rhai snippets, and Markdown fenced-code highlighting
 
-## Development Workflow
+## Getting Started
 
-1. Build the server:
+The extension activates automatically for `.rhai` files.
+
+In a packaged installation, the extension looks for a bundled `rhai-lsp` binary inside the extension. For local development or custom deployments, you can also point the extension at an explicit server executable through `rhai.server.path`.
+
+## Extension Settings
+
+The extension contributes the following settings under the `rhai` namespace:
+
+| Setting | Description |
+| --- | --- |
+| `rhai.server.path` | Absolute path to a custom `rhai-lsp` executable. |
+| `rhai.server.transport` | Transport used to communicate with the language server: `stdio` or `tcp`. |
+| `rhai.server.tcpAddress` | TCP endpoint used when `rhai.server.transport` is set to `tcp`. |
+| `rhai.server.logLevel` | Log level passed to `rhai-lsp` when the extension launches it. |
+| `rhai.trace.server` | VS Code LSP trace level for protocol inspection. |
+| `rhai.inlayHints.variables` | Show inferred type hints for local variables. |
+| `rhai.inlayHints.parameters` | Show inferred type hints for function and closure parameters. |
+| `rhai.inlayHints.returnTypes` | Show inferred return type hints for functions and closures. |
+| `rhai.format.maxLineLength` | Preferred maximum line length for formatting. |
+| `rhai.format.trailingCommas` | Preserve trailing commas in expanded lists and containers. |
+| `rhai.format.finalNewline` | Ensure formatted files end with a trailing newline. |
+| `rhai.format.containerLayout` | Prefer single-line, multi-line, or automatic container layout decisions. |
+| `rhai.format.importSortOrder` | Preserve source order or sort contiguous import sections by module path. |
+
+Project-level formatter configuration can also be provided through `rhai.toml`. The shared formatter configuration surface is documented in the workspace `RHAI_TOML.md` file.
+
+## Development
+
+1. Build the language server:
 
    ```powershell
    cargo build -p rhai-lsp
    ```
 
-2. Install client dependencies and build the extension:
+2. Install dependencies and build the extension:
 
    ```powershell
    cd clients/vscode
@@ -43,62 +68,21 @@ The current client provides:
    npm run build
    ```
 
-3. Open `clients/vscode` in VSCode and press `F5`.
+3. Open `clients/vscode` in Visual Studio Code and press `F5`.
 
-   The launch configuration rebuilds both:
-
-   - `rhai-lsp`
-   - the VSCode client bundle
-
-4. Open a `.rhai` file in the Extension Development Host and validate the language features.
+The extension host launch configuration rebuilds both the VS Code client bundle and `rhai-lsp`.
 
 ## Packaging
 
-To build a local `.vsix` package:
+To produce a local VSIX package:
 
 ```powershell
 cd clients/vscode
 npm install
-npm run build
 npm run package
 ```
 
-The packaging step will:
-
-- type-check and bundle the TypeScript client with esbuild
-- stage one or more `rhai-lsp` binaries into `clients/vscode/server/<target>/`
-- produce a `.vsix` package
-
-For local packaging, the server binary is resolved from:
-
-- `RHAI_SERVER_PATH`, if set
-- `target/release/rhai-lsp`
-- `target/debug/rhai-lsp`
-
-The local package only bundles the current host target. If you want the packaged
-extension to be directly installable on your current machine, make sure one of
-those binaries exists before packaging:
-
-```powershell
-cargo build --release -p rhai-lsp
-cd clients/vscode
-npm run package
-```
-
-The CI packaging workflow builds and bundles all native VS Code targets into one
-universal installable VSIX:
-
-- `win32-x64`
-- `win32-arm64`
-- `linux-x64`
-- `linux-arm64`
-- `linux-armhf`
-- `alpine-x64`
-- `alpine-arm64`
-- `darwin-x64`
-- `darwin-arm64`
-
-At runtime, the extension picks the bundled server that matches the current host.
+The packaging script performs a release build of `rhai-lsp` before staging the server binary into the extension bundle.
 
 The packaged extension is written to:
 
@@ -106,30 +90,12 @@ The packaged extension is written to:
 clients/vscode/.artifacts/rhai-analyzer.vsix
 ```
 
-It can then be installed through the VSCode command:
+You can then install it through the Visual Studio Code command:
 
 `Extensions: Install from VSIX...`
 
-## Configuration
+## Status
 
-The client currently exposes these user-facing settings:
+Rhai Analyzer is under active development. The current extension is suitable for local use and testing, while language coverage, packaging workflows, and release distribution continue to improve.
 
-- `rhai.server.path`
-  - absolute path to a custom `rhai-lsp` binary
-- `rhai.server.transport`
-  - `stdio` or `tcp`
-- `rhai.server.tcpAddress`
-  - TCP endpoint used when transport is `tcp`
-- `rhai.server.logLevel`
-  - log level passed to `rhai-lsp`
-- `rhai.trace.server`
-  - VSCode LSP trace level
-- `rhai.inlayHints.variables`
-- `rhai.inlayHints.parameters`
-- `rhai.inlayHints.returnTypes`
-
-## Current Status
-
-This client is an MVP frontend intended to validate the backend in a production-like editor.
-It is already suitable for local installation and daily testing, while packaging, release,
-and multi-platform distribution workflows will continue to improve over time.
+This is still a fast-moving MVP release. Large parts of the codebase have not yet gone through the level of detailed review and hardening expected from a mature production extension, so some code paths may still have suboptimal performance characteristics or panic in edge cases.

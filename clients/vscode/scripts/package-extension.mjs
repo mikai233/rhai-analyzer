@@ -22,6 +22,10 @@ if (target) {
 
 const result = spawnSync("npm", args, {
     cwd: clientRoot,
+    env: {
+        ...process.env,
+        RHAI_SKIP_VSCODE_PREPUBLISH: "1",
+    },
     stdio: "inherit",
     shell: process.platform === "win32",
 });
