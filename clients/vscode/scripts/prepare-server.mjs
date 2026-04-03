@@ -102,8 +102,12 @@ function normalizeManifestEntries(entries) {
 
 function stageServerBinary(target, source) {
     const destinationDir = path.join(serverDir, target);
+    const destinationPath = path.join(destinationDir, executableNameForTarget(target));
     fs.mkdirSync(destinationDir, { recursive: true });
-    fs.copyFileSync(source, path.join(destinationDir, executableNameForTarget(target)));
+    fs.copyFileSync(source, destinationPath);
+    if (!destinationPath.endsWith(".exe")) {
+        fs.chmodSync(destinationPath, 0o755);
+    }
 }
 
 function stageLocalReleaseServer() {

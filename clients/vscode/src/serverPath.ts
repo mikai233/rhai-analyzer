@@ -32,8 +32,11 @@ export function createServerOptions(
         };
     }
 
+    const command = resolveServerCommand(context, config);
+    ensureServerExecutable(command);
+
     const executable: Executable = {
-        command: resolveServerCommand(context, config),
+        command,
         args: [
             "--transport",
             "stdio",
@@ -175,4 +178,18 @@ function parseTcpAddress(address: string): { host: string; port: number } {
     }
 
     return { host, port };
+}
+
+function ensureServerExecutable(serverPath: string): void {
+    if (process.platform === "win32" || !fs.existsSync(serverPath)) {
+        return;
+    }
+
+    const stats = fs.statSync(serverPath);
+    const executableBits = 0o111;
+    if ((stats.mode & executableBits) === executableBits) {
+        return;
+    }
+
+    fs.chmodSync(serverPath, stats.mode | 0o755);
 }
