@@ -18,10 +18,6 @@
     "Linters",
     "Formatters"
   ],
-  "activationEvents": [
-    "onLanguage:rhai",
-    "onCommand:rhai.restartServer"
-  ],
   "main": "./out/extension.js",
   "files": [
     "out/**/*",
