@@ -366,10 +366,14 @@ jobs:
         working-directory: clients/vscode
         run: npm ci
 
-      - name: Build and package universal VSCode extension
+      - name: Stage bundled server binaries for packaging
         working-directory: clients/vscode
         env:
           RHAI_SERVER_DIR: ${{ github.workspace }}/clients/vscode/.staging/servers
+        run: npm run prepare-server
+
+      - name: Build and package universal VSCode extension
+        working-directory: clients/vscode
         run: npm run package
 
       - name: Upload universal VSIX artifact

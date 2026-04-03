@@ -172,6 +172,7 @@
     ]
   },
   "scripts": {
+    "clean": "node ./scripts/clean.mjs",
     "typecheck": "npm exec -- tsc -p ./ --noEmit",
     "bundle": "node ./scripts/build-extension.mjs",
     "build": "npm run typecheck && npm run bundle",
@@ -179,7 +180,8 @@
     "vscode:prepublish": "node ./scripts/vscode-prepublish.mjs",
     "prepare-server": "node ./scripts/prepare-server.mjs",
     "prepare-server:release": "node ./scripts/prepare-server.mjs --local-release-only",
-    "package": "npm run build && cargo build --release -p rhai-lsp && npm run prepare-server:release && node ./scripts/package-extension.mjs"
+    "package": "npm run build && node ./scripts/package-extension.mjs",
+    "package:local": "cargo build --release -p rhai-lsp && npm run prepare-server:release && npm run package"
   },
   "dependencies": {
     "detect-libc": "^2.1.2",

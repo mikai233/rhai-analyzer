@@ -74,15 +74,32 @@ The extension host launch configuration rebuilds both the VS Code client bundle 
 
 ## Packaging
 
-To produce a local VSIX package:
+To produce a local VSIX package and build the release `rhai-lsp` binary as part of the process:
 
 ```powershell
 cd clients/vscode
 npm install
+npm run package:local
+```
+
+For CI and other prebuilt packaging flows, stage the server bundle first and package it afterwards:
+
+```powershell
+cd clients/vscode
+npm run prepare-server
 npm run package
 ```
 
-The packaging script performs a release build of `rhai-lsp` before staging the server binary into the extension bundle.
+The `package` script only packages the currently staged `clients/vscode/server` bundle and will not rebuild or restage `rhai-lsp`.
+
+This split avoids overwriting a preassembled multi-target server bundle during the packaging step. It is especially important in CI, where multiple platform binaries may already have been downloaded into a staging directory before packaging.
+
+To clear generated extension artifacts and staged server bundles:
+
+```powershell
+cd clients/vscode
+npm run clean
+```
 
 The packaged extension is written to:
 
