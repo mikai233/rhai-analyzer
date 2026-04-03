@@ -39,6 +39,14 @@ fn postfix_templates(
             ),
         ),
         (
+            "fori",
+            "Expand into a `for (..., index) in ...` loop.",
+            format!(
+                "for (${{1:item}}, ${{2:index}}) in {} {{\n    $0\n}}",
+                postfix.receiver_text
+            ),
+        ),
+        (
             "switch",
             "Expand into a `switch` expression using the receiver.",
             format!(

@@ -162,3 +162,44 @@ fn postfix_templates_include_not_and_let_expansions() {
         Some("let ${1:value} = value;$0")
     );
 }
+
+#[test]
+fn postfix_templates_include_fori_expansion() {
+    let mut host = AnalysisHost::default();
+    host.apply_change(ChangeSet::single_file(
+        "main.rhai",
+        r#"
+            fn run() {
+                let items = [1, 2, 3];
+                items.fori
+            }
+        "#,
+        DocumentVersion(1),
+    ));
+
+    let analysis = host.snapshot();
+    let file_id = analysis
+        .db
+        .vfs()
+        .file_id(Path::new("main.rhai"))
+        .expect("expected main.rhai");
+    let text = analysis.db.file_text(file_id).expect("expected text");
+    let offset = u32::try_from(
+        text.find("items.fori")
+            .expect("expected postfix completion target")
+            + "items.fori".len(),
+    )
+    .expect("offset");
+
+    let fori = analysis
+        .completions(FilePosition { file_id, offset })
+        .into_iter()
+        .find(|item| item.label == "fori" && item.source == CompletionItemSource::Postfix)
+        .expect("expected fori postfix completion");
+
+    assert_eq!(fori.insert_format, CompletionInsertFormat::Snippet);
+    assert_eq!(
+        fori.text_edit.as_ref().map(|edit| edit.new_text.as_str()),
+        Some("for (${1:item}, ${2:index}) in items {\n    $0\n}")
+    );
+}

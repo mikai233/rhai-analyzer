@@ -56,6 +56,15 @@
     ],
     "description": "Insert a for-in loop."
   },
+  "For In With Index": {
+    "prefix": "fori",
+    "body": [
+      "for (${1:item}, ${2:index}) in ${3:iterable} {",
+      "\t$0",
+      "}"
+    ],
+    "description": "Insert a for-in loop with an index binding."
+  },
   "While": {
     "prefix": "while",
     "body": [
