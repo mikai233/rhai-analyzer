@@ -338,7 +338,7 @@ jobs:
           Copy-Item '${{ matrix.binary_path }}' (Join-Path $targetDir '${{ matrix.binary_name }}')
 
       - name: Upload bundled server artifact
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: rhai-lsp-${{ matrix.vscode_target }}
           path: dist/vscode-server
@@ -385,7 +385,7 @@ jobs:
         run: npm run package
 
       - name: Upload universal VSIX artifact
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: rhai-analyzer-vsix
           path: clients/vscode/.artifacts/rhai-analyzer.vsix
