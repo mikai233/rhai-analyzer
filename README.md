@@ -2,6 +2,20 @@
 
 `rhai-analyzer` is a workspace for a Rhai language-analysis stack built around the real Rhai language model instead of an analyzer-specific dialect.
 
+## VS Code Extension
+
+The VS Code extension is now published on the Visual Studio Marketplace:
+
+<https://marketplace.visualstudio.com/items?itemName=mikai233.rhai-analyzer>
+
+Install it from the Marketplace by searching for `Rhai Analyzer`, or from VS Code Quick Open:
+
+```text
+ext install mikai233.rhai-analyzer
+```
+
+The extension README lives at [`clients/vscode/README.md`](./clients/vscode/README.md).
+
 The workspace is split into a few focused crates:
 
 - `rhai-vfs`: virtual file-system state, file identities, and document versions
@@ -81,6 +95,3 @@ Secrets you need before using `release`:
 
 - `VSCE_PAT`
   - Azure DevOps Marketplace PAT with permission to publish your extension
-
-Before the first stable marketplace release, make sure
-`clients/vscode/package.json.publisher` is set to your real publisher ID instead of `local`.
